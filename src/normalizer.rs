@@ -401,11 +401,11 @@ fn calculate_from(
 }
 
 fn normalize_move(mmf: &mut MoveMoveFormat, pos: &PartialPosition) -> Result<(), NormalizeError> {
-    if matches!(
-        (mmf.color, pos.side_to_move()),
-        (Color::Black, shogi_core::Color::White) | (Color::White, shogi_core::Color::Black)
-    ) {
-        return Err(NormalizeError::InvalidColor);
+    // Correct the color from the position's side to move
+    // (KIF parser assigns color by move number parity, which is wrong for 後手番 games)
+    match pos.side_to_move() {
+        shogi_core::Color::Black => mmf.color = Color::Black,
+        shogi_core::Color::White => mmf.color = Color::White,
     }
     if mmf.same.is_some() {
         mmf.to = pos
@@ -564,27 +564,29 @@ mod tests {
             );
         }
         {
+            // Color is auto-corrected by normalizer, so a wrong color input still succeeds
             let pos = PartialPosition::startpos();
+            let mut moves = [MoveFormat {
+                move_: Some(MoveMoveFormat {
+                    color: Color::White, // will be corrected to Black
+                    piece: Kind::FU,
+                    from: Some(PlaceFormat { x: 7, y: 7 }),
+                    to: PlaceFormat { x: 7, y: 6 },
+                    promote: None,
+                    capture: None,
+                    relative: None,
+                    same: None,
+                }),
+                ..Default::default()
+            }];
             assert!(
-                normalize_moves(
-                    &mut [MoveFormat {
-                        move_: Some(MoveMoveFormat {
-                            color: Color::White, // invalid color
-                            piece: Kind::FU,
-                            from: Some(PlaceFormat { x: 7, y: 7 }),
-                            to: PlaceFormat { x: 7, y: 6 },
-                            promote: None,
-                            capture: None,
-                            relative: None,
-                            same: None,
-                        }),
-                        ..Default::default()
-                    }],
-                    pos,
-                    [TimeFormat::default(); 2]
-                )
-                .is_err(),
-                "normalize should fail"
+                normalize_moves(&mut moves, pos, [TimeFormat::default(); 2]).is_ok(),
+                "normalize should succeed (color auto-corrected)"
+            );
+            assert_eq!(
+                moves[0].move_.as_ref().unwrap().color,
+                Color::Black,
+                "color should be corrected to Black"
             );
         }
     }

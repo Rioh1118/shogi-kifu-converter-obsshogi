@@ -321,18 +321,30 @@ pub(super) fn move_to(input: &str) -> IResult<&str, Option<PlaceFormat>, Verbose
     ))(input)
 }
 
+fn side_to_move_line(input: &str) -> IResult<&str, Color, VerboseError<&str>> {
+    terminated(
+        alt((
+            value(Color::Black, tag("先手番")),
+            value(Color::White, tag("後手番")),
+            value(Color::Black, tag("下手番")),
+            value(Color::White, tag("上手番")),
+        )),
+        line_ending,
+    )(input)
+}
+
 pub(super) fn parse_without_moves(
     input: &str,
 ) -> IResult<&str, JsonKifuFormat, VerboseError<&str>> {
     map(
-        tuple((informations, opt(board), informations)),
-        |(info1, opt_board, info2)| {
+        tuple((informations, opt(board), informations, opt(side_to_move_line))),
+        |(info1, opt_board, info2, side_to_move)| {
             let info = InformationData::merged(info1, info2);
             let initial = if let Some(board) = opt_board {
                 Some(Initial {
                     preset: Preset::PresetOther,
                     data: Some(StateFormat {
-                        color: Color::Black,
+                        color: side_to_move.unwrap_or(Color::Black),
                         board,
                         hands: info.hands,
                     }),

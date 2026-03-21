@@ -60,7 +60,12 @@ pub fn parse_kif_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseEr
     file.read_to_end(&mut buf)?;
     let (cow, _, had_errors) = encoding.decode(&buf);
     if had_errors {
-        return Err(ParseError::Decode);
+        // Fallback to UTF-8 if Shift-JIS decoding fails
+        let (cow_utf8, _, had_errors_utf8) = UTF_8.decode(&buf);
+        if had_errors_utf8 {
+            return Err(ParseError::Decode);
+        }
+        return parse_kif_str(&cow_utf8);
     }
     parse_kif_str(&cow)
 }
