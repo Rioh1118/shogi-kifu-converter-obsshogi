@@ -259,7 +259,15 @@ fn pk2k(pk: shogi_core::PieceKind) -> Kind {
 }
 
 impl JsonKifuFormat {
-    pub fn normalize(&mut self) -> Result<(), NormalizeError> {
+    /// Normalizes the JKF data.
+    ///
+    /// If `correct_color` is true, the color of each move is corrected from the position's
+    /// side to move (for KIF/KI2 where color is assigned by move number parity and may be wrong).
+    /// If false, a color mismatch is treated as an error (for CSA/JKF where color is reliable).
+    pub fn normalize_with_color_correction(
+        &mut self,
+        correct_color: bool,
+    ) -> Result<(), NormalizeError> {
         normalize_initial(self)?;
         let pos = if let Some(initial) = &self.initial {
             if !matches!(initial.preset, Preset::PresetHirate | Preset::PresetOther)
@@ -285,8 +293,17 @@ impl JsonKifuFormat {
         } else {
             PartialPosition::startpos()
         };
-        normalize_moves(&mut self.moves[1..], pos, [TimeFormat::default(); 2])?;
+        normalize_moves(
+            &mut self.moves[1..],
+            pos,
+            [TimeFormat::default(); 2],
+            correct_color,
+        )?;
         Ok(())
+    }
+
+    pub fn normalize(&mut self) -> Result<(), NormalizeError> {
+        self.normalize_with_color_correction(false)
     }
 }
 
@@ -400,12 +417,23 @@ fn calculate_from(
     }
 }
 
-fn normalize_move(mmf: &mut MoveMoveFormat, pos: &PartialPosition) -> Result<(), NormalizeError> {
-    // Correct the color from the position's side to move
-    // (KIF parser assigns color by move number parity, which is wrong for 後手番 games)
-    match pos.side_to_move() {
-        shogi_core::Color::Black => mmf.color = Color::Black,
-        shogi_core::Color::White => mmf.color = Color::White,
+fn normalize_move(
+    mmf: &mut MoveMoveFormat,
+    pos: &PartialPosition,
+    correct_color: bool,
+) -> Result<(), NormalizeError> {
+    if correct_color {
+        // Correct the color from the position's side to move
+        // (KIF/KI2 parser assigns color by move number parity, which is wrong for 後手番 games)
+        match pos.side_to_move() {
+            shogi_core::Color::Black => mmf.color = Color::Black,
+            shogi_core::Color::White => mmf.color = Color::White,
+        }
+    } else if matches!(
+        (mmf.color, pos.side_to_move()),
+        (Color::Black, shogi_core::Color::White) | (Color::White, shogi_core::Color::Black)
+    ) {
+        return Err(NormalizeError::InvalidColor);
     }
     if mmf.same.is_some() {
         mmf.to = pos
@@ -497,12 +525,13 @@ fn normalize_moves(
     moves: &mut [MoveFormat],
     mut pos: PartialPosition,
     mut totals: [TimeFormat; 2],
+    correct_color: bool,
 ) -> Result<(), NormalizeError> {
     for mf in moves {
         // Normalize forks (errors in forks are non-fatal; skip invalid ones)
         if let Some(forks) = &mut mf.forks {
             forks.retain_mut(|v| {
-                normalize_moves(v, pos.clone(), totals).is_ok()
+                normalize_moves(v, pos.clone(), totals, correct_color).is_ok()
             });
         }
         // Calculate total time
@@ -512,7 +541,7 @@ fn normalize_moves(
             time.total = totals[pos.side_to_move().array_index()];
         }
         if let Some(mmf) = &mut mf.move_ {
-            normalize_move(mmf, &pos)?;
+            normalize_move(mmf, &pos, correct_color)?;
             let mv = match shogi_core::Move::try_from(&*mmf) {
                 Ok(mv) => mv,
                 Err(err) => return Err(NormalizeError::Convert(err.to_string())),
@@ -534,53 +563,70 @@ mod tests {
     #[test]
     fn normalize_moves_empty() {
         let pos = PartialPosition::startpos();
-        assert!(normalize_moves(&mut [], pos, [TimeFormat::default(); 2]).is_ok());
+        assert!(normalize_moves(&mut [], pos, [TimeFormat::default(); 2], false).is_ok());
     }
 
     #[test]
     fn normalize_moves_invalid_color() {
+        let mmf = MoveMoveFormat {
+            color: Color::Black,
+            piece: Kind::FU,
+            from: Some(PlaceFormat { x: 7, y: 7 }),
+            to: PlaceFormat { x: 7, y: 6 },
+            promote: None,
+            capture: None,
+            relative: None,
+            same: None,
+        };
+        // Correct color should succeed
+        {
+            let pos = PartialPosition::startpos();
+            assert!(
+                normalize_moves(
+                    &mut [MoveFormat {
+                        move_: Some(mmf),
+                        ..Default::default()
+                    }],
+                    pos,
+                    [TimeFormat::default(); 2],
+                    false,
+                )
+                .is_ok(),
+                "normalize should succeed"
+            );
+        }
+        // Wrong color with correct_color=false should fail
         {
             let pos = PartialPosition::startpos();
             assert!(
                 normalize_moves(
                     &mut [MoveFormat {
                         move_: Some(MoveMoveFormat {
-                            color: Color::Black,
-                            piece: Kind::FU,
-                            from: Some(PlaceFormat { x: 7, y: 7 }),
-                            to: PlaceFormat { x: 7, y: 6 },
-                            promote: None,
-                            capture: None,
-                            relative: None,
-                            same: None,
+                            color: Color::White,
+                            ..mmf
                         }),
                         ..Default::default()
                     }],
                     pos,
-                    [TimeFormat::default(); 2]
+                    [TimeFormat::default(); 2],
+                    false,
                 )
-                .is_ok(),
-                "normalize should succeed"
+                .is_err(),
+                "normalize should fail with InvalidColor"
             );
         }
+        // Wrong color with correct_color=true should succeed and fix color
         {
-            // Color is auto-corrected by normalizer, so a wrong color input still succeeds
             let pos = PartialPosition::startpos();
             let mut moves = [MoveFormat {
                 move_: Some(MoveMoveFormat {
-                    color: Color::White, // will be corrected to Black
-                    piece: Kind::FU,
-                    from: Some(PlaceFormat { x: 7, y: 7 }),
-                    to: PlaceFormat { x: 7, y: 6 },
-                    promote: None,
-                    capture: None,
-                    relative: None,
-                    same: None,
+                    color: Color::White,
+                    ..mmf
                 }),
                 ..Default::default()
             }];
             assert!(
-                normalize_moves(&mut moves, pos, [TimeFormat::default(); 2]).is_ok(),
+                normalize_moves(&mut moves, pos, [TimeFormat::default(); 2], true).is_ok(),
                 "normalize should succeed (color auto-corrected)"
             );
             assert_eq!(

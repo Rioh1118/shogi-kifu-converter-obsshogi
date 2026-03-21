@@ -60,14 +60,26 @@ pub fn parse_kif_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseEr
     file.read_to_end(&mut buf)?;
     let (cow, _, had_errors) = encoding.decode(&buf);
     if had_errors {
-        // Fallback to UTF-8 if Shift-JIS decoding fails
+        // Decoding failed outright, try UTF-8
         let (cow_utf8, _, had_errors_utf8) = UTF_8.decode(&buf);
         if had_errors_utf8 {
             return Err(ParseError::Decode);
         }
         return parse_kif_str(&cow_utf8);
     }
-    parse_kif_str(&cow)
+    // Decoding succeeded, but the content may be garbled (e.g. UTF-8 file decoded as Shift-JIS).
+    // Try parsing; if it fails and encoding was Shift-JIS, retry with UTF-8.
+    match parse_kif_str(&cow) {
+        Ok(jkf) => Ok(jkf),
+        Err(err) if encoding == SHIFT_JIS => {
+            let (cow_utf8, _, had_errors_utf8) = UTF_8.decode(&buf);
+            if had_errors_utf8 {
+                return Err(err);
+            }
+            parse_kif_str(&cow_utf8).or(Err(err))
+        }
+        Err(err) => Err(err),
+    }
 }
 
 /// Parses a KIF formatted string to [`jkf::JsonKifuFormat`](crate::jkf::JsonKifuFormat)
@@ -78,7 +90,7 @@ pub fn parse_kif_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseEr
 pub fn parse_kif_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
     match kif::parse(s).finish() {
         Ok((_, mut jkf)) => {
-            if let Err(err) = jkf.normalize() {
+            if let Err(err) = jkf.normalize_with_color_correction(true) {
                 Err(ParseError::Normalize(err.to_string()))
             } else {
                 Ok(jkf)
@@ -122,7 +134,7 @@ pub fn parse_ki2_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseEr
 pub fn parse_ki2_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
     match ki2::parse(s).finish() {
         Ok((_, mut jkf)) => {
-            if let Err(err) = jkf.normalize() {
+            if let Err(err) = jkf.normalize_with_color_correction(true) {
                 Err(ParseError::Normalize(err.to_string()))
             } else {
                 Ok(jkf)
