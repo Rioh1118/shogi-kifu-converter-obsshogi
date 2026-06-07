@@ -167,12 +167,15 @@ fn entire_moves(input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str
         while let Some(fork) = forks.pop() {
             stack.push(fork);
             if let Some((i, last)) = forks.last_mut() {
-                while stack.last().map_or(false, |(j, _)| j > i) {
+                while stack.last().is_some_and(|(j, _)| j > i) {
                     if let Some((j, fork)) = stack.pop() {
-                        if let Some(v) = &mut last[j - *i].forks {
-                            v.push(fork);
-                        } else {
-                            last[j - *i].forks = Some(vec![fork]);
+                        // Defend against malformed `変化:` indices (j < i, or out of range).
+                        if let Some(node) = j.checked_sub(*i).and_then(|k| last.get_mut(k)) {
+                            if let Some(v) = &mut node.forks {
+                                v.push(fork);
+                            } else {
+                                node.forks = Some(vec![fork]);
+                            }
                         }
                     }
                 }
@@ -581,5 +584,31 @@ mod tests {
                 _ => assert!(m.forks.is_none()),
             }
         }
+    }
+
+    #[test]
+    fn parse_entire_moves_malformed_fork_index() {
+        // 変化:5 sits inside 変化:2 with offset 3, but 変化:2 only has 1 move.
+        // The pre-`checked_sub` code panicked with `index out of bounds`.
+        let input = &r#"
+手数----指手---------消費時間--
+   1 ７六歩(77)    (00:00 / 00:00:00)
+   2 ８四歩(83)    (00:00 / 00:00:00)
+
+変化：2
+   2 ８六歩(83)    (00:00 / 00:00:00)
+
+変化：5
+   5 投了 ( 0:00/ 0:00:00)
+"#[1..];
+        let ret = entire_moves(input);
+        let (_, moves) = ret.expect("entire_moves should not panic on malformed input");
+        // 変化:2 attaches at index 2; 変化:5 is silently dropped.
+        let forks = moves[2]
+            .forks
+            .as_ref()
+            .expect("変化:2 should attach at index 2");
+        assert_eq!(1, forks.len());
+        assert_eq!(1, forks[0].len(), "the inner 変化:5 must NOT be merged in");
     }
 }
