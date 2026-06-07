@@ -68,10 +68,11 @@ pub fn parse_kif_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseEr
         return parse_kif_str(&cow_utf8);
     }
     // Decoding succeeded, but the content may be garbled (e.g. UTF-8 file decoded as Shift-JIS).
-    // Try parsing; if it fails and encoding was Shift-JIS, retry with UTF-8.
+    // Only retry on parse-grammar errors (ParseError::Kif) — for Normalize errors, retrying
+    // with another encoding produces the same error and doubles the cost of a 4 s parse.
     match parse_kif_str(&cow) {
         Ok(jkf) => Ok(jkf),
-        Err(err) if encoding == SHIFT_JIS => {
+        Err(err @ ParseError::Kif(_)) if encoding == SHIFT_JIS => {
             let (cow_utf8, _, had_errors_utf8) = UTF_8.decode(&buf);
             if had_errors_utf8 {
                 return Err(err);
@@ -90,7 +91,9 @@ pub fn parse_kif_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseEr
 pub fn parse_kif_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
     match kif::parse(s).finish() {
         Ok((_, mut jkf)) => {
-            if let Err(err) = jkf.normalize_with_color_correction(true) {
+            // KIF moves carry an explicit `from`, so `relative` inference is dead work.
+            // Downstream consumers (e.g. KI2 conversion) can opt-in via `populate_relative()`.
+            if let Err(err) = jkf.normalize_with_options(true, false) {
                 Err(ParseError::Normalize(err.to_string()))
             } else {
                 Ok(jkf)
@@ -215,12 +218,14 @@ mod tests {
             if path.extension() != Some(OsStr::new("kif")) {
                 continue;
             }
-            let jkf = match parse_kif_file(&path) {
+            let mut jkf = match parse_kif_file(&path) {
                 Ok(jkf) => jkf,
                 Err(err) => {
                     panic!("failed to parse kif file {}: {err}", path.display());
                 }
             };
+            // KIF fast-path skips relative inference; populate to match golden JSON
+            jkf.populate_relative().expect("populate_relative failed");
             let val = serde_json::to_value(&jkf).expect("failed to serialize jkf");
             // Load exptected JSON Value
             assert!(path.set_extension("json"));

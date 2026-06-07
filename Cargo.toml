@@ -1,6 +1,6 @@
 [package]
 name = "shogi-kifu-converter"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 description = "Shogi kifu parsers and converters"
@@ -27,3 +27,9 @@ thiserror = "1.0"
 
 [dev-dependencies]
 jsonschema = "0.16"
+criterion = "0.5"
+encoding_rs = "0.8.31"
+
+[[bench]]
+name = "parse"
+harness = false

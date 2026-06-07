@@ -388,10 +388,10 @@ mod tests {
     fn validate_default() -> Result<()> {
         let schema = load_schema()?;
 
-        let value = serde_json::to_value(&JsonKifuFormat::default()).expect("failed to serialize");
+        let value = serde_json::to_value(JsonKifuFormat::default()).expect("failed to serialize");
         let result = schema.validate(&value);
-        if let Err(errors) = result {
-            for err in errors {
+        if let Err(mut errors) = result {
+            if let Some(err) = errors.next() {
                 panic!("{:?}", err);
             }
         }
@@ -418,8 +418,8 @@ mod tests {
             };
             let value = serde_json::to_value(&jkf).expect("failed to serialize");
             let result = schema.validate(&value);
-            if let Err(errors) = result {
-                for err in errors {
+            if let Err(mut errors) = result {
+                if let Some(err) = errors.next() {
                     panic!("error on {}: {:?}", path.display(), err);
                 }
             }

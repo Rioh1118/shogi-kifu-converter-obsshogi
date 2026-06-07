@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn fork_moves() {
         let path = Path::new("data/tests/kif/forks.json");
-        let jkf = parse_jkf_file(&path).expect("failed to parse kif");
+        let jkf = parse_jkf_file(path).expect("failed to parse kif");
         let kif = jkf.to_kif_owned();
         assert_eq!(
             &r#"

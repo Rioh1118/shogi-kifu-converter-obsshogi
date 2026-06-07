@@ -264,9 +264,14 @@ impl JsonKifuFormat {
     /// If `correct_color` is true, the color of each move is corrected from the position's
     /// side to move (for KIF/KI2 where color is assigned by move number parity and may be wrong).
     /// If false, a color mismatch is treated as an error (for CSA/JKF where color is reliable).
-    pub fn normalize_with_color_correction(
+    /// If `infer_relative` is false, the slow `relative` (左/右/上/...) inference is skipped.
+    /// KIF parsing supplies an explicit `from`, so the inference is dead work for that path.
+    /// Downstream code that needs `relative` (e.g. KI2 conversion) can call
+    /// [`Self::populate_relative`] to fill it in lazily.
+    pub fn normalize_with_options(
         &mut self,
         correct_color: bool,
+        infer_relative: bool,
     ) -> Result<(), NormalizeError> {
         normalize_initial(self)?;
         let pos = if let Some(initial) = &self.initial {
@@ -298,12 +303,36 @@ impl JsonKifuFormat {
             pos,
             [TimeFormat::default(); 2],
             correct_color,
+            infer_relative,
         )?;
         Ok(())
     }
 
+    pub fn normalize_with_color_correction(
+        &mut self,
+        correct_color: bool,
+    ) -> Result<(), NormalizeError> {
+        self.normalize_with_options(correct_color, true)
+    }
+
     pub fn normalize(&mut self) -> Result<(), NormalizeError> {
-        self.normalize_with_color_correction(false)
+        self.normalize_with_options(false, true)
+    }
+
+    /// Fills in `relative` (左/右/上/...) for every move whose `relative` is `None`,
+    /// re-simulating the position from the initial state. Use this after parsing a KIF
+    /// (which skips the inference for speed) when a downstream consumer needs `relative`
+    /// — e.g. KI2 conversion.
+    pub fn populate_relative(&mut self) -> Result<(), NormalizeError> {
+        let pos = if let Some(initial) = &self.initial {
+            match PartialPosition::try_from(initial) {
+                Ok(pos) => pos,
+                Err(err) => return Err(NormalizeError::Convert(err.to_string())),
+            }
+        } else {
+            PartialPosition::startpos()
+        };
+        populate_relative_moves(&mut self.moves[1..], pos)
     }
 }
 
@@ -368,7 +397,6 @@ fn calculate_from(
         to,
         shogi_core::Piece::new(shogi_core::PieceKind::from(mmf.piece), color),
     );
-    let mut froms = bb.into_iter().collect::<Vec<_>>();
     match bb.count() {
         0 => Ok(None),
         1 => Ok(bb.into_iter().next().map(|sq| PlaceFormat {
@@ -376,6 +404,7 @@ fn calculate_from(
             y: sq.rank(),
         })),
         2.. => {
+            let mut froms: Vec<_> = bb.into_iter().collect();
             let relative = mmf
                 .relative
                 .ok_or_else(|| NormalizeError::AmbiguousMoveFrom(froms.clone()))?;
@@ -421,7 +450,8 @@ fn normalize_move(
     mmf: &mut MoveMoveFormat,
     pos: &PartialPosition,
     correct_color: bool,
-) -> Result<(), NormalizeError> {
+    infer_relative: bool,
+) -> Result<shogi_core::Move, NormalizeError> {
     if correct_color {
         // Correct the color from the position's side to move
         // (KIF/KI2 parser assigns color by move number parity, which is wrong for 後手番 games)
@@ -498,7 +528,7 @@ fn normalize_move(
         Err(err) => return Err(NormalizeError::Convert(err.to_string())),
     };
     // Set relative?
-    if mmf.relative.is_none() {
+    if infer_relative && mmf.relative.is_none() {
         if let Some(mut display) = display_single_move_kansuji(pos, mv) {
             mmf.relative = match (display.pop(), display.pop()) {
                 (Some('左'), _) => Some(Relative::L),
@@ -518,7 +548,7 @@ fn normalize_move(
             };
         }
     }
-    Ok(())
+    Ok(mv)
 }
 
 fn normalize_moves(
@@ -526,12 +556,13 @@ fn normalize_moves(
     mut pos: PartialPosition,
     mut totals: [TimeFormat; 2],
     correct_color: bool,
+    infer_relative: bool,
 ) -> Result<(), NormalizeError> {
     for mf in moves {
         // Normalize forks (errors in forks are non-fatal; skip invalid ones)
         if let Some(forks) = &mut mf.forks {
             forks.retain_mut(|v| {
-                normalize_moves(v, pos.clone(), totals, correct_color).is_ok()
+                normalize_moves(v, pos.clone(), totals, correct_color, infer_relative).is_ok()
             });
         }
         // Calculate total time
@@ -541,11 +572,53 @@ fn normalize_moves(
             time.total = totals[pos.side_to_move().array_index()];
         }
         if let Some(mmf) = &mut mf.move_ {
-            normalize_move(mmf, &pos, correct_color)?;
+            let mv = normalize_move(mmf, &pos, correct_color, infer_relative)?;
+            if pos.make_move(mv).is_none() {
+                return Err(NormalizeError::MakeMoveFailed(mv));
+            }
+        } else {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn populate_relative_moves(
+    moves: &mut [MoveFormat],
+    mut pos: PartialPosition,
+) -> Result<(), NormalizeError> {
+    for mf in moves {
+        if let Some(forks) = &mut mf.forks {
+            for v in forks.iter_mut() {
+                // forks already passed normalization; ignore errors here for parity with retain_mut
+                let _ = populate_relative_moves(v, pos.clone());
+            }
+        }
+        if let Some(mmf) = &mut mf.move_ {
             let mv = match shogi_core::Move::try_from(&*mmf) {
                 Ok(mv) => mv,
                 Err(err) => return Err(NormalizeError::Convert(err.to_string())),
             };
+            if mmf.relative.is_none() {
+                if let Some(mut display) = display_single_move_kansuji(&pos, mv) {
+                    mmf.relative = match (display.pop(), display.pop()) {
+                        (Some('左'), _) => Some(Relative::L),
+                        (Some('直'), _) => Some(Relative::C),
+                        (Some('右'), _) => Some(Relative::R),
+                        (Some('上'), Some('左')) => Some(Relative::LU),
+                        (Some('上'), Some('右')) => Some(Relative::RU),
+                        (Some('上'), _) => Some(Relative::U),
+                        (Some('引'), Some('左')) => Some(Relative::LD),
+                        (Some('引'), Some('右')) => Some(Relative::RD),
+                        (Some('引'), _) => Some(Relative::D),
+                        (Some('寄'), Some('左')) => Some(Relative::LM),
+                        (Some('寄'), Some('右')) => Some(Relative::RM),
+                        (Some('寄'), _) => Some(Relative::M),
+                        (Some('打'), _) => Some(Relative::H),
+                        _ => None,
+                    };
+                }
+            }
             if pos.make_move(mv).is_none() {
                 return Err(NormalizeError::MakeMoveFailed(mv));
             }
@@ -563,7 +636,7 @@ mod tests {
     #[test]
     fn normalize_moves_empty() {
         let pos = PartialPosition::startpos();
-        assert!(normalize_moves(&mut [], pos, [TimeFormat::default(); 2], false).is_ok());
+        assert!(normalize_moves(&mut [], pos, [TimeFormat::default(); 2], false, true).is_ok());
     }
 
     #[test]
@@ -590,6 +663,7 @@ mod tests {
                     pos,
                     [TimeFormat::default(); 2],
                     false,
+                    true,
                 )
                 .is_ok(),
                 "normalize should succeed"
@@ -610,6 +684,7 @@ mod tests {
                     pos,
                     [TimeFormat::default(); 2],
                     false,
+                    true,
                 )
                 .is_err(),
                 "normalize should fail with InvalidColor"
@@ -626,7 +701,7 @@ mod tests {
                 ..Default::default()
             }];
             assert!(
-                normalize_moves(&mut moves, pos, [TimeFormat::default(); 2], true).is_ok(),
+                normalize_moves(&mut moves, pos, [TimeFormat::default(); 2], true, true).is_ok(),
                 "normalize should succeed (color auto-corrected)"
             );
             assert_eq!(

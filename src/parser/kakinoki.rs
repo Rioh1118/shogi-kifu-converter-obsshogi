@@ -337,7 +337,12 @@ pub(super) fn parse_without_moves(
     input: &str,
 ) -> IResult<&str, JsonKifuFormat, VerboseError<&str>> {
     map(
-        tuple((informations, opt(board), informations, opt(side_to_move_line))),
+        tuple((
+            informations,
+            opt(board),
+            informations,
+            opt(side_to_move_line),
+        )),
         |(info1, opt_board, info2, side_to_move)| {
             let info = InformationData::merged(info1, info2);
             let initial = if let Some(board) = opt_board {
