@@ -52,7 +52,7 @@ fn write_move_kind<W: Write>(kind: Kind, sink: &mut W) -> Result {
 /// to whatever `relative` holds instead of refusing to write.
 fn write_moves<W: Write>(
     moves: &[MoveFormat],
-    mut position: Option<shogi_core::PartialPosition>,
+    position: Option<shogi_core::PartialPosition>,
     sink: &mut W,
 ) -> Result {
     if let Some(comments) = &moves[0].comments {
@@ -64,14 +64,57 @@ fn write_moves<W: Write>(
             sink.write_char('\n')?;
         }
     }
+    // The main line, then one `変化：N手` block per branch.
+    //
+    // The order is load-bearing. A reader has only the ply number to go on, so
+    // a block is understood against the most recent block that starts earlier —
+    // which means a branch leaving ply 6 has to be written *before* one leaving
+    // ply 5, or the ply-6 block reads as a continuation of the ply-5 one.
+    // Taking blocks off the end gives that, and pushing each node's branches in
+    // reverse keeps siblings in their original order.
+    let mut stack = Vec::new();
+    write_line(&moves[1..], 1, position.clone(), &mut stack, sink)?;
+    while let Some((start_ply, branch)) = stack.pop() {
+        sink.write_fmt(format_args!("\n変化：{start_ply}手\n"))?;
+        let at = position
+            .clone()
+            .and_then(|pos| replay(&moves[1..], start_ply, pos));
+        write_line(branch, start_ply, at, &mut stack, sink)?;
+    }
+    Ok(())
+}
+
+/// Replays the main line up to just before `start_ply`.
+///
+/// Returns `None` once a move cannot be applied, which leaves the branch
+/// without a position and falls back to `relative`.
+fn replay(
+    moves: &[MoveFormat],
+    start_ply: usize,
+    mut pos: shogi_core::PartialPosition,
+) -> Option<shogi_core::PartialPosition> {
+    for mf in moves.iter().take(start_ply.checked_sub(1)?) {
+        let mv = shogi_core::Move::try_from(mf.move_.as_ref()?).ok()?;
+        pos.make_move(mv)?;
+    }
+    Some(pos)
+}
+
+/// Writes one run of moves — the main line or one branch — and queues any
+/// branches that depart from it.
+fn write_line<'a, W: Write>(
+    moves: &'a [MoveFormat],
+    first_ply: usize,
+    mut position: Option<shogi_core::PartialPosition>,
+    stack: &mut Vec<(usize, &'a [MoveFormat])>,
+    sink: &mut W,
+) -> Result {
     // Tracks whether the next write starts a line, so the end-of-game line does
     // not get appended to the run of moves.
     let mut at_line_start = true;
-    let mut it = moves[1..].iter().enumerate().peekable();
+    let mut it = moves.iter().enumerate().peekable();
     while let Some((index, mf)) = it.next() {
-        // `moves[0]` holds the initial comments, so the move at `moves[i]` is
-        // ply `i`.
-        let ply = index + 1;
+        let ply = first_ply + index;
         if let Some(mv) = &mf.move_ {
             match mv.color {
                 Color::Black => sink.write_char('▲')?,
@@ -146,8 +189,15 @@ fn write_moves<W: Write>(
                 sink.write_char('\n')?;
             }
             at_line_start = true;
-        } else if it.peek().is_some() {
+        } else if it.peek().is_some_and(|(_, next)| next.move_.is_some()) {
+            // Only between moves. The outcome starts its own line, so a
+            // separator here would be trailing whitespace.
             sink.write_char(' ')?;
+        }
+        if let Some(forks) = &mf.forks {
+            for fork in forks.iter().rev() {
+                stack.push((ply, fork.as_slice()));
+            }
         }
     }
     sink.write_char('\n')?;
@@ -261,6 +311,64 @@ mod tests {
                 "round trip for {word}"
             );
         }
+    }
+
+    // Branches used to be dropped entirely: saving a study as `.ki2` kept the
+    // main line and threw the rest away, with no error. The block order matters
+    // as much as the blocks — a reader has only the ply number to work from.
+    #[test]
+    fn branches_survive_a_ki2_round_trip() {
+        fn shape(moves: &[MoveFormat], first_ply: usize) -> String {
+            moves
+                .iter()
+                .enumerate()
+                .map(|(i, mf)| {
+                    let ply = first_ply + i;
+                    let head = mf
+                        .move_
+                        .map(|mv| format!("{ply}:{}{}", mv.to.x, mv.to.y))
+                        .unwrap_or_else(|| format!("{ply}:{:?}", mf.special));
+                    match &mf.forks {
+                        Some(forks) => {
+                            let inner: Vec<_> = forks.iter().map(|f| shape(f, ply)).collect();
+                            format!("{head}[{}]", inner.join("|"))
+                        }
+                        None => head,
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+
+        // Two branches leaving ply 2 and one leaving ply 3, so both the sibling
+        // order and the deeper-ply-first rule are exercised. The blocks are in
+        // the order KIF itself uses: deepest departure first.
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77)
+   2 ３四歩(33)
+   3 ２六歩(27)
+   4 投了
+
+変化：3手
+   3 ７八金(69)
+
+変化：2手
+   2 ８四歩(83)
+   3 ２六歩(27)
+
+変化：2手
+   2 ４四歩(43)
+";
+        let jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        let ki2 = jkf.to_ki2_owned();
+        assert_eq!(
+            3,
+            ki2.lines().filter(|l| l.starts_with("変化：")).count(),
+            "every branch gets a block: {ki2:?}"
+        );
+        let back = crate::parser::parse_ki2_str(&ki2).expect("reads back");
+        assert_eq!(shape(&jkf.moves[1..], 1), shape(&back.moves[1..], 1));
     }
 
     #[test]
