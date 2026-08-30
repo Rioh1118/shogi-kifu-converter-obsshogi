@@ -369,6 +369,50 @@ mod tests {
         }
     }
 
+    // GAP-017: the ply an outcome line names counts moves and outcomes, not
+    // nodes — a comment-only node writes no line for anyone to number. Counting
+    // nodes instead shifts the outcome one ply on, and the side to move with
+    // it: a bare `反則勝ち` names its winner only through whose turn it is
+    // (D5), so the record comes back accusing the other player.
+    //
+    // A comment-only node is a shape the KI2 *writer* produces for a JKF node
+    // carrying only comments, and a `変化：` block can open with one — which is
+    // where the reader meets it, since a comment after a move attaches to that
+    // move instead. So the round trip is what exercises the count.
+    #[test]
+    fn a_comment_only_node_does_not_shift_the_outcome_ply() {
+        use crate::converter::ToKi2;
+        use crate::parser::parse_ki2_str;
+        const KI2: &str = "手合割：平手
+▲７六歩 △３四歩
+まで2手で中断
+
+変化：2手
+*このあとは
+△８四歩
+まで2手で反則勝ち
+";
+        let jkf = parse_ki2_str(KI2).expect("parses");
+        let branch = &jkf.moves[2].forks.as_ref().expect("a branch at ply 2")[0];
+        assert_eq!(3, branch.len(), "comment node, move, outcome: {branch:?}");
+        assert_eq!(
+            Some(vec![String::from("このあとは")]),
+            branch[0].comments,
+            "the branch opens with a node that is only a comment"
+        );
+        // Ply 2 is the branch's move, so the outcome takes ply 3 — Black's.
+        // R-CSA-007: `+ILLEGAL_ACTION` is Black fouling, so White wins.
+        assert_eq!(
+            Some(MoveSpecial::SpecialIllegalActionWhite),
+            branch[2].special
+        );
+
+        // And again through the writer, which is where the shape comes from.
+        let written = jkf.try_to_ki2_owned().expect("writes KI2");
+        let back = parse_ki2_str(&written).expect("reads back");
+        assert_eq!(jkf, back, "{written:?}");
+    }
+
     #[test]
     fn parse_empty() {
         assert_eq!(
