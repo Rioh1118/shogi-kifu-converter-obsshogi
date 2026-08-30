@@ -202,7 +202,7 @@ mod tests {
         use crate::jkf::{Color, Initial, Kind, MoveMoveFormat, PlaceFormat, Preset};
 
         // Two moves, so the outcome sits at ply 3 with Black to move.
-        const TABLE: [Row; 14] = [
+        const TABLE: [Row; 16] = [
             Row {
                 special: SpecialToryo,
                 kif_word: "投了",
@@ -330,6 +330,28 @@ mod tests {
                 after_kif: SpecialFuzumi,
                 after_ki2: SpecialFuzumi,
                 after_csa: Some(SpecialFuzumi),
+            },
+            // R-KIF-007 has these two; JKF's fourteen and CSA's keyword list
+            // (R-CSA-007) do not. They survive KIF and KI2 and lose their
+            // meaning in CSA, which is D11's trade — the same one D7 made for
+            // the three that go the other way.
+            Row {
+                special: SpecialFusensho,
+                kif_word: "不戦勝",
+                csa_word: "%CHUDAN",
+                ki2_phrase: "不戦勝",
+                after_kif: SpecialFusensho,
+                after_ki2: SpecialFusensho,
+                after_csa: Some(SpecialChudan),
+            },
+            Row {
+                special: SpecialFusenpai,
+                kif_word: "不戦敗",
+                csa_word: "%CHUDAN",
+                ki2_phrase: "不戦敗",
+                after_kif: SpecialFusenpai,
+                after_ki2: SpecialFusenpai,
+                after_csa: Some(SpecialChudan),
             },
             Row {
                 special: SpecialError,

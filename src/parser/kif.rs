@@ -38,11 +38,13 @@ fn move_from(input: &str) -> IResult<&str, Option<PlaceFormat>, VerboseError<&st
 
 /// The KIF outcome words, longest first so that a word is never cut short by a
 /// prefix of itself. [`MoveSpecial::from_kif_word`] holds the mapping.
-const KIF_SPECIAL_WORDS: [&str; 10] = [
+const KIF_SPECIAL_WORDS: [&str; 12] = [
     "切れ負け",
     "入玉勝ち",
     "反則負け",
     "反則勝ち",
+    "不戦勝",
+    "不戦敗",
     "千日手",
     "持将棋",
     "投了",
@@ -467,7 +469,15 @@ mod tests {
     }
 
     // R-KIF-007. Every word KIF defines for an outcome, and what it means here.
-    // 不戦勝 / 不戦敗 are the two the JKF vocabulary cannot express.
+    //
+    // 不戦勝 / 不戦敗 have no counterpart among JKF's fourteen, so this crate
+    // extends the enum for them (D1). Reading them as nothing was the worse
+    // answer once the reader stopped truncating in silence: they are spec
+    // vocabulary, so a valid KIF using one made the whole file an error.
+    //
+    // Both are defined against Black (the upper hand) outright, not against
+    // whoever is to move — unlike 反則勝ち in the same table — so the ply does
+    // not change what they mean.
     #[test]
     fn kif_outcome_words() {
         // Ply 2, so it is White to move and 反則勝ち accuses Black.
@@ -482,8 +492,8 @@ mod tests {
             ("入玉勝ち", Some(MoveSpecial::SpecialKachi)),
             ("詰み", Some(MoveSpecial::SpecialTsumi)),
             ("不詰", Some(MoveSpecial::SpecialFuzumi)),
-            ("不戦勝", None),
-            ("不戦敗", None),
+            ("不戦勝", Some(MoveSpecial::SpecialFusensho)),
+            ("不戦敗", Some(MoveSpecial::SpecialFusenpai)),
         ] {
             let line = format!("   2 {word}\n");
             let got = move_line(Color::Black, None, &line)
