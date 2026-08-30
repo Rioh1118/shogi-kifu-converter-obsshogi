@@ -1,6 +1,7 @@
 use crate::error::NormalizeError;
 use crate::jkf::*;
 use shogi_core::{LegalityChecker, PartialPosition};
+use shogi_legality_lite::prelegality::is_valid;
 use shogi_legality_lite::LiteLegalityChecker;
 use shogi_official_kifu::display_single_move_kansuji;
 
@@ -581,7 +582,13 @@ fn normalize_move(
 /// This is the only place that maps a rendered move back to [`Relative`].
 /// Keeping a second copy is what let the promotion bug live in one caller and
 /// not the other.
+///
+/// Rendering is skipped for moves that cannot carry a suffix; see
+/// [`needs_disambiguation`].
 fn infer_relative_from_position(pos: &PartialPosition, mv: shogi_core::Move) -> Option<Relative> {
+    if !needs_disambiguation(pos, mv) {
+        return None;
+    }
     let mut display = display_single_move_kansuji(pos, mv)?;
     // `不成` has to be tested first: it also ends with `成`.
     let cut = if let Some(rest) = display.strip_suffix("不成") {
@@ -607,6 +614,55 @@ fn infer_relative_from_position(pos: &PartialPosition, mv: shogi_core::Move) -> 
         (Some('寄'), _) => Some(Relative::M),
         (Some('打'), _) => Some(Relative::H),
         _ => None,
+    }
+}
+
+/// Whether the traditional notation for `mv` can carry a disambiguating suffix
+/// at all.
+///
+/// `shogi_official_kifu` decides this from the set of squares holding the same
+/// piece that could reach the destination: a normal move gets no suffix unless
+/// that set has two or more members, and a drop gets `打` only when a board
+/// piece could have gone there instead. Answering the question here first is
+/// worth the duplication because that crate reaches the answer by enumerating
+/// every legal move in the position — about 15,000 candidates — for each single
+/// move, while this scan only touches squares that already hold the right piece.
+///
+/// Uses the same prelegality check the renderer uses. A legality check that
+/// also rejects pinned pieces would disagree on a small number of positions and
+/// silently change the notation.
+fn needs_disambiguation(pos: &PartialPosition, mv: shogi_core::Move) -> bool {
+    use shogi_core::{Move, Square};
+
+    let can_reach = |from: Square, to: Square| {
+        [false, true]
+            .into_iter()
+            .any(|promote| is_valid(pos, Move::Normal { from, to, promote }))
+    };
+    match mv {
+        Move::Normal { from, to, .. } => {
+            let piece = match pos.piece_at(from) {
+                Some(piece) => piece,
+                None => return false,
+            };
+            let mut found = 0;
+            for square in Square::all() {
+                if pos.piece_at(square) == Some(piece) && can_reach(square, to) {
+                    found += 1;
+                    if found >= 2 {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        // A drop is written `打` exactly when the same piece could have been
+        // moved to that square instead.
+        Move::Drop { to, piece } => {
+            let on_board = shogi_core::Piece::new(piece.piece_kind(), pos.side_to_move());
+            Square::all()
+                .any(|square| pos.piece_at(square) == Some(on_board) && can_reach(square, to))
+        }
     }
 }
 
