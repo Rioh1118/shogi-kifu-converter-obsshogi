@@ -1,0 +1,7 @@
+# `lib.rs` denies panic-producing constructs, but those lints only see this
+# crate. A default method on a trait from another crate carries its body — and
+# its `debug_assert!` — into every call site here, out of their reach. Naming
+# the method is the only way to stop it.
+disallowed-methods = [
+  { path = "shogi_core::ToUsi::to_usi_owned", reason = "debug_assert!s that the write succeeded: panics under debug_assertions, returns an empty string without them. Use JsonKifuFormat::try_to_usi_owned." },
+]
