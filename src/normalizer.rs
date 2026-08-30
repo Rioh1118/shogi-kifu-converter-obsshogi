@@ -588,12 +588,19 @@ fn normalize_moves(
     correct_color: bool,
     infer_relative: bool,
 ) -> Result<(), NormalizeError> {
+    // Whether an outcome has been passed, and whether the board is still known.
+    let (mut resumed, mut position_known) = (false, true);
     for mf in moves {
-        // Normalize forks (errors in forks are non-fatal; skip invalid ones)
+        // A branch that cannot be normalized is still a branch. A kifu recording
+        // an illegal move is valid input (R-RULE-002), and dropping the branch
+        // here returns `Ok` with the record one line shorter — the caller saves
+        // it back and the variation is gone from the file for good.
+        //
+        // `populate_relative_moves` keeps them for the same reason.
         if let Some(forks) = &mut mf.forks {
-            forks.retain_mut(|v| {
-                normalize_moves(v, pos.clone(), totals, correct_color, infer_relative).is_ok()
-            });
+            for fork in forks.iter_mut() {
+                let _ = normalize_moves(fork, pos.clone(), totals, correct_color, infer_relative);
+            }
         }
         // Calculate total time
         if let Some(time) = &mut mf.time {
@@ -606,11 +613,21 @@ fn normalize_moves(
         // resumed, and a comment can sit between two moves. Stopping here left
         // every later move with its parsed color, its `from` unresolved and its
         // branches unnormalized.
-        if let Some(mmf) = &mut mf.move_ {
-            let mv = normalize_move(mmf, &pos, correct_color, infer_relative)?;
-            if pos.make_move(mv).is_none() {
-                return Err(NormalizeError::MakeMoveFailed(mv));
-            }
+        let Some(mmf) = &mut mf.move_ else {
+            // What follows a resumption need not continue the position before
+            // it, so a move that will not apply there is not a broken record
+            // (R-RULE-002) — the board is just no longer ours to track.
+            resumed |= mf.special.is_some();
+            continue;
+        };
+        if !position_known {
+            continue;
+        }
+        match normalize_move(mmf, &pos, correct_color, infer_relative) {
+            Ok(mv) if pos.make_move(mv).is_some() => {}
+            _ if resumed => position_known = false,
+            Ok(mv) => return Err(NormalizeError::MakeMoveFailed(mv)),
+            Err(err) => return Err(err),
         }
     }
     Ok(())
@@ -646,6 +663,49 @@ fn populate_relative_moves(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A branch whose moves cannot be replayed is still a branch. Dropping it
+    // returns `Ok` with the record one variation shorter, and the next save
+    // writes the shortened record over the original — the loss is permanent and
+    // nothing ever said so. Kifu holding illegal moves are valid input
+    // (R-RULE-002).
+    //
+    // The moves after `中断` here do not continue the position before it, which
+    // is what a resumed game looks like.
+    #[test]
+    fn a_branch_that_cannot_be_replayed_is_kept() {
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77)
+   2 ３四歩(33)
+   3 ２六歩(27)
+   4 ８四歩(83)
+
+変化：2手
+   2 ８四歩(83)
+   3 中断
+   4 ９九角(88)
+";
+        let jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        let forks = jkf.moves[2].forks.as_ref().expect("a branch at ply 2");
+        assert_eq!(1, forks.len(), "the branch survives normalization");
+        assert_eq!(3, forks[0].len(), "and keeps all three of its nodes");
+    }
+
+    // Same shape on the main line: a game that resumed after `中断` and went on
+    // from somewhere else. Refusing the whole record would take a readable kifu
+    // out of the consumer's index entirely.
+    #[test]
+    fn a_resumed_game_that_diverges_is_still_readable() {
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77)
+   2 中断
+   3 ９九角(88)
+";
+        let jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        assert_eq!(4, jkf.moves.len(), "every node is kept: {:?}", jkf.moves);
+    }
 
     // JKF says a move is a drop by leaving `from` out (R-JKF-003). Reading that
     // as "the origin is missing, look it up" turns the drop into whichever board
