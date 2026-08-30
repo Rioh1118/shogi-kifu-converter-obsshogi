@@ -284,11 +284,19 @@ fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Ver
     loop {
         let (rest, _) = many0(not_move_line)(input)?;
         match moves_with_index(start, rest) {
-            Ok((rest, run)) => {
+            Ok((after_run, run)) => {
                 forks.push(run);
-                input = rest;
+                input = after_run;
             }
-            Err(nom::Err::Error(_)) => break,
+            // The lines just skipped are accounted for even though no run
+            // followed them. A record trails off into prose — `まで<N>手で…`,
+            // a comment block — and the run parser already swallows one such
+            // line, so stopping here would accept one trailing line and call
+            // the second one unreadable input (D1). Skip them the same way.
+            Err(nom::Err::Error(_)) => {
+                input = rest;
+                break;
+            }
             Err(err) => return Err(err),
         }
     }

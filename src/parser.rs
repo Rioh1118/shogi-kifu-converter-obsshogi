@@ -80,24 +80,26 @@ pub fn parse_kif_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseEr
     }
 }
 
-/// Whether the reader got no move out of `jkf` and left `rest` behind.
+/// The error for input the reader stopped on, with `rest` located in `whole`.
 ///
-/// Every reader here returns an empty record rather than an error for input it
-/// recognised no part of. That is a silent failure on its own, and it becomes a
-/// loud one in the consumer: obs-shogi tries encodings in turn and takes the
-/// first `Ok`, so a mojibake decode that yields an empty record wins over the
-/// decode that would have read the game (D1).
+/// D1: a reader that stops early has to say so. Returning `Ok` with the record
+/// truncated is the worst of the three outcomes — the caller cannot tell it
+/// from a short game, so obs-shogi indexes a fraction of the moves and nobody
+/// finds out (GAP-005: 79% of `bug_big.kif` went missing this way).
 ///
-/// This is narrower than the strictness D1 asks for — a record whose *tail* is
-/// unreadable still comes back truncated (GAP-005) — but it separates "read
-/// nothing" from "read a record that has no moves", which a header-only file
-/// legitimately is.
-fn read_nothing(jkf: &JsonKifuFormat, rest: &str) -> bool {
-    !rest.trim().is_empty()
-        && jkf
-            .moves
-            .iter()
-            .all(|mf| mf.move_.is_none() && mf.special.is_none())
+/// It also decides an encoding: the consumer tries encodings in turn and takes
+/// the first `Ok`, so a mojibake decode that yields an empty record used to win
+/// over the decode that would have read the game.
+fn stopped_at(whole: &str, rest: &str) -> String {
+    convert_error(
+        whole,
+        nom::error::VerboseError {
+            errors: vec![(
+                rest,
+                nom::error::VerboseErrorKind::Context("cannot read this"),
+            )],
+        },
+    )
 }
 
 /// Parses a KIF formatted string to [`jkf::JsonKifuFormat`](crate::jkf::JsonKifuFormat)
@@ -108,13 +110,8 @@ fn read_nothing(jkf: &JsonKifuFormat, rest: &str) -> bool {
 pub fn parse_kif_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
     match kif::parse(s).finish() {
         Ok((rest, mut jkf)) => {
-            if read_nothing(&jkf, rest) {
-                return Err(ParseError::Kif(convert_error(
-                    s,
-                    nom::error::VerboseError {
-                        errors: vec![(rest, nom::error::VerboseErrorKind::Context("no KIF here"))],
-                    },
-                )));
+            if !rest.trim().is_empty() {
+                return Err(ParseError::Kif(stopped_at(s, rest)));
             }
             // KIF moves carry an explicit `from`, so `relative` inference is dead work.
             // Downstream consumers (e.g. KI2 conversion) can opt-in via `populate_relative()`.
@@ -159,13 +156,8 @@ pub fn parse_ki2_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseEr
 pub fn parse_ki2_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
     match ki2::parse(s).finish() {
         Ok((rest, mut jkf)) => {
-            if read_nothing(&jkf, rest) {
-                return Err(ParseError::Ki2(convert_error(
-                    s,
-                    nom::error::VerboseError {
-                        errors: vec![(rest, nom::error::VerboseErrorKind::Context("no KI2 here"))],
-                    },
-                )));
+            if !rest.trim().is_empty() {
+                return Err(ParseError::Ki2(stopped_at(s, rest)));
             }
             jkf.normalize_with_color_correction(true)?;
             Ok(jkf)
@@ -277,6 +269,81 @@ mod tests {
                 [Color::White, Color::Black],
                 [1, 2].map(|i| jkf.moves[i].move_.expect("a move").color),
                 "numbered from {numbered_from}"
+            );
+        }
+    }
+
+    // D1: a reader that stops early has to say so. Returning `Ok` with the
+    // record truncated is the worst of the three outcomes — the caller cannot
+    // tell it from a short game. `bug_big.kif` lost 79% of its moves this way
+    // and reported success (GAP-005).
+    //
+    // The word that stopped the reader is the one thing it cannot recover, so
+    // the error has to carry it and point at its own line.
+    #[test]
+    fn a_record_the_reader_stops_in_the_middle_of_is_an_error() {
+        const HEAD: &str = "手合割：平手\n手数----指手---------消費時間--\n";
+        for (tail, line, word) in [
+            // `パス` is a real token in files written by analysis software, and
+            // it is not in R-KIF-007's vocabulary. JKF has no `MoveSpecial` that
+            // means "the turn passes" and neither does tsshogi's JKF, so there
+            // is nothing to read it into — D8.
+            ("   1 ７六歩(77)\n   2 パス\n   3 ２六歩(27)\n", 4, "パス"),
+            // A KI2 move line in a KIF. tsshogi rejects this too.
+            ("   1 ７六歩(77)\n▲２六歩\n   2 ３四歩(33)\n", 4, "▲２六歩"),
+            // A numbered line whose word is nothing the format has.
+            ("   1 ７六歩(77)\n   2 ほげ\n", 4, "ほげ"),
+        ] {
+            let err =
+                parse_kif_str(&format!("{HEAD}{tail}")).expect_err("{word} should stop the reader");
+            let text = err.to_string();
+            assert!(text.contains(word), "{word} is missing from {text:?}");
+            assert!(
+                text.contains(&format!("at line {line}")),
+                "{word} should point at line {line}: {text:?}"
+            );
+        }
+    }
+
+    // The other side of the same check: the lines a record legitimately ends
+    // with are accounted for, so a whole file does not come back as an error.
+    // `まで<N>手で<結末>` is one of them, and it need not have a newline after it.
+    #[test]
+    fn the_lines_a_record_ends_with_are_not_leftover_input() {
+        const RECORD: &str =
+            "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n   2 ３四歩(33)\n";
+        for tail in [
+            "",
+            "まで2手で中断\n",
+            "まで2手で中断",
+            "\n\n",
+            "変化：2\n   2 ８四歩(83)\n",
+            // More than one trailing line. The run parser already swallows the
+            // first, so stopping there would accept one and call the second
+            // unreadable.
+            "まで2手で中断\n感想：良い将棋\n",
+            "解説A\n解説B\n",
+        ] {
+            let jkf = parse_kif_str(&format!("{RECORD}{tail}"))
+                .unwrap_or_else(|e| panic!("{tail:?} was rejected: {e}"));
+            assert_eq!(2, jkf.moves.len() - 1, "{tail:?}");
+        }
+    }
+
+    // KI2 reads a whole line at a time, so a line it cannot spell out is the
+    // same silent truncation in a different shape.
+    #[test]
+    fn a_ki2_record_the_reader_stops_in_the_middle_of_is_an_error() {
+        for (src, word) in [
+            ("手合割：平手\n▲７六歩 ほげ △３四歩\n", "ほげ"),
+            ("手合割：平手\n▲７六歩 △３四歩\nほげほげ\n", "ほげほげ"),
+            // A KIF move line in a KI2.
+            ("手合割：平手\n▲７六歩\n   2 ３四歩(33)\n", "３四歩(33)"),
+        ] {
+            let err = parse_ki2_str(src).expect_err("{word} should stop the reader");
+            assert!(
+                err.to_string().contains(word),
+                "{word} is missing from {err}"
             );
         }
     }
