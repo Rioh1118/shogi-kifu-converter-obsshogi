@@ -83,6 +83,26 @@ pub fn parse_kif_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseEr
     }
 }
 
+/// Whether the reader got no move out of `jkf` and left `rest` behind.
+///
+/// Every reader here returns an empty record rather than an error for input it
+/// recognised no part of. That is a silent failure on its own, and it becomes a
+/// loud one in the consumer: obs-shogi tries encodings in turn and takes the
+/// first `Ok`, so a mojibake decode that yields an empty record wins over the
+/// decode that would have read the game (D1).
+///
+/// This is narrower than the strictness D1 asks for — a record whose *tail* is
+/// unreadable still comes back truncated (GAP-005) — but it separates "read
+/// nothing" from "read a record that has no moves", which a header-only file
+/// legitimately is.
+fn read_nothing(jkf: &JsonKifuFormat, rest: &str) -> bool {
+    !rest.trim().is_empty()
+        && jkf
+            .moves
+            .iter()
+            .all(|mf| mf.move_.is_none() && mf.special.is_none())
+}
+
 /// Parses a KIF formatted string to [`jkf::JsonKifuFormat`](crate::jkf::JsonKifuFormat)
 ///
 /// # Errors
@@ -90,7 +110,15 @@ pub fn parse_kif_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseEr
 /// This function returns [`ConvertError`](crate::error::ConvertError) if it fails to parse the string.
 pub fn parse_kif_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
     match kif::parse(s).finish() {
-        Ok((_, mut jkf)) => {
+        Ok((rest, mut jkf)) => {
+            if read_nothing(&jkf, rest) {
+                return Err(ParseError::Kif(convert_error(
+                    s,
+                    nom::error::VerboseError {
+                        errors: vec![(rest, nom::error::VerboseErrorKind::Context("no KIF here"))],
+                    },
+                )));
+            }
             // KIF moves carry an explicit `from`, so `relative` inference is dead work.
             // Downstream consumers (e.g. KI2 conversion) can opt-in via `populate_relative()`.
             if let Err(err) = jkf.normalize_with_options(true, false) {
@@ -136,7 +164,15 @@ pub fn parse_ki2_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseEr
 /// This function returns [`ConvertError`](crate::error::ConvertError) if it fails to parse the string.
 pub fn parse_ki2_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
     match ki2::parse(s).finish() {
-        Ok((_, mut jkf)) => {
+        Ok((rest, mut jkf)) => {
+            if read_nothing(&jkf, rest) {
+                return Err(ParseError::Ki2(convert_error(
+                    s,
+                    nom::error::VerboseError {
+                        errors: vec![(rest, nom::error::VerboseErrorKind::Context("no KI2 here"))],
+                    },
+                )));
+            }
             if let Err(err) = jkf.normalize_with_color_correction(true) {
                 Err(ParseError::Normalize(err.to_string()))
             } else {

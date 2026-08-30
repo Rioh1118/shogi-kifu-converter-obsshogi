@@ -1,4 +1,4 @@
-use crate::error::NormalizeError;
+use crate::error::{ConvertError, NormalizeError};
 use crate::jkf::*;
 use shogi_core::PartialPosition;
 use shogi_legality_lite::prelegality::is_valid;
@@ -447,7 +447,15 @@ fn normalize_move(
             // Set capture?
             mmf.capture = pos.piece_at(to).map(|p| pk2k(p.piece_kind()));
         } else {
-            mmf.from = None;
+            // An origin off the board is a coordinate we could not read, not a
+            // statement that the piece came from the hand. JKF says a drop by
+            // leaving `from` out (R-JKF-003), and turning one into the other
+            // loses the square for good — the writers reject the same value
+            // rather than spell `(00)`, which KIF has no meaning for
+            // (R-KIF-005).
+            return Err(NormalizeError::Convert(
+                ConvertError::InvalidSquare((pf.x, pf.y)).to_string(),
+            ));
         }
     }
     let mv = match shogi_core::Move::try_from(&*mmf) {
@@ -1066,6 +1074,47 @@ mod tests {
         let forks = jkf.moves[2].forks.as_ref().expect("a branch at ply 2");
         assert_eq!(1, forks.len(), "the branch survives normalization");
         assert_eq!(3, forks[0].len(), "and keeps all three of its nodes");
+    }
+
+    // JKF says a drop by leaving `from` out (R-JKF-003), so an origin that is
+    // not a square on the board cannot be quietly turned into one — the square
+    // is lost and the record comes back saying the piece came from the hand.
+    // `(00)` is CSA's spelling for a drop, so it is a shape a converter written
+    // by someone else really does produce.
+    #[test]
+    fn an_origin_off_the_board_is_an_error_not_a_drop() {
+        for origin in ["(00)", "(10)", "(09)"] {
+            let kif =
+                format!("手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩{origin}\n");
+            assert!(
+                crate::parser::parse_kif_str(&kif).is_err(),
+                "{origin} was accepted"
+            );
+        }
+    }
+
+    // R-KIF-008: the move's own time is 分:秒, and the minutes have no stated
+    // limit. An hour has to fold into them — writing only `time.now.m` drops it
+    // and leaves the file disagreeing with its own running total.
+    #[test]
+    fn an_hour_of_thinking_survives_a_kif_round_trip() {
+        use crate::converter::ToKif;
+        let csa = "V2.2\nPI\n+\n+7776FU\nT3723\n";
+        let jkf = crate::parser::parse_csa_str(csa).expect("parses CSA");
+        assert_eq!(
+            Some(1),
+            jkf.moves[1].time.expect("a time").now.h,
+            "3723 seconds is an hour and change"
+        );
+        let kif = jkf.try_to_kif_owned().expect("writes KIF");
+        assert!(kif.contains("(62:03/01:02:03)"), "{kif:?}");
+        let back = crate::parser::parse_kif_str(&kif).expect("reads back");
+        let now = back.moves[1].time.expect("a time").now;
+        assert_eq!(
+            3723,
+            u32::from(now.h.unwrap_or_default()) * 3600 + u32::from(now.m) * 60 + u32::from(now.s),
+            "the seconds spent on the move"
+        );
     }
 
     // A move the board turns out not to explain keeps whatever it said. The

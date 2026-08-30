@@ -129,9 +129,16 @@ fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) 
         if has_line {
             if let Some(time) = mf.time {
                 (0..13usize.saturating_sub(offset)).try_for_each(|_| sink.write_char(' '))?;
+                // R-KIF-008 spells the move's own time as 分:秒 with no stated
+                // limit on the minutes, so an hour folds into them. Writing
+                // `time.now.m` alone drops it, and the file then disagrees with
+                // its own running total: CSA's `T3723` came out as
+                // `( 2:03/01:02:03)`.
+                let minutes =
+                    u32::from(time.now.h.unwrap_or_default()) * 60 + u32::from(time.now.m);
                 sink.write_fmt(format_args!(
                     "({:2}:{:02}/{:02}:{:02}:{:02})",
-                    time.now.m,
+                    minutes,
                     time.now.s,
                     time.total.h.unwrap_or_default(),
                     time.total.m,

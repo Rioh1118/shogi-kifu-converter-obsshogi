@@ -14,15 +14,22 @@ fn move_from(input: &str) -> IResult<&str, Option<PlaceFormat>, VerboseError<&st
         // A drop has no origin, and JKF says so by leaving `from` out
         // (R-JKF-003). KIF marks it with 打 on every drop (R-KIF-006).
         value(None, tag("打")),
-        map(
-            delimited(tag("("), map_res(digit1, str::parse), tag(")")),
-            |d: u8| {
-                Some(PlaceFormat {
-                    x: d / 10,
-                    y: d % 10,
-                })
-            },
-        ),
+        move |input| {
+            let (rest, d): (&str, u8) =
+                delimited(tag("("), map_res(digit1, str::parse), tag(")"))(input)?;
+            let (x, y) = (d / 10, d % 10);
+            // R-KIF-005: an origin is `(11)` through `(99)`. `(00)` in
+            // particular is CSA's spelling for a drop and this crate's marker
+            // for an origin the notation does not state — reading it as either
+            // would turn "a square we could not read" into a different move.
+            if !(1..=9).contains(&x) || !(1..=9).contains(&y) {
+                return Err(nom::Err::Failure(VerboseError::from_error_kind(
+                    input,
+                    nom::error::ErrorKind::Verify,
+                )));
+            }
+            Ok((rest, Some(PlaceFormat { x, y })))
+        },
     ))(input)
 }
 
