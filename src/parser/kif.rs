@@ -266,6 +266,30 @@ fn main_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Verbo
 }
 
 fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
+    /// Hangs `fork`, which starts at ply `at`, off `run`, whose first element
+    /// is ply `base`.
+    ///
+    /// A run is the alternative *to* the move at its own ply (R-JKF-004), so
+    /// ply `at` is index `at - base` of `run`. A run numbered past the end of
+    /// `run` is not an alternative to a move that is not there: it is `run`
+    /// carrying on, and that is how tsshogi reads it (D3 rule 4 —
+    /// `research/tables/20-fork-merge.md` T5). Dropping it returned `Ok` with
+    /// those moves gone and said nothing.
+    ///
+    /// A `変化：` number smaller than `base` cannot be placed at all. It stays
+    /// dropped, and the caller's leftover-input check does not see it either —
+    /// `research/90-gaps.md` GAP-018.
+    fn attach(run: &mut Vec<MoveFormat>, base: usize, at: usize, fork: Vec<MoveFormat>) {
+        match at.checked_sub(base).and_then(|k| run.get_mut(k)) {
+            Some(node) => match &mut node.forks {
+                Some(v) => v.push(fork),
+                None => node.forks = Some(vec![fork]),
+            },
+            None if at >= base => run.extend(fork),
+            None => {}
+        }
+    }
+
     fn merge_forks(
         (mut moves, mut forks): (Vec<MoveFormat>, Vec<(usize, Vec<MoveFormat>)>),
     ) -> Vec<MoveFormat> {
@@ -275,26 +299,15 @@ fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Ver
             if let Some((i, last)) = forks.last_mut() {
                 while stack.last().is_some_and(|(j, _)| j > i) {
                     if let Some((j, fork)) = stack.pop() {
-                        // Defend against malformed `変化:` indices (j < i, or out of range).
-                        if let Some(node) = j.checked_sub(*i).and_then(|k| last.get_mut(k)) {
-                            if let Some(v) = &mut node.forks {
-                                v.push(fork);
-                            } else {
-                                node.forks = Some(vec![fork]);
-                            }
-                        }
+                        attach(last, *i, j, fork);
                     }
                 }
             }
         }
+        // The main line opens with the initial position's slot, so its first
+        // element is ply 0 (R-JKF-001).
         while let Some((i, fork)) = stack.pop() {
-            if i < moves.len() {
-                if let Some(v) = &mut moves[i].forks {
-                    v.push(fork);
-                } else {
-                    moves[i].forks = Some(vec![fork]);
-                }
-            }
+            attach(&mut moves, 0, i, fork);
         }
         moves
     }
@@ -861,10 +874,17 @@ mod tests {
         }
     }
 
+    // A run numbered past the end of the run it belongs to is that run carrying
+    // on, not an alternative to a move that is not there (D3 rule 4). Here
+    // 変化:5 is three plies past 変化:2, which holds one move.
+    //
+    // This test used to fix the opposite: that 変化:5 is dropped. Dropping it
+    // returns `Ok` with the moves gone, which is the silent loss this reader is
+    // being taken apart to remove — and tsshogi appends. Indexing straight into
+    // the run is what panicked with `index out of bounds` before `checked_sub`,
+    // so neither the panic nor the silent drop is the answer.
     #[test]
-    fn parse_entire_moves_malformed_fork_index() {
-        // 変化:5 sits inside 変化:2 with offset 3, but 変化:2 only has 1 move.
-        // The pre-`checked_sub` code panicked with `index out of bounds`.
+    fn a_branch_numbered_past_the_end_carries_the_run_on() {
         let input = &r#"
 手数----指手---------消費時間--
    1 ７六歩(77)    (00:00 / 00:00:00)
@@ -876,15 +896,42 @@ mod tests {
 変化：5
    5 投了 ( 0:00/ 0:00:00)
 "#[1..];
-        let ret = entire_moves(Color::Black, input);
-        let (_, moves) = ret.expect("entire_moves should not panic on malformed input");
-        // 変化:2 attaches at index 2; 変化:5 is silently dropped.
+        let (_, moves) = entire_moves(Color::Black, input).expect("parses");
         let forks = moves[2]
             .forks
             .as_ref()
             .expect("変化:2 should attach at index 2");
         assert_eq!(1, forks.len());
-        assert_eq!(1, forks[0].len(), "the inner 変化:5 must NOT be merged in");
+        assert_eq!(
+            2,
+            forks[0].len(),
+            "変化:5 continues 変化:2 rather than vanishing"
+        );
+        assert_eq!(
+            Some(MoveSpecial::SpecialToryo),
+            forks[0][1].special,
+            "and it is the outcome it was"
+        );
+    }
+
+    // The same rule on the main line. A record whose ply numbers jump — which
+    // is what a reader that stopped on a line it could not place produces —
+    // must not lose the moves after the jump.
+    #[test]
+    fn a_branch_numbered_past_the_main_line_carries_it_on() {
+        let input = &r#"
+手数----指手---------消費時間--
+   1 ７六歩(77)    (00:00 / 00:00:00)
+
+変化：9
+   9 ３四歩(33)    (00:00 / 00:00:00)
+"#[1..];
+        let (_, moves) = entire_moves(Color::Black, input).expect("parses");
+        assert_eq!(3, moves.len(), "index 0 plus two moves");
+        assert!(
+            moves.iter().all(|m| m.forks.is_none()),
+            "nothing branched: {moves:?}"
+        );
     }
 
     // R-KIF-002: a blank line and a `#` line may sit anywhere in the move list.
