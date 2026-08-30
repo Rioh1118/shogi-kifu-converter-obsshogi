@@ -936,6 +936,68 @@ mod tests {
         );
     }
 
+    // Every arrangement of gold-like pieces around one square, written and read
+    // back. Enumeration is what found the 直 case above: it is not a shape
+    // anyone thinks to write by hand, and the corpus has none of it.
+    //
+    // Either the notation can name the mover — and then reading has to land on
+    // the same square — or it cannot, and then the write has to fail rather than
+    // produce a record that will not open (R-NOT-004 stage 3, R-KI2-003).
+    #[test]
+    fn every_arrangement_of_golds_round_trips_or_refuses() {
+        use crate::converter::ToKi2;
+        // The squares a Black gold reaches 5八 from.
+        const AROUND: [(usize, usize); 6] = [(5, 7), (4, 8), (6, 8), (4, 9), (6, 9), (5, 9)];
+        let mut spelled = 0;
+        let mut refused = 0;
+        for kind in [Kind::KI, Kind::TO] {
+            for mask in 0u32..(1 << AROUND.len()) {
+                let placed: Vec<_> = AROUND
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| mask & (1 << i) != 0)
+                    .map(|(_, &(x, y))| (x, y, Color::Black, kind))
+                    .collect();
+                if placed.len() < 2 {
+                    continue;
+                }
+                for &(x, y, ..) in &placed {
+                    let jkf = from_board(&placed, &format!("５八{}({x}{y})", kif_word(kind)));
+                    let Ok(ki2) = jkf.try_to_ki2_owned() else {
+                        refused += 1;
+                        continue;
+                    };
+                    spelled += 1;
+                    let back = crate::parser::parse_ki2_str(&ki2).unwrap_or_else(|e| {
+                        panic!("wrote {ki2:?} from {placed:?} and could not read it: {e}")
+                    });
+                    assert_eq!(
+                        Some(PlaceFormat {
+                            x: x as u8,
+                            y: y as u8
+                        }),
+                        back.moves[1].move_.expect("a move").from,
+                        "{ki2:?} from {placed:?}"
+                    );
+                }
+            }
+        }
+        // Gold-like pieces reach a square from at most six others, and 左/直/右
+        // crossed with 上/寄/引 names nine — so every arrangement of them is
+        // spellable. The unspellable case needs a piece that comes from further
+        // away; `a_move_the_notation_cannot_spell_is_not_written` has it.
+        assert_eq!(0, refused, "a gold arrangement could not be spelled");
+        assert!(spelled > 100, "only {spelled} arrangements were exercised");
+    }
+
+    fn kif_word(kind: Kind) -> &'static str {
+        match kind {
+            Kind::KI => "金",
+            Kind::TO => "と",
+            _ => unreachable!("only the kinds this test places"),
+        }
+    }
+
     // R-NOT-004 stage 3: three bishops reaching one square cannot be told apart
     // — the notation has 左 and 右 and nothing else for them. Writing the move
     // bare produces KI2 nothing can read (R-KI2-003), and the record being saved
