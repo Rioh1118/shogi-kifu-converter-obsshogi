@@ -259,10 +259,21 @@ impl JsonKifuFormat {
         }
     }
 
-    /// Fills in `relative` (左/右/上/...) for every move whose `relative` is `None`,
-    /// re-simulating the position from the initial state. Use this after parsing a KIF
-    /// (which skips the inference for speed) when a downstream consumer needs `relative`
-    /// — e.g. KI2 conversion.
+    /// Fills in `relative` (左/右/上/...) for every move whose `relative` is
+    /// `None`, replaying the position from the initial state.
+    ///
+    /// KIF parsing skips the inference — a KIF states the origin, so the suffix
+    /// is dead work on that path (R-REQ-006). Call this when `relative` itself
+    /// is wanted, which is when the record is going out as JKF: `to_ki2` works
+    /// the suffix out from the position and does not read the field (D2).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NormalizeError`] for a move the position before it does not
+    /// explain — but only up to the first outcome. Past one, a record need not
+    /// continue the position before it (R-RULE-002), so the walk stops tracking
+    /// the board and leaves the rest of the record alone. **Whatever the parser
+    /// accepted, this accepts.**
     pub fn populate_relative(&mut self) -> Result<(), NormalizeError> {
         let pos = if let Some(initial) = &self.initial {
             PartialPosition::try_from(initial).map_err(|err| NormalizeError::at(0, err))?
@@ -691,6 +702,57 @@ pub(crate) fn infer_relative_from_position(pos: &PartialPosition, mv: shogi_core
     }
 }
 
+/// Whether a walk over a run of moves still knows the board.
+///
+/// A record carries on past an outcome — a game that was interrupted and
+/// resumed picks up from wherever it left off — so a move that will not apply
+/// to the position before it is not a broken record (R-RULE-002). It is the
+/// point where the walk stops knowing the board, and everything after it has to
+/// be left alone rather than rewritten against a position it never came from.
+/// Before any outcome, the same failure *is* a broken record.
+///
+/// The rule is here rather than inside a walk because every walk over the tree
+/// needs it, and one that grows its own copy grows the same hole:
+/// `populate_relative` had no notion of it and returned `Err` for records the
+/// parser and `normalize` both accept (GAP-016).
+struct Board {
+    after_outcome: bool,
+    known: bool,
+}
+
+impl Board {
+    const fn new() -> Self {
+        Self {
+            after_outcome: false,
+            known: true,
+        }
+    }
+
+    /// Whether the position is still being tracked.
+    const fn is_known(&self) -> bool {
+        self.known
+    }
+
+    /// Notes a node that holds no move. An outcome among them is what makes a
+    /// later unplayable move something other than a broken record.
+    fn saw(&mut self, mf: &MoveFormat) {
+        self.after_outcome |= mf.special.is_some();
+    }
+
+    /// Reports a move the position before it does not explain.
+    ///
+    /// Past an outcome this drops the board and returns `Ok`; before one it is
+    /// the error `err` builds.
+    fn unplayable(&mut self, err: impl FnOnce() -> NormalizeError) -> Result<(), NormalizeError> {
+        if self.after_outcome {
+            self.known = false;
+            Ok(())
+        } else {
+            Err(err())
+        }
+    }
+}
+
 /// Normalizes a run of moves, `first_ply` being the ply `moves[0]` sits at.
 ///
 /// The ply is carried so that an error can say which move it is about: the
@@ -705,8 +767,7 @@ fn normalize_moves(
     correct_color: bool,
     infer_relative: bool,
 ) -> Result<(), NormalizeError> {
-    // Whether an outcome has gone by, and whether the board is still known.
-    let (mut after_outcome, mut position_known) = (false, true);
+    let mut board = Board::new();
     for (offset, mf) in moves.iter_mut().enumerate() {
         let ply = first_ply + offset;
         // A branch that cannot be normalized is still a branch. A kifu recording
@@ -721,7 +782,7 @@ fn normalize_moves(
         // is nothing to normalize a branch against, and going ahead rewrites its
         // moves against a board they never came from — `correct_color` would
         // give them the wrong side.
-        if position_known {
+        if board.is_known() {
             if let Some(forks) = &mut mf.forks {
                 for fork in forks.iter_mut() {
                     // A branch replaces this node, so its first element sits at
@@ -740,7 +801,7 @@ fn normalize_moves(
         // The running total is per side, so it needs to know whose turn it is.
         // Once the board is gone that is a guess, and a guessed total overwrites
         // a stated one — every later move lands on the same side's clock.
-        if position_known {
+        if board.is_known() {
             if let Some(time) = &mut mf.time {
                 totals[pos.side_to_move().array_index()] =
                     add_timeformat(&totals[pos.side_to_move().array_index()], &time.now);
@@ -753,14 +814,10 @@ fn normalize_moves(
         // leave every later move with its parsed colour, its `from` unresolved
         // and its branches unnormalized.
         let Some(mmf) = &mut mf.move_ else {
-            // What follows an outcome need not continue the position before it
-            // — a game that was interrupted and resumed picks up from wherever
-            // it left off — so a move that will not apply there is not a broken
-            // record (R-RULE-002). The board is just no longer ours to track.
-            after_outcome |= mf.special.is_some();
+            board.saw(mf);
             continue;
         };
-        if !position_known {
+        if !board.is_known() {
             continue;
         }
         // `normalize_move` rewrites the move from the position before it knows
@@ -774,14 +831,9 @@ fn normalize_moves(
         let mut candidate = *mmf;
         match normalize_move(&mut candidate, &pos, correct_color, infer_relative) {
             Ok(mv) if pos.make_move(mv).is_some() => *mmf = candidate,
-            _ if after_outcome => position_known = false,
-            Ok(mv) => {
-                return Err(NormalizeError::at(
-                    ply,
-                    NormalizeErrorKind::MakeMoveFailed(mv),
-                ))
-            }
-            Err(kind) => return Err(NormalizeError::at(ply, kind)),
+            Ok(mv) => board
+                .unplayable(|| NormalizeError::at(ply, NormalizeErrorKind::MakeMoveFailed(mv)))?,
+            Err(kind) => board.unplayable(|| NormalizeError::at(ply, kind))?,
         }
     }
     Ok(())
@@ -793,31 +845,47 @@ fn populate_relative_moves(
     first_ply: usize,
     mut pos: PartialPosition,
 ) -> Result<(), NormalizeError> {
+    let mut board = Board::new();
     for (offset, mf) in moves.iter_mut().enumerate() {
         let ply = first_ply + offset;
-        if let Some(forks) = &mut mf.forks {
-            for v in forks.iter_mut() {
-                // A branch that cannot be replayed is still a branch
-                // (R-RULE-002), the same as in `normalize_moves`. Dropping it
-                // here would lose a variation to fill in a derived field.
-                let _ = populate_relative_moves(v, ply, pos.clone());
+        if board.is_known() {
+            if let Some(forks) = &mut mf.forks {
+                for v in forks.iter_mut() {
+                    // A branch that cannot be replayed is still a branch
+                    // (R-RULE-002), the same as in `normalize_moves`. Dropping
+                    // it here would lose a variation to fill in a derived field.
+                    let _ = populate_relative_moves(v, ply, pos.clone());
+                }
             }
         }
-        if let Some(mmf) = &mut mf.move_ {
-            let mv =
-                shogi_core::Move::try_from(&*mmf).map_err(|err| NormalizeError::at(ply, err))?;
-            if mmf.relative.is_none() {
-                mmf.relative = match infer_relative_from_position(&pos, mv) {
-                    Suffix::Only(relative) => Some(relative),
-                    Suffix::Nothing | Suffix::Unspellable => None,
-                };
+        let Some(mmf) = &mut mf.move_ else {
+            board.saw(mf);
+            continue;
+        };
+        if !board.is_known() {
+            continue;
+        }
+        let mv = match shogi_core::Move::try_from(&*mmf) {
+            Ok(mv) => mv,
+            Err(err) => {
+                board.unplayable(|| NormalizeError::at(ply, err))?;
+                continue;
             }
-            if pos.make_move(mv).is_none() {
-                return Err(NormalizeError::at(
-                    ply,
-                    NormalizeErrorKind::MakeMoveFailed(mv),
-                ));
-            }
+        };
+        // The suffix says which of several pieces made the move, so it is read
+        // off the position *before* it — and written only once that position
+        // turns out to explain the move at all. A suffix taken from a board the
+        // move never came from is a wrong answer written into the record.
+        let suffix = infer_relative_from_position(&pos, mv);
+        if pos.make_move(mv).is_none() {
+            board.unplayable(|| NormalizeError::at(ply, NormalizeErrorKind::MakeMoveFailed(mv)))?;
+            continue;
+        }
+        if mmf.relative.is_none() {
+            mmf.relative = match suffix {
+                Suffix::Only(relative) => Some(relative),
+                Suffix::Nothing | Suffix::Unspellable => None,
+            };
         }
     }
     Ok(())
@@ -1508,6 +1576,112 @@ mod tests {
             let err = crate::parser::parse_jkf_str(&record(mv)).expect_err("{mv} was accepted");
             assert_eq!(want, err.to_string());
         }
+    }
+
+    // GAP-016: `normalize_moves` treats a move that will not apply after an
+    // outcome as the end of what it knows about the board (R-RULE-002), and
+    // `populate_relative_moves` had no such notion — so a record the parser
+    // accepted and `to_ki2` could write came back as `Err` from the one call in
+    // between. The rule belongs to the walk, not to one of the two functions
+    // that do it, or the next walk added grows the same hole.
+    #[test]
+    fn filling_in_relative_accepts_what_normalizing_accepted() {
+        use crate::converter::ToKi2;
+        // The moves after `中断` do not continue the position before it, which
+        // is what a game that was interrupted and resumed looks like.
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77)
+   2 中断
+   3 ９九角(88)
+   4 ８四歩(83)
+";
+        let mut jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        jkf.populate_relative()
+            .expect("what the parser accepted, this has to accept");
+        assert!(
+            jkf.try_to_ki2_owned().is_ok(),
+            "and the writer still writes it"
+        );
+    }
+
+    // Past the point where the board was lost, nothing is filled in. A suffix
+    // says which of several pieces made the move (R-NOT-004), so one read off a
+    // position the move never came from is a wrong answer written into the
+    // record — and `relative` is a field the writers and other tools believe.
+    //
+    // The board here stops at ply 1. Both White golds reach 5三, so a walk that
+    // kept going gives ply 5 a 右 that names a piece nobody moved.
+    #[test]
+    fn no_suffix_is_invented_past_the_lost_board() {
+        let kif = "手合割：その他
+後手の持駒：なし
+  ９ ８ ７ ６ ５ ４ ３ ２ １
++---------------------------+
+| ・ ・ ・ ・v玉 ・ ・ ・ ・|一
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|二
+| ・ ・ ・v金 ・v金 ・ ・ ・|三
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|四
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|五
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|六
+| ・ ・ 歩 ・ ・ ・ ・ ・ ・|七
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|八
+| ・ ・ ・ ・ 玉 ・ ・ ・ ・|九
++---------------------------+
+先手の持駒：なし
+先手番
+手数----指手---------消費時間--
+   1 ７六歩(77)
+   2 中断
+   3 ９九角(88)
+   4 ８八角(99)
+   5 ５三金(63)
+";
+        let mut jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        jkf.populate_relative().expect("fills in what it can");
+        assert_eq!(
+            None,
+            jkf.moves[5].move_.expect("a move").relative,
+            "{:?}",
+            jkf.moves
+        );
+    }
+
+    // The move that loses the board gets no suffix either, which is why the
+    // suffix is read before the move is played but written only after.
+    //
+    // A drop is where the two orders differ. `打` is written when a piece on
+    // the board could have reached the square as well (R-NOT-003), so it is
+    // read off the position — while the drop itself fails, because the hand it
+    // names is empty.
+    #[test]
+    fn no_suffix_is_invented_for_the_move_that_loses_the_board() {
+        let kif = "手合割：その他
+後手の持駒：なし
+  ９ ８ ７ ６ ５ ４ ３ ２ １
++---------------------------+
+| ・ ・ ・ ・v玉 ・ ・ ・ ・|一
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|二
+| ・ ・ ・v金 ・ ・ ・ ・ ・|三
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|四
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|五
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|六
+| ・ ・ 歩 ・ ・ ・ ・ ・ ・|七
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|八
+| ・ ・ ・ ・ 玉 ・ ・ ・ ・|九
++---------------------------+
+先手の持駒：なし
+先手番
+手数----指手---------消費時間--
+   1 ７六歩(77)
+   2 中断
+   3 ５三金打
+";
+        let mut jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        jkf.populate_relative().expect("fills in what it can");
+        let mv = jkf.moves[3].move_.expect("a move");
+        assert_eq!(None, mv.from, "it is a drop (R-JKF-003)");
+        assert_eq!(None, mv.relative, "and no hand held the piece it drops");
     }
 
     // Which move failed is the other half. A caller handed a directory of kifu
