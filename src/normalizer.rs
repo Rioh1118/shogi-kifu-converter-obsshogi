@@ -145,7 +145,7 @@ impl Hand {
 pub(crate) const ORIGIN_UNSTATED: PlaceFormat = PlaceFormat { x: 0, y: 0 };
 
 fn add_timeformat(lhs: &TimeFormat, rhs: &TimeFormat) -> TimeFormat {
-    // Widen before adding: two times that each fit in a `u8` need not.
+    // Widen before adding: two times that each fit in the field need not.
     let total = (lhs.h.unwrap_or_default() as u64 + rhs.h.unwrap_or_default() as u64) * 3600
         + (lhs.m as u64 + rhs.m as u64) * 60
         + (lhs.s as u64 + rhs.s as u64);
@@ -1199,6 +1199,10 @@ mod tests {
     // position to be normalized against either. Normalizing it anyway rewrites
     // its moves — `correct_color` alone flips the side — against a board they
     // never came from.
+    //
+    // The branch has to leave an *odd* ply. The board was lost with White to
+    // move, so at an even ply the stale board and the ply number name the same
+    // side and normalizing the branch anyway makes no visible difference.
     #[test]
     fn a_branch_past_the_lost_board_is_left_alone() {
         let kif = "手合割：平手
@@ -1206,16 +1210,17 @@ mod tests {
    1 ７六歩(77)
    2 中断
    3 ９九角(88)
-   4 ６八銀(69)
+   4 ８四歩(83)
+   5 ２六歩(27)
 
-変化：4手
-   4 ２六歩(27)
+変化：5手
+   5 ４四歩(43)
 ";
         let jkf = crate::parser::parse_kif_str(kif).expect("parses");
-        let fork = &jkf.moves[4].forks.as_ref().expect("a branch")[0];
+        let fork = &jkf.moves[5].forks.as_ref().expect("a branch")[0];
         let mv = fork[0].move_.expect("a move");
-        assert_eq!(Color::White, mv.color, "the side the ply number gave it");
-        assert_eq!(Some(PlaceFormat { x: 2, y: 7 }), mv.from);
+        assert_eq!(Color::Black, mv.color, "the side the ply number gave it");
+        assert_eq!(Some(PlaceFormat { x: 4, y: 3 }), mv.from);
     }
 
     // R-RULE-002: a kifu recording an illegal move is valid input, and

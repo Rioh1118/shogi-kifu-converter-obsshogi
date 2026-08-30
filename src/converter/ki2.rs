@@ -618,6 +618,133 @@ mod tests {
         );
     }
 
+    // The companion to the case above, for the other half of `occupies_a_ply`:
+    // an outcome does take a ply number. `中断` sits mid-list in a game that was
+    // interrupted and resumed, so this is not a tail the writer can stop at —
+    // every `変化：N手` after it is off by one if the node is skipped.
+    #[test]
+    fn a_mid_list_outcome_consumes_a_ply() {
+        let jkf = crate::parser::parse_kif_str(
+            "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77)
+   2 中断
+   3 ３四歩(33)
+   4 ２六歩(27)
+
+変化：4手
+   4 ８四歩(83)
+",
+        )
+        .expect("parses");
+        let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
+        assert!(ki2.contains("変化：4手"), "{ki2:?}");
+        let back = crate::parser::parse_ki2_str(&ki2).expect("reads back");
+        assert_eq!(
+            "1:76 2:Some(SpecialChudan) 3:34 4:26[4:84]",
+            shape(&back.moves[1..], 1),
+            "{ki2:?}"
+        );
+    }
+
+    // What lands on disk, compared with the notation rules rather than with a
+    // round trip.
+    //
+    // A round trip cannot see any of this. `normalize` recomputes `same` and
+    // `promote` from the position, so dropping either from the writer still
+    // reads back identically — and since `41b8583` the reader and the writer
+    // share one suffix rule, so an error in that rule moves both sides the same
+    // way and the round trip stays green.
+    #[test]
+    fn ki2_spells_each_rule_the_way_the_notation_says() {
+        const OTHER: &str = "手合割：その他\n後手の持駒：なし\n  ９ ８ ７ ６ ５ ４ ３ ２ １\n\
++---------------------------+\n";
+        let board = |rows: [&str; 9], hands: &str, side: &str, mv: &str| {
+            format!(
+                "{OTHER}{}+---------------------------+\n先手の持駒：{hands}\n{side}\n\
+手数----指手---------消費時間--\n{mv}",
+                rows.iter()
+                    .zip(["一", "二", "三", "四", "五", "六", "七", "八", "九"])
+                    .map(|(row, rank)| format!("{row}|{rank}\n"))
+                    .collect::<String>()
+            )
+        };
+        const EMPTY: &str = "| ・ ・ ・ ・ ・ ・ ・ ・ ・";
+
+        // R-NOT-002: the same square as the move before it is written 同.
+        let same = "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n   2 ３四歩(33)\n   3 ２二角成(88)\n   4 同　銀(31)\n"
+            .to_owned();
+        // R-NOT-005: a move touching the enemy camp that declines promotion.
+        let unpromoted = board(
+            [
+                "|v玉 ・ ・ ・ ・ ・ ・ ・ ・",
+                EMPTY,
+                "| ・ ・ ・ ・ ・ ・ 銀 ・ ・",
+                EMPTY,
+                EMPTY,
+                EMPTY,
+                EMPTY,
+                EMPTY,
+                "| 玉 ・ ・ ・ ・ ・ ・ ・ ・",
+            ],
+            "なし",
+            "先手番",
+            "   1 ３二銀(33)\n",
+        );
+        // R-NOT-003: no bishop on the board can reach 4五, so no 打.
+        let drop = board(
+            [
+                "|v玉 ・ ・ ・ ・ ・ ・ ・ ・",
+                EMPTY,
+                EMPTY,
+                EMPTY,
+                EMPTY,
+                EMPTY,
+                EMPTY,
+                EMPTY,
+                "| 玉 ・ ・ ・ ・ ・ ・ ・ ・",
+            ],
+            "角",
+            "先手番",
+            "   1 ４五角打\n",
+        );
+        // R-NOT-004 from the other seat. White sits at the top of the diagram,
+        // so its left is the low file (R-HC-002) — the gold on 4一 is 左 and the
+        // one on 6一 is 右, the opposite of what the same squares mean to Black.
+        let gote = board(
+            [
+                "|v玉 ・ ・v金 ・v金 ・ ・ ・",
+                EMPTY,
+                EMPTY,
+                EMPTY,
+                EMPTY,
+                EMPTY,
+                EMPTY,
+                EMPTY,
+                "| 玉 ・ ・ ・ ・ ・ ・ ・ ・",
+            ],
+            "なし",
+            "後手番",
+            "   1 ５二金(41)\n",
+        );
+
+        for (kif, want) in [
+            (&same, "▲７六歩 △３四歩 ▲２二角成 △同銀"),
+            (&unpromoted, "▲３二銀不成"),
+            (&drop, "▲４五角"),
+            (&gote, "△５二金左"),
+        ] {
+            let ki2 = crate::parser::parse_kif_str(kif)
+                .unwrap_or_else(|e| panic!("{kif}\n{e}"))
+                .try_to_ki2_owned()
+                .expect("writes KI2");
+            assert!(
+                ki2.lines().any(|line| line == want),
+                "expected {want:?} in {ki2:?}"
+            );
+        }
+    }
+
     // A branch inside a branch leaves a line the main line never visits, so the
     // position it departs from cannot be recovered by replaying the main line.
     // Spelling it against the main line drops the suffix the reader needs

@@ -199,10 +199,154 @@ pub fn parse_jkf_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
 
 #[cfg(test)]
 mod tests {
+    // `parse_jkf_str` is the entry the consumer's save path feeds (R-REQ-002)
+    // and it had no test at all — GAP-013 was a fault only JKF-in could reach.
+    //
+    // A move with no origin is a drop (R-JKF-003), not a move whose origin has
+    // to be worked out. The position here is built so the difference shows: a
+    // bishop on the board reaches the square the bishop in hand is dropped on,
+    // so looking the origin up succeeds and quietly moves the wrong piece —
+    // taking it off the board and leaving the hand as it was.
+    #[test]
+    fn jkf_keeps_a_drop_a_drop() {
+        let mut board = [[Piece::empty(); 9]; 9];
+        let mut place = |x: usize, y: usize, color, kind| {
+            board[x - 1][y - 1] = Piece {
+                color: Some(color),
+                kind: Some(kind),
+            };
+        };
+        place(5, 1, Color::White, Kind::OU);
+        place(5, 9, Color::Black, Kind::OU);
+        place(8, 8, Color::White, Kind::KA);
+        let mut hands = [Hand::empty(); 2];
+        hands[Color::White as usize].KA = 1;
+        let jkf = JsonKifuFormat {
+            header: Default::default(),
+            initial: Some(Initial {
+                preset: Preset::PresetOther,
+                data: Some(StateFormat {
+                    color: Color::White,
+                    board,
+                    hands,
+                }),
+            }),
+            moves: vec![
+                MoveFormat::default(),
+                MoveFormat {
+                    move_: Some(MoveMoveFormat {
+                        color: Color::White,
+                        from: None,
+                        to: PlaceFormat { x: 5, y: 5 },
+                        piece: Kind::KA,
+                        same: None,
+                        promote: None,
+                        capture: None,
+                        relative: None,
+                    }),
+                    ..Default::default()
+                },
+            ],
+        };
+        let json = serde_json::to_string(&jkf).expect("serializes");
+        let parsed = super::parse_jkf_str(&json).expect("parses");
+        let mv = parsed.moves[1].move_.expect("a move");
+        assert_eq!(None, mv.from, "a drop has no origin to fill in");
+        assert_eq!(Kind::KA, mv.piece);
+        assert_eq!(None, mv.capture, "a drop takes nothing");
+    }
+
+    // R-HC-001: at a handicap the opening move is White's, so a producer that
+    // took the side from the ply number has every colour in the record the wrong
+    // way round. JKF states the colour rather than deriving it, and nothing
+    // later in normalization consults the ply number, so the whole record is
+    // turned over up front on the strength of the first move alone.
+    #[test]
+    fn jkf_turns_over_a_handicap_numbered_from_black() {
+        let record = |color: u8| {
+            format!(
+                r#"{{"header":{{}},"initial":{{"preset":"KY"}},"moves":[{{}},
+                   {{"move":{{"color":{color},"from":{{"x":3,"y":3}},"to":{{"x":3,"y":4}},"piece":"FU"}}}},
+                   {{"move":{{"color":{},"from":{{"x":7,"y":7}},"to":{{"x":7,"y":6}},"piece":"FU"}}}}]}}"#,
+                1 - color
+            )
+        };
+        for numbered_from in [0, 1] {
+            let jkf = super::parse_jkf_str(&record(numbered_from)).expect("parses");
+            assert_eq!(
+                [Color::White, Color::Black],
+                [1, 2].map(|i| jkf.moves[i].move_.expect("a move").color),
+                "numbered from {numbered_from}"
+            );
+        }
+    }
+
     use super::*;
+    use crate::jkf::*;
     use serde_json::Value;
     use std::ffi::OsStr;
     use std::io::Result;
+
+    /// Writes `bytes` to a scratch file named `name` and hands back the path.
+    ///
+    /// The extension is the input here — `parse_kif_file` and `parse_ki2_file`
+    /// pick the encoding from it — so these cases cannot be expressed as strings
+    /// and there is no fixture on disk with the UTF-8 extensions.
+    fn scratch(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join("shogi_kifu_converter_tests");
+        std::fs::create_dir_all(&dir).expect("creates the scratch directory");
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).expect("writes the scratch file");
+        path
+    }
+
+    // `.kifu` and `.ki2u` are the UTF-8 spellings of `.kif` and `.ki2`. Both
+    // readers dispatch on the extension alone, and nothing under `data/tests/`
+    // carries either one, so the whole UTF-8 arm went unrun — as did the
+    // rejection of an extension neither arm claims.
+    #[test]
+    fn the_extension_picks_the_encoding() {
+        const KIF: &str = "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n";
+        const KI2: &str = "手合割：平手\n▲７六歩\n";
+        let sjis = |s: &str| SHIFT_JIS.encode(s).0.into_owned();
+
+        let from_kif = parse_kif_file(scratch("utf8.kifu", KIF.as_bytes())).expect("reads .kifu");
+        assert_eq!(
+            from_kif,
+            parse_kif_file(scratch("sjis.kif", &sjis(KIF))).expect("reads .kif")
+        );
+        let from_ki2 = parse_ki2_file(scratch("utf8.ki2u", KI2.as_bytes())).expect("reads .ki2u");
+        assert_eq!(
+            from_ki2,
+            parse_ki2_file(scratch("sjis.ki2", &sjis(KI2))).expect("reads .ki2")
+        );
+
+        for path in [
+            scratch("kifu.txt", KIF.as_bytes()),
+            scratch("noextension", KIF.as_bytes()),
+        ] {
+            assert!(matches!(
+                parse_kif_file(&path),
+                Err(ParseError::FileExtension)
+            ));
+            assert!(matches!(
+                parse_ki2_file(&path),
+                Err(ParseError::FileExtension)
+            ));
+        }
+    }
+
+    // A `.kif` holding UTF-8 is common enough that the reader falls back rather
+    // than failing. Which fallback carries it matters: the full-width forms a
+    // KIF is written in (`７`, `：`) sit at U+FF00 and up, whose UTF-8 lead byte
+    // is `0xEF`, and no Shift-JIS character starts there — so the *decode*
+    // reports an error and the UTF-8 retry happens before any parsing.
+    #[test]
+    fn a_utf8_file_named_kif_is_still_read() {
+        const KIF: &str = "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n";
+        let mislabelled = parse_kif_file(scratch("utf8.kif", KIF.as_bytes())).expect("reads");
+        assert_eq!(1, mislabelled.moves.len() - 1);
+    }
 
     #[test]
     fn csa_to_jkf() -> Result<()> {

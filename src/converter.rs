@@ -451,6 +451,14 @@ mod tests {
         };
         // The error has to name the move, not just say "failed": the caller is a
         // Tauri command and the user needs to know which move it choked on.
+        // The override matters as much as the error: without it `to_usi_owned`
+        // is `shogi_core`'s default, which `debug_assert!`s the write succeeded
+        // and takes the process down on exactly this input. `clippy.toml` bans
+        // the method for that reason, and this is the one place that has to
+        // call it — the ban is what the assertion is checking.
+        #[allow(clippy::disallowed_methods)]
+        let usi = ToUsi::to_usi_owned(&jkf);
+        assert_eq!("", usi);
         let err = jkf.try_to_usi_owned().expect_err("the move cannot be made");
         assert!(
             err.to_string().contains("5e5d") || err.to_string().contains("Square"),

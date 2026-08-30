@@ -193,8 +193,110 @@ fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::parse_jkf_file;
+    use crate::converter::{ToCsa, ToKi2};
+    use crate::parser::{parse_jkf_file, parse_kif_str};
     use std::path::Path;
+
+    /// A board with only the two kings, `{hands}` in Black's hand, and `{mv}`
+    /// as the single move.
+    fn one_move_kif(hands: &str, extra: &str, mv: &str) -> String {
+        format!(
+            "手合割：その他
+後手の持駒：なし
+  ９ ８ ７ ６ ５ ４ ３ ２ １
++---------------------------+
+|v玉 ・ ・ ・ ・ ・ ・ ・ ・|一
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|二
+| ・ ・ ・ ・ ・ ・{extra} ・ ・|三
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|四
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|五
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|六
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|七
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|八
+| 玉 ・ ・ ・ ・ ・ ・ ・ ・|九
++---------------------------+
+先手の持駒：{hands}
+先手番
+手数----指手---------消費時間--
+   1 {mv}
+"
+        )
+    }
+
+    // R-KIF-006: KIF puts 打 on every drop and never writes 不成 — the exact
+    // opposite of the traditional notation KI2 uses (R-NOT-005). Getting either
+    // backwards produces a line this crate's own reader cannot parse, and the
+    // record comes back with no moves at all.
+    #[test]
+    fn kif_marks_every_drop_and_never_writes_不成() {
+        // A bishop in hand and none on the board: R-NOT-003 would leave 打 off,
+        // R-KIF-006 requires it.
+        let jkf = parse_kif_str(&one_move_kif("角", " ・", "４五角打")).expect("parses");
+        let kif = jkf.try_to_kif_owned().expect("writes KIF");
+        assert!(kif.contains("４五角打"), "{kif:?}");
+        assert_eq!(
+            1,
+            parse_kif_str(&kif).expect("reads back").moves.len() - 1,
+            "the drop survives: {kif:?}"
+        );
+
+        // A silver on 3三 stepping to 3二 without promoting. `normalize` records
+        // `promote: Some(false)`; KIF must not spell it.
+        let jkf = parse_kif_str(&one_move_kif("なし", " 銀", "３二銀(33)")).expect("parses");
+        assert_eq!(
+            Some(false),
+            jkf.moves[1].move_.expect("a move").promote,
+            "the move declines promotion"
+        );
+        let kif = jkf.try_to_kif_owned().expect("writes KIF");
+        assert!(!kif.contains("不成"), "R-KIF-006: {kif:?}");
+        assert_eq!(
+            1,
+            parse_kif_str(&kif).expect("reads back").moves.len() - 1,
+            "the move survives: {kif:?}"
+        );
+        // R-NOT-005 is the other way round, and the same JKF has to show it —
+        // one side alone does not pin the difference between the two formats.
+        assert!(jkf
+            .try_to_ki2_owned()
+            .expect("writes KI2")
+            .contains("▲３二銀不成"));
+    }
+
+    // GAP-015: `(00)` is not a KIF origin (R-KIF-005), and this crate's own
+    // reader takes it back as the marker for an unstated one — so a record
+    // written with it round-trips as a stable corruption. CSA reads the same
+    // digits as the hand (R-CSA-007), turning a board move into a drop.
+    #[test]
+    fn an_origin_off_the_board_is_never_spelled() {
+        let jkf = JsonKifuFormat {
+            initial: Some(Initial {
+                preset: Preset::PresetHirate,
+                data: None,
+            }),
+            moves: vec![
+                MoveFormat::default(),
+                MoveFormat {
+                    move_: Some(MoveMoveFormat {
+                        from: Some(PlaceFormat { x: 0, y: 0 }),
+                        ..pawn(Color::Black, 7, 7, 7, 6).move_.expect("a move")
+                    }),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(
+            jkf.try_to_kif_owned().is_err(),
+            "{:?}",
+            jkf.try_to_kif_owned()
+        );
+        assert!(
+            jkf.try_to_csa_owned().is_err(),
+            "{:?}",
+            jkf.try_to_csa_owned()
+        );
+    }
 
     // JKF lets a node carry comments and nothing else; KIF has no line for one.
     // Counting it as a ply anyway leaves a gap in the move numbers and moves

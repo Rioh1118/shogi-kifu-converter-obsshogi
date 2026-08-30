@@ -264,6 +264,9 @@ mod tests {
             ("▲５四角成", None, Some(true)),
             ("▲５四角右", Some(Relative::R), None),
             ("▲５四角", None, None),
+            // R-NOT-006 / R-KI2-005: the spellings print uses.
+            ("▲５四角行", Some(Relative::U), None),
+            ("▲５四角生", None, Some(false)),
         ] {
             let (rest, mf) = single_move(input).unwrap_or_else(|e| panic!("{input}: {e:?}"));
             assert_eq!("", rest, "unconsumed input for {input}");
