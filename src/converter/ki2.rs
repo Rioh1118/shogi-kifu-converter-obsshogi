@@ -116,11 +116,14 @@ fn write_line<'a, W: Write>(
     stack: &mut Vec<(usize, &'a [MoveFormat], Option<shogi_core::PartialPosition>)>,
     sink: &mut W,
 ) -> Result {
-    // Tracks whether the next write starts a line, so the end-of-game line does
-    // not get appended to the run of moves.
+    // Whether the cursor sits at the beginning of a line. Separators are
+    // written *before* what they separate, because what a move needs in front
+    // of it depends on what came before: a space after another move, nothing
+    // after a line that is already terminated. Writing them afterwards instead
+    // means an outcome line has no way to close itself, and the moves that
+    // follow get swallowed as part of the `まで…` text.
     let mut at_line_start = true;
-    let mut it = moves.iter().enumerate().peekable();
-    while let Some((index, mf)) = it.next() {
+    for (index, mf) in moves.iter().enumerate() {
         let ply = first_ply + index;
         // A branch is the alternative *to* this move (R-JKF-004), so it is
         // spelled against the position before this move is played.
@@ -130,6 +133,9 @@ fn write_line<'a, W: Write>(
             None
         };
         if let Some(mv) = &mf.move_ {
+            if !at_line_start {
+                sink.write_char(' ')?;
+            }
             match mv.color {
                 Color::Black => sink.write_char('▲')?,
                 Color::White => sink.write_char('△')?,
@@ -193,14 +199,16 @@ fn write_line<'a, W: Write>(
                 |pos| pos.side_to_move().into(),
             );
             sink.write_fmt(format_args!(
-                "まで{}手で{}",
+                "まで{}手で{}\n",
                 ply - 1,
                 special.ki2_phrase(side_to_move)
             ))?;
-            at_line_start = false;
+            at_line_start = true;
         }
         if let Some(comments) = &mf.comments {
-            sink.write_char('\n')?;
+            if !at_line_start {
+                sink.write_char('\n')?;
+            }
             for comment in comments {
                 if !comment.starts_with('&') {
                     sink.write_char('*')?;
@@ -209,10 +217,6 @@ fn write_line<'a, W: Write>(
                 sink.write_char('\n')?;
             }
             at_line_start = true;
-        } else if it.peek().is_some_and(|(_, next)| next.move_.is_some()) {
-            // Only between moves. The outcome starts its own line, so a
-            // separator here would be trailing whitespace.
-            sink.write_char(' ')?;
         }
         if let Some(forks) = &mf.forks {
             for fork in forks.iter().rev() {
@@ -220,7 +224,9 @@ fn write_line<'a, W: Write>(
             }
         }
     }
-    sink.write_char('\n')?;
+    if !at_line_start {
+        sink.write_char('\n')?;
+    }
     Ok(())
 }
 
@@ -425,6 +431,29 @@ mod tests {
         assert_eq!(shape(&jkf.moves[1..], 1), shape(&back.moves[1..], 1));
     }
 
+    // A game can be interrupted and resumed, so `中断` shows up in the middle of
+    // a move list. The reader takes the whole line after `まで` as the outcome
+    // phrase, so a run of moves continuing on that line disappears into it.
+    #[test]
+    fn an_outcome_in_the_middle_does_not_swallow_the_moves_after_it() {
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77)
+   2 中断
+   3 ３四歩(33)
+   4 ２六歩(27)
+   5 投了
+";
+        let jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        let ki2 = jkf.to_ki2_owned();
+        let back = crate::parser::parse_ki2_str(&ki2).expect("reads back");
+        assert_eq!(
+            shape(&jkf.moves[1..], 1),
+            shape(&back.moves[1..], 1),
+            "wrote {ki2:?}"
+        );
+    }
+
     // The upper hand moves first in every handicap (R-HC-001), so the parity of
     // the ply does not say whose turn it is. Both records below resign at ply 2,
     // and the side that resigned is the opposite one — reading the side off the
@@ -535,9 +564,13 @@ mod tests {
         assert_eq!(shape(&jkf.moves[1..], 1), shape(&back.moves[1..], 1));
     }
 
+    // A record with no header, no starting position and no moves writes
+    // nothing. It used to write a lone newline, which was the move run's line
+    // terminator being emitted for a run that never opened a line.
     #[test]
     fn to_ki2_default() {
-        assert_eq!("\n", JsonKifuFormat::default().to_ki2_owned());
+        assert_eq!("", JsonKifuFormat::default().to_ki2_owned());
+        assert!(crate::parser::parse_ki2_str("").is_ok());
     }
 
     #[test]

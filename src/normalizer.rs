@@ -595,13 +595,16 @@ fn normalize_moves(
                 add_timeformat(&totals[pos.side_to_move().array_index()], &time.now);
             time.total = totals[pos.side_to_move().array_index()];
         }
+        // A node without a move holds a comment or an outcome. Neither ends the
+        // record: `中断` appears mid-list in a game that was interrupted and
+        // resumed, and a comment can sit between two moves. Stopping here left
+        // every later move with its parsed color, its `from` unresolved and its
+        // branches unnormalized.
         if let Some(mmf) = &mut mf.move_ {
             let mv = normalize_move(mmf, &pos, correct_color, infer_relative)?;
             if pos.make_move(mv).is_none() {
                 return Err(NormalizeError::MakeMoveFailed(mv));
             }
-        } else {
-            break;
         }
     }
     Ok(())
@@ -629,8 +632,6 @@ fn populate_relative_moves(
             if pos.make_move(mv).is_none() {
                 return Err(NormalizeError::MakeMoveFailed(mv));
             }
-        } else {
-            break;
         }
     }
     Ok(())

@@ -108,16 +108,29 @@ fn branch_header(input: &str) -> IResult<&str, usize, VerboseError<&str>> {
     )(input)
 }
 
-/// Reads one run of moves plus the optional outcome line.
+/// Reads one line of the record: the moves and any outcome lines among them.
+///
+/// An outcome does not end the run. A game that was interrupted and resumed
+/// records `中断` in the middle and keeps going, and stopping at the first
+/// `まで…` line drops every move after it without saying so.
 fn move_run(
     start: Color,
     first_ply: usize,
 ) -> impl FnMut(&str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
-    move |input| {
-        let (input, v) = many0(single_move)(input)?;
-        let (input, end) = opt(end_of_game_line(start, first_ply + v.len()))(input)?;
-        let mut out = v;
-        out.extend(end);
+    move |mut input| {
+        let mut out = Vec::new();
+        loop {
+            let (rest, v) = many0(single_move)(input)?;
+            let read_moves = !v.is_empty();
+            out.extend(v);
+            let (rest, end) = opt(end_of_game_line(start, first_ply + out.len()))(rest)?;
+            let read_end = end.is_some();
+            out.extend(end);
+            input = rest;
+            if !read_moves && !read_end {
+                break;
+            }
+        }
         Ok((input, out))
     }
 }
