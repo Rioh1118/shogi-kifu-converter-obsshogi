@@ -270,5 +270,35 @@ mod tests {
         assert!(ki2.contains("後手番"), "no side to move in {ki2:?}");
         let back = parse_ki2_str(&ki2).expect("reads back");
         assert_eq!(jkf.initial, back.initial);
+
+        // The other direction. Writing `後手番` unconditionally would pass every
+        // assertion above, and then a Black-to-move position would come back
+        // with the sides swapped — the same bug this line was added to fix,
+        // opened the other way round.
+        // The moves are dropped: they are White's, and they stop being legal
+        // once the board says Black. The board alone is what is under test.
+        let mut black_to_move = crate::jkf::JsonKifuFormat {
+            moves: vec![crate::jkf::MoveFormat::default()],
+            ..jkf.clone()
+        };
+        if let Some(data) = black_to_move.initial.as_mut().and_then(|i| i.data.as_mut()) {
+            data.color = crate::jkf::Color::Black;
+        }
+        let kif = black_to_move.try_to_kif_owned().expect("writes KIF");
+        let ki2 = black_to_move.try_to_ki2_owned().expect("writes KI2");
+        for text in [&kif, &ki2] {
+            assert!(
+                !text.contains("後手番"),
+                "a Black-to-move board must not say 後手番: {text:?}"
+            );
+        }
+        assert_eq!(
+            black_to_move.initial,
+            parse_kif_str(&kif).expect("reads back").initial
+        );
+        assert_eq!(
+            black_to_move.initial,
+            parse_ki2_str(&ki2).expect("reads back").initial
+        );
     }
 }

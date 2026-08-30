@@ -414,6 +414,32 @@ mod tests {
         }
     }
 
+    /// The `PI` block is followed by the side to move, and getting it wrong
+    /// makes every handicap start as Black's — the lower hand's first move
+    /// becomes the upper hand's, and the whole record replays as the wrong
+    /// colour. Writing `+` unconditionally passed every other test.
+    #[test]
+    fn the_csa_preset_block_states_the_side_to_move() {
+        for handicap in HANDICAPS {
+            let src = format!(
+                "手合割：{}\n手数----指手---------消費時間--\n",
+                handicap.kif_name
+            );
+            let jkf = parse_kif_str(&src).unwrap_or_else(|e| panic!("{}: {e}", handicap.kif_name));
+            let csa = jkf.try_to_csa_owned().expect("writes CSA");
+            let want = if handicap.preset == Preset::PresetHirate {
+                "+"
+            } else {
+                "-"
+            };
+            assert!(
+                csa.lines().any(|l| l == want),
+                "{} expected a {want:?} line in {csa:?}",
+                handicap.kif_name
+            );
+        }
+    }
+
     /// The upper hand moves first in every handicap (R-HC-001).
     #[test]
     fn only_the_even_game_starts_with_black() {
