@@ -90,40 +90,26 @@ fn write_moves<W: Write>(
     // Taking blocks off the end gives that, and pushing each node's branches in
     // reverse keeps siblings in their original order.
     let mut stack = Vec::new();
-    write_line(rest, 1, position.clone(), &mut stack, sink)?;
-    while let Some((start_ply, branch)) = stack.pop() {
+    write_line(rest, 1, position, &mut stack, sink)?;
+    while let Some((start_ply, branch, at)) = stack.pop() {
         sink.write_fmt(format_args!("\n変化：{start_ply}手\n"))?;
-        let at = position
-            .clone()
-            .and_then(|pos| replay(rest, start_ply, pos));
         write_line(branch, start_ply, at, &mut stack, sink)?;
     }
     Ok(())
 }
 
-/// Replays the main line up to just before `start_ply`.
-///
-/// Returns `None` once a move cannot be applied, which leaves the branch
-/// without a position and falls back to `relative`.
-fn replay(
-    moves: &[MoveFormat],
-    start_ply: usize,
-    mut pos: shogi_core::PartialPosition,
-) -> Option<shogi_core::PartialPosition> {
-    for mf in moves.iter().take(start_ply.checked_sub(1)?) {
-        let mv = shogi_core::Move::try_from(mf.move_.as_ref()?).ok()?;
-        pos.make_move(mv)?;
-    }
-    Some(pos)
-}
-
 /// Writes one run of moves — the main line or one branch — and queues any
 /// branches that depart from it.
+///
+/// Each queued branch carries the position it departs from. Deriving it instead
+/// by replaying the main line is wrong for a branch inside a branch: that
+/// branch leaves a line the main line never visits, so the replay lands on a
+/// different board and the suffixes are spelled against the wrong candidates.
 fn write_line<'a, W: Write>(
     moves: &'a [MoveFormat],
     first_ply: usize,
     mut position: Option<shogi_core::PartialPosition>,
-    stack: &mut Vec<(usize, &'a [MoveFormat])>,
+    stack: &mut Vec<(usize, &'a [MoveFormat], Option<shogi_core::PartialPosition>)>,
     sink: &mut W,
 ) -> Result {
     // Tracks whether the next write starts a line, so the end-of-game line does
@@ -132,6 +118,13 @@ fn write_line<'a, W: Write>(
     let mut it = moves.iter().enumerate().peekable();
     while let Some((index, mf)) = it.next() {
         let ply = first_ply + index;
+        // A branch is the alternative *to* this move (R-JKF-004), so it is
+        // spelled against the position before this move is played.
+        let departs_from = if mf.forks.is_some() {
+            position.clone()
+        } else {
+            None
+        };
         if let Some(mv) = &mf.move_ {
             match mv.color {
                 Color::Black => sink.write_char('▲')?,
@@ -213,7 +206,7 @@ fn write_line<'a, W: Write>(
         }
         if let Some(forks) = &mf.forks {
             for fork in forks.iter().rev() {
-                stack.push((ply, fork.as_slice()));
+                stack.push((ply, fork.as_slice(), departs_from.clone()));
             }
         }
     }
@@ -233,6 +226,30 @@ impl ToKi2 for JsonKifuFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Spells the move tree as `<ply>:<destination>` with branches in brackets,
+    /// so a round trip can be compared as a whole rather than field by field.
+    fn shape(moves: &[MoveFormat], first_ply: usize) -> String {
+        moves
+            .iter()
+            .enumerate()
+            .map(|(i, mf)| {
+                let ply = first_ply + i;
+                let head = mf
+                    .move_
+                    .map(|mv| format!("{ply}:{}{}", mv.to.x, mv.to.y))
+                    .unwrap_or_else(|| format!("{ply}:{:?}", mf.special));
+                match &mf.forks {
+                    Some(forks) => {
+                        let inner: Vec<_> = forks.iter().map(|f| shape(f, ply)).collect();
+                        format!("{head}[{}]", inner.join("|"))
+                    }
+                    None => head,
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
 
     // The disambiguating suffix comes from the position, not from `relative`,
     // so a value that never went through `populate_relative` still produces KI2
@@ -335,28 +352,6 @@ mod tests {
     // as much as the blocks — a reader has only the ply number to work from.
     #[test]
     fn branches_survive_a_ki2_round_trip() {
-        fn shape(moves: &[MoveFormat], first_ply: usize) -> String {
-            moves
-                .iter()
-                .enumerate()
-                .map(|(i, mf)| {
-                    let ply = first_ply + i;
-                    let head = mf
-                        .move_
-                        .map(|mv| format!("{ply}:{}{}", mv.to.x, mv.to.y))
-                        .unwrap_or_else(|| format!("{ply}:{:?}", mf.special));
-                    match &mf.forks {
-                        Some(forks) => {
-                            let inner: Vec<_> = forks.iter().map(|f| shape(f, ply)).collect();
-                            format!("{head}[{}]", inner.join("|"))
-                        }
-                        None => head,
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ")
-        }
-
         // Two branches leaving ply 2 and one leaving ply 3, so both the sibling
         // order and the deeper-ply-first rule are exercised. The blocks are in
         // the order KIF itself uses: deepest departure first.
@@ -383,6 +378,44 @@ mod tests {
             3,
             ki2.lines().filter(|l| l.starts_with("変化：")).count(),
             "every branch gets a block: {ki2:?}"
+        );
+        let back = crate::parser::parse_ki2_str(&ki2).expect("reads back");
+        assert_eq!(shape(&jkf.moves[1..], 1), shape(&back.moves[1..], 1));
+    }
+
+    // A branch inside a branch leaves a line the main line never visits, so the
+    // position it departs from cannot be recovered by replaying the main line.
+    // Spelling it against the main line drops the suffix the reader needs
+    // (R-NOT-004), and the branch comes back ambiguous and is thrown away.
+    //
+    // Here the golds differ between the two lines: the main line has moved 6九
+    // to 7八, which cannot reach 5八, so a main-line replay sees one candidate
+    // and writes no suffix at all.
+    #[test]
+    fn a_branch_inside_a_branch_is_spelled_from_its_own_position() {
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77)
+   2 ３四歩(33)
+   3 ７八金(69)
+   4 ８四歩(83)
+
+変化：2手
+   2 ８四歩(83)
+   3 ６八金(69)
+   4 ８五歩(84)
+   5 ５八金(49)
+
+変化：5手
+   5 ５八金(68)
+";
+        let jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        let ki2 = jkf.to_ki2_owned();
+        // 4九 and 6八 differ in rank, so R-NOT-004 stage 1 settles it: 上 and 寄.
+        // Replaying the main line instead sees only 4九 and writes neither.
+        assert!(
+            ki2.contains("▲５八金上") && ki2.contains("▲５八金寄"),
+            "both golds reach 5八 in the branch, so both need a suffix: {ki2:?}"
         );
         let back = crate::parser::parse_ki2_str(&ki2).expect("reads back");
         assert_eq!(shape(&jkf.moves[1..], 1), shape(&back.moves[1..], 1));
