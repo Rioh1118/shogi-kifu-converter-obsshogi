@@ -1,4 +1,4 @@
-use crate::error::{ConvertError, NormalizeError};
+use crate::error::{ConvertError, NormalizeError, NormalizeErrorKind};
 use crate::jkf::*;
 use crate::notation::pk2k;
 use shogi_core::PartialPosition;
@@ -193,7 +193,7 @@ impl JsonKifuFormat {
                     }
                 }
             }
-            PartialPosition::try_from(initial)?
+            PartialPosition::try_from(initial).map_err(|err| NormalizeError::at(0, err))?
         } else {
             PartialPosition::startpos()
         };
@@ -205,6 +205,7 @@ impl JsonKifuFormat {
         };
         normalize_moves(
             rest,
+            1,
             pos,
             [TimeFormat::default(); 2],
             correct_color,
@@ -264,12 +265,12 @@ impl JsonKifuFormat {
     /// — e.g. KI2 conversion.
     pub fn populate_relative(&mut self) -> Result<(), NormalizeError> {
         let pos = if let Some(initial) = &self.initial {
-            PartialPosition::try_from(initial)?
+            PartialPosition::try_from(initial).map_err(|err| NormalizeError::at(0, err))?
         } else {
             PartialPosition::startpos()
         };
         match self.moves.split_first_mut() {
-            Some((_, rest)) => populate_relative_moves(rest, pos),
+            Some((_, rest)) => populate_relative_moves(rest, 1, pos),
             None => Ok(()),
         }
     }
@@ -306,7 +307,7 @@ fn calculate_from(
     mmf: &MoveMoveFormat,
     pos: &PartialPosition,
     to: shogi_core::Square,
-) -> Result<Option<PlaceFormat>, NormalizeError> {
+) -> Result<Option<PlaceFormat>, NormalizeErrorKind> {
     let color = pos.side_to_move();
     // The same candidate set the writer uses (`infer_relative_from_position`).
     // `LiteLegalityChecker::normal_to_candidates` is not that set: it tests full
@@ -328,7 +329,7 @@ fn calculate_from(
             let all: Vec<_> = bb.into_iter().collect();
             let relative = mmf
                 .relative
-                .ok_or_else(|| NormalizeError::AmbiguousMoveFrom(all.clone()))?;
+                .ok_or_else(|| NormalizeErrorKind::AmbiguousMoveFrom(all.clone()))?;
             // Ask which candidate the writer would have spelled this way. Any
             // other reading of the suffix is a second copy of R-NOT-004, and the
             // two copies drift: 左/右 were fixed on this side once and 直 was
@@ -344,7 +345,7 @@ fn calculate_from(
                     y: froms[0].rank(),
                 }))
             } else {
-                Err(NormalizeError::AmbiguousMoveFrom(froms))
+                Err(NormalizeErrorKind::AmbiguousMoveFrom(froms))
             }
         }
     }
@@ -355,7 +356,7 @@ fn normalize_move(
     pos: &PartialPosition,
     correct_color: bool,
     infer_relative: bool,
-) -> Result<shogi_core::Move, NormalizeError> {
+) -> Result<shogi_core::Move, NormalizeErrorKind> {
     if correct_color {
         // Correct the color from the position's side to move
         // (KIF/KI2 parser assigns color by move number parity, which is wrong for 後手番 games)
@@ -367,7 +368,7 @@ fn normalize_move(
         (mmf.color, pos.side_to_move()),
         (Color::Black, shogi_core::Color::White) | (Color::White, shogi_core::Color::Black)
     ) {
-        return Err(NormalizeError::InvalidColor);
+        return Err(NormalizeErrorKind::InvalidColor);
     }
     if mmf.same.is_some() {
         mmf.to = pos
@@ -376,7 +377,7 @@ fn normalize_move(
                 x: mv.to().file(),
                 y: mv.to().rank(),
             })
-            .ok_or(NormalizeError::NoLastMove)?;
+            .ok_or(NormalizeErrorKind::NoLastMove)?;
     }
     let to = shogi_core::Square::try_from(&mmf.to)?;
     if mmf.from == Some(ORIGIN_UNSTATED) {
@@ -387,7 +388,7 @@ fn normalize_move(
             // Retrieve piece
             let piece = match pos.piece_at(from) {
                 Some(piece) => piece,
-                None => return Err(NormalizeError::NoPieceAt(from)),
+                None => return Err(NormalizeErrorKind::NoPieceAt(from)),
             };
             let from_piece_kind = piece.piece_kind();
             let to_piece_kind = {
@@ -690,8 +691,15 @@ pub(crate) fn infer_relative_from_position(pos: &PartialPosition, mv: shogi_core
     }
 }
 
+/// Normalizes a run of moves, `first_ply` being the ply `moves[0]` sits at.
+///
+/// The ply is carried so that an error can say which move it is about: the
+/// caller has a file on disk and needs to be pointed at a line in it. The main
+/// line starts at 1 because index 0 of `moves` is the initial position's slot
+/// (R-JKF-001).
 fn normalize_moves(
     moves: &mut [MoveFormat],
+    first_ply: usize,
     mut pos: PartialPosition,
     mut totals: [TimeFormat; 2],
     correct_color: bool,
@@ -699,7 +707,8 @@ fn normalize_moves(
 ) -> Result<(), NormalizeError> {
     // Whether an outcome has gone by, and whether the board is still known.
     let (mut after_outcome, mut position_known) = (false, true);
-    for mf in moves {
+    for (offset, mf) in moves.iter_mut().enumerate() {
+        let ply = first_ply + offset;
         // A branch that cannot be normalized is still a branch. A kifu recording
         // an illegal move is valid input (R-RULE-002), and dropping the branch
         // here returns `Ok` with the record one line shorter — the caller saves
@@ -715,8 +724,16 @@ fn normalize_moves(
         if position_known {
             if let Some(forks) = &mut mf.forks {
                 for fork in forks.iter_mut() {
-                    let _ =
-                        normalize_moves(fork, pos.clone(), totals, correct_color, infer_relative);
+                    // A branch replaces this node, so its first element sits at
+                    // the same ply (R-JKF-004).
+                    let _ = normalize_moves(
+                        fork,
+                        ply,
+                        pos.clone(),
+                        totals,
+                        correct_color,
+                        infer_relative,
+                    );
                 }
             }
         }
@@ -758,28 +775,37 @@ fn normalize_moves(
         match normalize_move(&mut candidate, &pos, correct_color, infer_relative) {
             Ok(mv) if pos.make_move(mv).is_some() => *mmf = candidate,
             _ if after_outcome => position_known = false,
-            Ok(mv) => return Err(NormalizeError::MakeMoveFailed(mv)),
-            Err(err) => return Err(err),
+            Ok(mv) => {
+                return Err(NormalizeError::at(
+                    ply,
+                    NormalizeErrorKind::MakeMoveFailed(mv),
+                ))
+            }
+            Err(kind) => return Err(NormalizeError::at(ply, kind)),
         }
     }
     Ok(())
 }
 
+/// Fills in `relative`, `first_ply` being the ply `moves[0]` sits at.
 fn populate_relative_moves(
     moves: &mut [MoveFormat],
+    first_ply: usize,
     mut pos: PartialPosition,
 ) -> Result<(), NormalizeError> {
-    for mf in moves {
+    for (offset, mf) in moves.iter_mut().enumerate() {
+        let ply = first_ply + offset;
         if let Some(forks) = &mut mf.forks {
             for v in forks.iter_mut() {
                 // A branch that cannot be replayed is still a branch
                 // (R-RULE-002), the same as in `normalize_moves`. Dropping it
                 // here would lose a variation to fill in a derived field.
-                let _ = populate_relative_moves(v, pos.clone());
+                let _ = populate_relative_moves(v, ply, pos.clone());
             }
         }
         if let Some(mmf) = &mut mf.move_ {
-            let mv = shogi_core::Move::try_from(&*mmf)?;
+            let mv =
+                shogi_core::Move::try_from(&*mmf).map_err(|err| NormalizeError::at(ply, err))?;
             if mmf.relative.is_none() {
                 mmf.relative = match infer_relative_from_position(&pos, mv) {
                     Suffix::Only(relative) => Some(relative),
@@ -787,7 +813,10 @@ fn populate_relative_moves(
                 };
             }
             if pos.make_move(mv).is_none() {
-                return Err(NormalizeError::MakeMoveFailed(mv));
+                return Err(NormalizeError::at(
+                    ply,
+                    NormalizeErrorKind::MakeMoveFailed(mv),
+                ));
             }
         }
     }
@@ -1075,7 +1104,11 @@ mod tests {
                    {{"move":{{"color":0,"from":{{"x":{x},"y":{y}}},"to":{{"x":7,"y":6}},"piece":"FU"}}}}]}}"#
             );
             let err = crate::parser::parse_jkf_str(&json).expect_err("({x},{y}) was accepted");
-            let crate::error::ParseError::Normalize(NormalizeError::Convert(inner)) = err else {
+            let crate::error::ParseError::Normalize(NormalizeError {
+                ply: 1,
+                kind: NormalizeErrorKind::Convert(inner),
+            }) = err
+            else {
                 panic!("({x},{y}) gave {err:?}, not a conversion error");
             };
             assert_eq!(ConvertError::InvalidSquare((x, y)), *inner, "({x},{y})");
@@ -1460,13 +1493,13 @@ mod tests {
             (
                 // 5五 is empty at the start, so nothing there can have moved.
                 r#"{"move":{"color":0,"from":{"x":5,"y":5},"to":{"x":5,"y":4},"piece":"FU"}}"#,
-                "failed to normalize: No pieces at ５五",
+                "failed to normalize: No pieces at ５五 at ply 1",
             ),
             (
                 // A drop with an empty hand: JKF says a drop by leaving `from`
                 // out (R-JKF-003).
                 r#"{"move":{"color":0,"to":{"x":5,"y":5},"piece":"FU"}}"#,
-                "failed to normalize: Invalid move: ５五歩打",
+                "failed to normalize: Invalid move: ５五歩打 at ply 1",
             ),
         ] {
             let err = crate::parser::parse_jkf_str(&record(mv)).expect_err("{mv} was accepted");
@@ -1474,10 +1507,39 @@ mod tests {
         }
     }
 
+    // Which move failed is the other half. A caller handed a directory of kifu
+    // and told "invalid move" has nothing to show; told the ply, it has a line.
+    // The ply counts the way JKF indexes `moves`, where index 0 is the initial
+    // position's slot and the first move is 1 (R-JKF-001).
+    #[test]
+    fn a_normalization_error_says_which_move_it_is_about() {
+        let opening = [(7, 7, 7, 6), (3, 3, 3, 4), (2, 7, 2, 6), (8, 3, 8, 4)]
+            .iter()
+            .enumerate()
+            .map(|(i, (fx, fy, tx, ty))| {
+                format!(
+                    r#",{{"move":{{"color":{},"from":{{"x":{fx},"y":{fy}}},"to":{{"x":{tx},"y":{ty}}},"piece":"FU"}}}}"#,
+                    i % 2
+                )
+            })
+            .collect::<String>();
+        // A fifth move from a square that has been empty all along.
+        let broken =
+            r#",{"move":{"color":0,"from":{"x":5,"y":5},"to":{"x":5,"y":4},"piece":"FU"}}"#;
+        let json = format!(
+            r#"{{"header":{{}},"initial":{{"preset":"HIRATE"}},"moves":[{{}}{opening}{broken}]}}"#
+        );
+        let err = crate::parser::parse_jkf_str(&json).expect_err("5五 is empty");
+        assert_eq!(
+            "failed to normalize: No pieces at ５五 at ply 5",
+            err.to_string()
+        );
+    }
+
     #[test]
     fn normalize_moves_empty() {
         let pos = PartialPosition::startpos();
-        assert!(normalize_moves(&mut [], pos, [TimeFormat::default(); 2], false, true).is_ok());
+        assert!(normalize_moves(&mut [], 1, pos, [TimeFormat::default(); 2], false, true).is_ok());
     }
 
     #[test]
@@ -1501,6 +1563,7 @@ mod tests {
                         move_: Some(mmf),
                         ..Default::default()
                     }],
+                    1,
                     pos,
                     [TimeFormat::default(); 2],
                     false,
@@ -1522,6 +1585,7 @@ mod tests {
                         }),
                         ..Default::default()
                     }],
+                    1,
                     pos,
                     [TimeFormat::default(); 2],
                     false,
@@ -1542,7 +1606,7 @@ mod tests {
                 ..Default::default()
             }];
             assert!(
-                normalize_moves(&mut moves, pos, [TimeFormat::default(); 2], true, true).is_ok(),
+                normalize_moves(&mut moves, 1, pos, [TimeFormat::default(); 2], true, true).is_ok(),
                 "normalize should succeed (color auto-corrected)"
             );
             assert_eq!(

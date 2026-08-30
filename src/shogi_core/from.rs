@@ -1,4 +1,4 @@
-use crate::error::{ConvertError, NormalizeError};
+use crate::error::{ConvertError, NormalizeError, NormalizeErrorKind};
 use crate::jkf;
 use crate::jkf::{Color::*, Kind::*, Preset::*};
 use shogi_core::{Color, Move, PartialPosition, Piece, PieceKind, Position, Square};
@@ -130,11 +130,17 @@ impl TryFrom<&jkf::JsonKifuFormat> for Position {
         } else {
             Position::startpos()
         };
-        for mf in jkf.moves.iter() {
+        // Index 0 is the initial position's slot, so the index is the ply
+        // (R-JKF-001).
+        for (ply, mf) in jkf.moves.iter().enumerate() {
             if let Some(mv) = &mf.move_ {
                 let mv = mv.try_into()?;
-                pos.make_move(mv)
-                    .ok_or_else(|| ConvertError::from(NormalizeError::MakeMoveFailed(mv)))?;
+                pos.make_move(mv).ok_or_else(|| {
+                    ConvertError::from(NormalizeError::at(
+                        ply,
+                        NormalizeErrorKind::MakeMoveFailed(mv),
+                    ))
+                })?;
             }
         }
         Ok(pos)

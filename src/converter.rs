@@ -461,7 +461,7 @@ mod tests {
         assert_eq!("", usi);
         let err = jkf.try_to_usi_owned().expect_err("the move cannot be made");
         assert_eq!(
-            "Failed to normalize: Invalid move: ５五→５四",
+            "Failed to normalize: Invalid move: ５五→５四 at ply 1",
             err.to_string(),
             "the error has to name the move in coordinates the file uses"
         );

@@ -29,9 +29,55 @@ impl From<NormalizeError> for ConvertError {
     }
 }
 
-/// An error that can occur while normalizing [`JsonKifuFormat`](crate::jkf::JsonKifuFormat)
+/// An error that can occur while normalizing [`JsonKifuFormat`](crate::jkf::JsonKifuFormat),
+/// and the move it happened on.
+///
+/// The move is half the answer. A caller that is handed a directory of kifu and
+/// told "invalid move" cannot act on it; told which ply, it can show the line.
+///
+/// A branch that fails to normalize is kept as it was rather than reported
+/// (R-RULE-002 — a recorded illegal move is valid input, and dropping the
+/// branch would edit the file). So a `ply` here always counts along the main
+/// line.
+#[derive(Debug, PartialEq)]
+pub struct NormalizeError {
+    /// Which move, indexed the way JKF indexes `moves`: index 0 is the initial
+    /// position's slot and holds no move, so the first move is 1 (R-JKF-001).
+    ///
+    /// 0 means the failure was in the initial position itself, before any move.
+    pub ply: usize,
+    /// What went wrong.
+    pub kind: NormalizeErrorKind,
+}
+
+impl NormalizeError {
+    /// The error `kind` reports for `ply`.
+    pub(crate) fn at(ply: usize, kind: impl Into<NormalizeErrorKind>) -> Self {
+        Self {
+            ply,
+            kind: kind.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for NormalizeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.ply {
+            0 => write!(f, "{} in the initial position", self.kind),
+            ply => write!(f, "{} at ply {ply}", self.kind),
+        }
+    }
+}
+
+impl std::error::Error for NormalizeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.kind)
+    }
+}
+
+/// What went wrong while normalizing. See [`NormalizeError`] for where.
 #[derive(Error, Debug, PartialEq)]
-pub enum NormalizeError {
+pub enum NormalizeErrorKind {
     /// Couldn't disambiguous the [`jkf::MoveMoveFormat.from`](crate::jkf::MoveMoveFormat::from)
     #[error("Move `from` is ambiguous: {}", crate::notation::Coordinates(.0))]
     AmbiguousMoveFrom(Vec<shogi_core::Square>),
@@ -54,7 +100,7 @@ pub enum NormalizeError {
     InvalidColor,
 }
 
-impl From<ConvertError> for NormalizeError {
+impl From<ConvertError> for NormalizeErrorKind {
     fn from(err: ConvertError) -> Self {
         Self::Convert(Box::new(err))
     }
