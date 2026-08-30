@@ -123,8 +123,11 @@ fn write_line<'a, W: Write>(
     // means an outcome line has no way to close itself, and the moves that
     // follow get swallowed as part of the `まで…` text.
     let mut at_line_start = true;
-    for (index, mf) in moves.iter().enumerate() {
-        let ply = first_ply + index;
+    // The ply is the number the *reader* will give this node, not the position
+    // in the array. A node carrying only comments writes nothing a reader can
+    // count, so counting it here would put `変化：N手` one past its move.
+    let mut ply = first_ply;
+    for mf in moves {
         // A branch is the alternative *to* this move (R-JKF-004), so it is
         // spelled against the position before this move is played.
         let departs_from = if mf.forks.is_some() {
@@ -222,6 +225,9 @@ fn write_line<'a, W: Write>(
             for fork in forks.iter().rev() {
                 stack.push((ply, fork.as_slice(), departs_from.clone()));
             }
+        }
+        if mf.move_.is_some() || mf.special.is_some() {
+            ply += 1;
         }
     }
     if !at_line_start {

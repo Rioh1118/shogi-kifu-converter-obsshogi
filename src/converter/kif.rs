@@ -75,10 +75,13 @@ fn write_move_kind<W: Write>(kind: Kind, sink: &mut W, offset: &mut usize) -> Re
 
 fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) -> Result {
     let mut forks_stack = Vec::new();
-    for (i, mf) in (index..).zip(moves) {
-        // A node with neither a move nor an outcome carries only comments,
-        // which JKF allows and KIF has no line for. Its comments still belong
-        // to the position, so they are written without a move line.
+    // The ply is the number of the line being written, not the position in the
+    // array. A node with neither a move nor an outcome carries only comments,
+    // which JKF allows and KIF has no line for; counting it anyway leaves a gap
+    // in the move numbers and shifts every `変化：N手` after it, so the branch
+    // lands on the wrong move — or on nothing, and is dropped.
+    let mut i = index;
+    for mf in moves {
         let has_line = mf.move_.is_some() || mf.special.is_some();
         if has_line {
             sink.write_fmt(format_args!("{:4} ", i))?;
@@ -142,6 +145,9 @@ fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) 
                 forks_stack.push((i, fork));
             }
         }
+        if has_line {
+            i += 1;
+        }
     }
     while let Some((i, fork)) = forks_stack.pop() {
         sink.write_char('\n')?;
@@ -173,6 +179,64 @@ mod tests {
     use super::*;
     use crate::parser::parse_jkf_file;
     use std::path::Path;
+
+    // JKF lets a node carry comments and nothing else; KIF has no line for one.
+    // Counting it as a ply anyway leaves a gap in the move numbers and moves
+    // every `変化：N手` after it one step along, so the branch attaches to the
+    // wrong move — or to none, and is dropped without a word.
+    #[test]
+    fn a_comment_only_node_does_not_consume_a_ply() {
+        let jkf = JsonKifuFormat {
+            initial: Some(Initial {
+                preset: Preset::PresetHirate,
+                data: None,
+            }),
+            moves: vec![
+                MoveFormat::default(),
+                pawn(Color::Black, 7, 7, 7, 6),
+                MoveFormat {
+                    comments: Some(vec!["ここで長考".to_string()]),
+                    ..Default::default()
+                },
+                MoveFormat {
+                    forks: Some(vec![vec![pawn(Color::White, 8, 3, 8, 4)]]),
+                    ..pawn(Color::White, 3, 3, 3, 4)
+                },
+            ],
+            ..Default::default()
+        };
+        let kif = jkf.to_kif_owned();
+        assert!(
+            kif.contains("   2 ３四歩(33)") && kif.contains("変化：2手"),
+            "the comment must not push 3四歩 to ply 3: {kif:?}"
+        );
+        let back = crate::parser::parse_kif_str(&kif).expect("reads back");
+        assert_eq!(
+            1,
+            back.moves
+                .iter()
+                .filter_map(|mf| mf.forks.as_ref())
+                .map(Vec::len)
+                .sum::<usize>(),
+            "the branch survives: {kif:?}"
+        );
+    }
+
+    fn pawn(color: Color, fx: u8, fy: u8, tx: u8, ty: u8) -> MoveFormat {
+        MoveFormat {
+            move_: Some(MoveMoveFormat {
+                color,
+                from: Some(PlaceFormat { x: fx, y: fy }),
+                to: PlaceFormat { x: tx, y: ty },
+                piece: Kind::FU,
+                same: None,
+                promote: None,
+                capture: None,
+                relative: None,
+            }),
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn to_kif_default() {
