@@ -1448,6 +1448,32 @@ mod tests {
         }
     }
 
+    // The error a caller shows a user has to point back into the file. An
+    // internal square index does not: `Square(61)` is neither the file nor the
+    // rank, so nobody can find the move it is talking about.
+    #[test]
+    fn a_move_that_will_not_apply_is_named_in_shogi_coordinates() {
+        let record = |mv: &str| {
+            format!(r#"{{"header":{{}},"initial":{{"preset":"HIRATE"}},"moves":[{{}},{mv}]}}"#)
+        };
+        for (mv, want) in [
+            (
+                // 5五 is empty at the start, so nothing there can have moved.
+                r#"{"move":{"color":0,"from":{"x":5,"y":5},"to":{"x":5,"y":4},"piece":"FU"}}"#,
+                "failed to normalize: No pieces at ５五",
+            ),
+            (
+                // A drop with an empty hand: JKF says a drop by leaving `from`
+                // out (R-JKF-003).
+                r#"{"move":{"color":0,"to":{"x":5,"y":5},"piece":"FU"}}"#,
+                "failed to normalize: Invalid move: ５五歩打",
+            ),
+        ] {
+            let err = crate::parser::parse_jkf_str(&record(mv)).expect_err("{mv} was accepted");
+            assert_eq!(want, err.to_string());
+        }
+    }
+
     #[test]
     fn normalize_moves_empty() {
         let pos = PartialPosition::startpos();

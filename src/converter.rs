@@ -460,9 +460,10 @@ mod tests {
         let usi = ToUsi::to_usi_owned(&jkf);
         assert_eq!("", usi);
         let err = jkf.try_to_usi_owned().expect_err("the move cannot be made");
-        assert!(
-            err.to_string().contains("5e5d") || err.to_string().contains("Square"),
-            "the error should name the move: {err}"
+        assert_eq!(
+            "Failed to normalize: Invalid move: ５五→５四",
+            err.to_string(),
+            "the error has to name the move in coordinates the file uses"
         );
     }
 

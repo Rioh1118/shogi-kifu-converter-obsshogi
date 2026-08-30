@@ -33,16 +33,16 @@ impl From<NormalizeError> for ConvertError {
 #[derive(Error, Debug, PartialEq)]
 pub enum NormalizeError {
     /// Couldn't disambiguous the [`jkf::MoveMoveFormat.from`](crate::jkf::MoveMoveFormat::from)
-    #[error("Move `from` is ambiguous: {0:?}")]
+    #[error("Move `from` is ambiguous: {}", crate::notation::Coordinates(.0))]
     AmbiguousMoveFrom(Vec<shogi_core::Square>),
     /// [`shogi_core::PartialPosition::last_move()`] is required if [`jkf::MoveMoveFormat::same`](crate::jkf::MoveMoveFormat::same) is not `None`
     #[error("No previous move")]
     NoLastMove,
     /// There are no pieces at the [`shogi_core::Square`]
-    #[error("No pieces at {0:?}")]
+    #[error("No pieces at {}", crate::notation::Coordinate(*.0))]
     NoPieceAt(shogi_core::Square),
     /// [`shogi_core::PartialPosition::make_move()`] was failed for the [`shogi_core::Move`]
-    #[error("Invalid move: {0:?}")]
+    #[error("Invalid move: {}", crate::notation::MoveText(*.0))]
     MakeMoveFailed(shogi_core::Move),
     /// An error that occurred while converting from/into [`shogi_core::Position`]
     ///
