@@ -153,25 +153,21 @@ fn information_value_hand(input: &str) -> IResult<&str, Hand, VerboseError<&str>
 
 fn information_value_preset(input: &str) -> IResult<&str, Information, VerboseError<&str>> {
     // Longest name first, or `香落ち` would swallow the tail of `右香落ち`.
-    let mut preset = None;
-    let mut rest = input;
-    for handicap in crate::handicap::names_longest_first() {
-        if let Ok((tail, _)) = tag::<_, _, VerboseError<&str>>(handicap.kif_name)(input) {
-            preset = Some(handicap.preset);
-            rest = tail;
-            break;
+    let named = crate::handicap::names_longest_first()
+        .into_iter()
+        .find_map(|handicap| {
+            let (tail, _) = tag::<_, _, VerboseError<&str>>(handicap.kif_name)(input).ok()?;
+            Some((tail, handicap.preset))
+        });
+    let (rest, preset) = match named {
+        Some(found) => found,
+        None => {
+            let (tail, _) = tag("その他")(input)?;
+            (tail, Preset::PresetOther)
         }
-    }
-    if preset.is_none() {
-        let (tail, _) = tag("その他")(input)?;
-        preset = Some(Preset::PresetOther);
-        rest = tail;
-    }
+    };
     let (rest, _) = many0(one_of(" 　"))(rest)?;
-    Ok((
-        rest,
-        Information::Preset(preset.expect("set on both branches")),
-    ))
+    Ok((rest, Information::Preset(preset)))
 }
 
 fn information_line_preset(input: &str) -> IResult<&str, Information, VerboseError<&str>> {

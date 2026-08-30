@@ -53,14 +53,18 @@ impl From<&Square> for jkf::PlaceFormat {
 
 impl From<&Hand> for jkf::Hand {
     fn from(h: &Hand) -> Self {
+        // `count` is `None` only for a king or a promoted piece, and none of
+        // the kinds below are either. Zero is still the right answer if that
+        // ever changes — a hand cannot hold them.
+        let count = |kind| h.count(kind).unwrap_or(0);
         jkf::Hand {
-            FU: h.count(PieceKind::Pawn).unwrap(),
-            KY: h.count(PieceKind::Lance).unwrap(),
-            KE: h.count(PieceKind::Knight).unwrap(),
-            GI: h.count(PieceKind::Silver).unwrap(),
-            KI: h.count(PieceKind::Gold).unwrap(),
-            KA: h.count(PieceKind::Bishop).unwrap(),
-            HI: h.count(PieceKind::Rook).unwrap(),
+            FU: count(PieceKind::Pawn),
+            KY: count(PieceKind::Lance),
+            KE: count(PieceKind::Knight),
+            GI: count(PieceKind::Silver),
+            KI: count(PieceKind::Gold),
+            KA: count(PieceKind::Bishop),
+            HI: count(PieceKind::Rook),
         }
     }
 }
