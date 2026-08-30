@@ -101,10 +101,10 @@ impl Hand {
     }
     /// The slot for `kind`, or `None` for a king or a promoted piece.
     ///
-    /// A king never goes to the hand (R-CSA-006), and a promoted piece is
-    /// turned back over when captured, so neither can sit in one. A broken CSA
-    /// can still say they do,
-    /// and that has to come back as an error rather than take the process down.
+    /// A king never goes to the hand (R-CSA-006), and a promoted piece is turned
+    /// back over when captured, so neither can sit in one. A broken CSA can
+    /// still say they do, and that has to come back as an error rather than
+    /// take the process down.
     fn slot(&mut self, kind: Kind) -> Option<&mut u8> {
         Some(match kind {
             Kind::FU => &mut self.FU,
