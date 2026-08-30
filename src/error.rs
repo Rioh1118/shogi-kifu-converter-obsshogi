@@ -69,7 +69,6 @@ pub enum ParseError {
     /// The file extension was unexpected
     #[error("File extension Error")]
     FileExtension,
-    /// An error that occurred while normalizing [`JsonKifuFormat`](crate::jkf::JsonKifuFormat)
     /// An error that occurred while normalizing the parsed record
     ///
     /// Kept as the error rather than its message: a caller has to be able to
