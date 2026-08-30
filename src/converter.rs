@@ -14,6 +14,16 @@ use crate::error::ConvertError;
 use crate::jkf::JsonKifuFormat;
 use shogi_core::{PartialPosition, Position, ToUsi};
 
+/// What every writer under this module returns: it either wrote, or the record
+/// held something the format cannot spell.
+///
+/// `std::fmt::Error` would be the obvious choice, since these all write into a
+/// sink — but its `Display` is one fixed sentence, and a consumer that has just
+/// failed to save a game needs to know whether the fault was an off-board
+/// coordinate, a hand holding more than a set contains, or a move the notation
+/// cannot tell apart. Each of those is a different thing to tell the user.
+type WriteResult = std::result::Result<(), ConvertError>;
+
 /// Spells `pos` as USI: the starting position, then the moves played from it.
 fn write_usi<W: std::fmt::Write>(pos: &Position, sink: &mut W) -> std::fmt::Result {
     if pos.initial_position() == &PartialPosition::startpos() {
@@ -76,7 +86,7 @@ impl JsonKifuFormat {
         let pos = Position::try_from(self)?;
         let mut s = String::new();
         // `write_usi` only fails when `sink` does, and a `String` never does.
-        write_usi(&pos, &mut s).map_err(|_| ConvertError::InvalidSquare((0, 0)))?;
+        write_usi(&pos, &mut s)?;
         Ok(s)
     }
 }
@@ -192,7 +202,7 @@ mod tests {
         use crate::jkf::{Color, Initial, Kind, MoveMoveFormat, PlaceFormat, Preset};
 
         // Two moves, so the outcome sits at ply 3 with Black to move.
-        const TABLE: [Row; 14] = [
+        const TABLE: [Row; 16] = [
             Row {
                 special: SpecialToryo,
                 kif_word: "投了",
@@ -320,6 +330,28 @@ mod tests {
                 after_kif: SpecialFuzumi,
                 after_ki2: SpecialFuzumi,
                 after_csa: Some(SpecialFuzumi),
+            },
+            // R-KIF-007 has these two; JKF's fourteen and CSA's keyword list
+            // (R-CSA-007) do not. They survive KIF and KI2 and lose their
+            // meaning in CSA, which is D11's trade — the same one D7 made for
+            // the three that go the other way.
+            Row {
+                special: SpecialFusensho,
+                kif_word: "不戦勝",
+                csa_word: "%CHUDAN",
+                ki2_phrase: "不戦勝",
+                after_kif: SpecialFusensho,
+                after_ki2: SpecialFusensho,
+                after_csa: Some(SpecialChudan),
+            },
+            Row {
+                special: SpecialFusenpai,
+                kif_word: "不戦敗",
+                csa_word: "%CHUDAN",
+                ki2_phrase: "不戦敗",
+                after_kif: SpecialFusenpai,
+                after_ki2: SpecialFusenpai,
+                after_csa: Some(SpecialChudan),
             },
             Row {
                 special: SpecialError,
@@ -460,9 +492,10 @@ mod tests {
         let usi = ToUsi::to_usi_owned(&jkf);
         assert_eq!("", usi);
         let err = jkf.try_to_usi_owned().expect_err("the move cannot be made");
-        assert!(
-            err.to_string().contains("5e5d") || err.to_string().contains("Square"),
-            "the error should name the move: {err}"
+        assert_eq!(
+            "Failed to normalize: Invalid move: ５五→５四 at ply 1",
+            err.to_string(),
+            "the error has to name the move in coordinates the file uses"
         );
     }
 

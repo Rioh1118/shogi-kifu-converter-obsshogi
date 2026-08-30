@@ -181,6 +181,12 @@ pub enum MoveSpecial {
     /// エラー
     #[serde(rename = "ERROR")]
     SpecialError,
+    /// 先手（上手）の不戦勝 — **JKF 標準にはないバリアント**（R-KIF-007 / D1）
+    #[serde(rename = "FUSENSHO")]
+    SpecialFusensho,
+    /// 先手（上手）の不戦敗 — **JKF 標準にはないバリアント**（R-KIF-007 / D1）
+    #[serde(rename = "FUSENPAI")]
+    SpecialFusenpai,
 }
 
 impl MoveSpecial {
@@ -209,6 +215,12 @@ impl MoveSpecial {
             MoveSpecial::SpecialKachi => "入玉勝ち",
             MoveSpecial::SpecialTsumi => "詰み",
             MoveSpecial::SpecialFuzumi => "不詰",
+            // R-KIF-007 names these against Black (the upper hand), not against
+            // whoever is to move, so there is nothing to derive and no pair to
+            // swap — unlike 反則勝ち, which the same table defines relative to
+            // the move before it.
+            MoveSpecial::SpecialFusensho => "不戦勝",
+            MoveSpecial::SpecialFusenpai => "不戦敗",
             MoveSpecial::SpecialMatta | MoveSpecial::SpecialError => return None,
         })
     }
@@ -220,8 +232,12 @@ impl MoveSpecial {
     /// player, and that is what picks between `+ILLEGAL_ACTION` and
     /// `-ILLEGAL_ACTION`.
     ///
-    /// 不戦勝 and 不戦敗 are KIF words with no counterpart here, so they are
-    /// not recognised.
+    /// 不戦勝 and 不戦敗 have no JKF counterpart, so `SpecialFusensho` and
+    /// `SpecialFusenpai` are extensions to the standard's fourteen (D1). The
+    /// JSON this crate writes for them is not readable by json-kifu-format —
+    /// `research/33-jkf.md` says so. Leaving them out instead is worse: they
+    /// are R-KIF-007 vocabulary, so a valid KIF using one stopped the reader
+    /// dead and the whole file came back as an error.
     pub(crate) fn from_kif_word(word: &str, side_to_move: Color) -> Option<Self> {
         Some(match word {
             "投了" => MoveSpecial::SpecialToryo,
@@ -237,6 +253,8 @@ impl MoveSpecial {
             "入玉勝ち" => MoveSpecial::SpecialKachi,
             "詰み" => MoveSpecial::SpecialTsumi,
             "不詰" => MoveSpecial::SpecialFuzumi,
+            "不戦勝" => MoveSpecial::SpecialFusensho,
+            "不戦敗" => MoveSpecial::SpecialFusenpai,
             _ => return None,
         })
     }
@@ -302,6 +320,12 @@ impl MoveSpecial {
     /// The CSA `%` keyword for this outcome, without the leading `%`.
     pub(crate) fn csa_word(self) -> &'static str {
         match self {
+            // CSA's keyword list is the 14 this enum started from (R-CSA-007),
+            // so the two KIF adds have none. `%CHUDAN` — the game stopped here
+            // — is the most that can be said without asserting something CSA
+            // does not mean; calling a no-show a foul would be worse than
+            // losing the distinction (D11, the same trade as D7).
+            MoveSpecial::SpecialFusensho | MoveSpecial::SpecialFusenpai => "CHUDAN",
             MoveSpecial::SpecialToryo => "TORYO",
             MoveSpecial::SpecialChudan => "CHUDAN",
             MoveSpecial::SpecialSennichite => "SENNICHITE",

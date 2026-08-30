@@ -1,4 +1,7 @@
-use super::kakinoki::{move_comment_line, move_to, parse_without_moves, piece_kind};
+use super::kakinoki::{
+    move_comment_line, move_to, not_move_line, parse_without_moves, piece_kind,
+    program_comment_line,
+};
 use crate::jkf::*;
 use nom::branch::alt;
 use nom::bytes::complete::tag;
@@ -142,7 +145,16 @@ fn move_run(
             // specification's own example is written that way. R-KI2-001: KI2 is
             // "a game record people can read", pasted as-is, so a run can also
             // arrive indented. Stopping at either drops the rest of the file.
-            let (rest, _) = many0(alt((line_ending, tag(" "), tag("　"))))(input)?;
+            // A `#` line is a note from the program that wrote the file and may
+            // sit anywhere (R-KIF-002). KIF skips it here; KI2 ended the run on
+            // it, so the same record read as `.kif` and as `.ki2` gave different
+            // answers — one read, one rejected outright (D10).
+            let (rest, _) = many0(alt((
+                line_ending,
+                tag(" "),
+                tag("　"),
+                nom::combinator::recognize(program_comment_line),
+            )))(input)?;
             // A comment before any move of a run belongs to a node of its own:
             // that is what `write_line` produces for a JKF node carrying only
             // comments, and a `変化：` block can open with one.
@@ -169,6 +181,25 @@ fn move_run(
         }
         Ok((input, out))
     }
+}
+
+/// A line KI2 has no shape for, skipped whole.
+///
+/// Narrower than the KIF version. KIF puts every move at the head of its own
+/// numbered line, so a line that does not start with a digit holds no move. KI2
+/// writes moves anywhere along a line (R-KI2-001), so skipping a whole line can
+/// throw moves away — which is the silent loss D1 exists to remove. A line
+/// carrying `▲` or `△` is therefore never skippable, and the leftover-input
+/// check reports it instead.
+fn not_readable_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
+    let (rest, line) = not_move_line(input)?;
+    if line.contains('▲') || line.contains('△') {
+        return Err(nom::Err::Error(VerboseError::from_error_kind(
+            input,
+            nom::error::ErrorKind::Verify,
+        )));
+    }
+    Ok((rest, line))
 }
 
 /// Attaches `branch` as an alternative to the move at ply `start_ply`.
@@ -224,26 +255,44 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
     out.extend(main);
     // `変化：N手` blocks, in the order the file lists them.
     let mut path = Vec::new();
-    while let Ok((rest, start_ply)) = branch_header(input) {
-        let (rest, branch) = move_run(start, start_ply)(rest)?;
-        if branch.is_empty() {
+    loop {
+        if let Ok((rest, start_ply)) = branch_header(input) {
+            let (rest, branch) = move_run(start, start_ply)(rest)?;
+            if !branch.is_empty() {
+                attach_branch(&mut out[1..], &mut path, start_ply, branch);
+            }
             input = rest;
             continue;
         }
-        attach_branch(&mut out[1..], &mut path, start_ply, branch);
-        input = rest;
+        // A line the format has no shape for — a note after the record, a
+        // closing remark — is skipped rather than left behind for the
+        // leftover-input check. KIF has always done this; doing it in only one
+        // of the two made the same content readable as `.kif` and an error as
+        // `.ki2` (D10). `not_move_line` consumes a line at a time, so this
+        // cannot spin.
+        match not_readable_line(input) {
+            Ok((rest, _)) => input = rest,
+            Err(_) => break,
+        }
     }
     Ok((input, out))
 }
 
-pub(crate) fn parse(input: &str) -> IResult<&str, JsonKifuFormat, VerboseError<&str>> {
-    let (input, mut jkf) = parse_without_moves(input)?;
+/// Reads a record, and says whether the header block held anything.
+///
+/// A KIF whose whole content is `手合割：平手` and a file that is not a kifu at
+/// all come out as the same record: the preset defaults to 平手 and nothing
+/// else is set. Only the reader knows the difference — one consumed a line and
+/// the other did not — so it has to say so here (D1, `parse_kif_str`).
+pub(crate) fn parse(input: &str) -> IResult<&str, (JsonKifuFormat, bool), VerboseError<&str>> {
+    let (rest, mut jkf) = parse_without_moves(input)?;
+    let read_header = rest.len() < input.len();
     // The side has to come from the starting position, not the ply parity: a
     // handicap record has White at every odd ply (R-HC-001).
     let start = crate::handicap::starting_side(jkf.initial.as_ref());
-    let (input, moves) = moves(start, input)?;
+    let (input, moves) = moves(start, rest)?;
     jkf.moves.extend(moves);
-    Ok((input, jkf))
+    Ok((input, (jkf, read_header)))
 }
 
 #[cfg(test)]
@@ -369,19 +418,114 @@ mod tests {
         }
     }
 
+    // GAP-017: the ply an outcome line names counts moves and outcomes, not
+    // nodes — a comment-only node writes no line for anyone to number. Counting
+    // nodes instead shifts the outcome one ply on, and the side to move with
+    // it: a bare `反則勝ち` names its winner only through whose turn it is
+    // (D5), so the record comes back accusing the other player.
+    //
+    // A comment-only node is a shape the KI2 *writer* produces for a JKF node
+    // carrying only comments, and a `変化：` block can open with one — which is
+    // where the reader meets it, since a comment after a move attaches to that
+    // move instead. So the round trip is what exercises the count.
+    #[test]
+    fn a_comment_only_node_does_not_shift_the_outcome_ply() {
+        use crate::converter::ToKi2;
+        use crate::parser::parse_ki2_str;
+        const KI2: &str = "手合割：平手
+▲７六歩 △３四歩
+まで2手で中断
+
+変化：2手
+*このあとは
+△８四歩
+まで2手で反則勝ち
+";
+        let jkf = parse_ki2_str(KI2).expect("parses");
+        let branch = &jkf.moves[2].forks.as_ref().expect("a branch at ply 2")[0];
+        assert_eq!(3, branch.len(), "comment node, move, outcome: {branch:?}");
+        assert_eq!(
+            Some(vec![String::from("このあとは")]),
+            branch[0].comments,
+            "the branch opens with a node that is only a comment"
+        );
+        // Ply 2 is the branch's move, so the outcome takes ply 3 — Black's.
+        // R-CSA-007: `+ILLEGAL_ACTION` is Black fouling, so White wins.
+        assert_eq!(
+            Some(MoveSpecial::SpecialIllegalActionWhite),
+            branch[2].special
+        );
+
+        // And again through the writer, which is where the shape comes from.
+        let written = jkf.try_to_ki2_owned().expect("writes KI2");
+        let back = parse_ki2_str(&written).expect("reads back");
+        assert_eq!(jkf, back, "{written:?}");
+    }
+
+    // D10: KIF and KI2 read the same content, so they have to be tolerant of
+    // the same things. Only KIF was — a closing remark after the record, or a
+    // `#` line between moves, made the whole `.ki2` an error while the same
+    // record as `.kif` read fine.
+    //
+    // The tolerance stops where moves start. KIF puts every move at the head of
+    // a numbered line, so skipping a line that does not start with a digit
+    // throws nothing away. KI2 writes moves anywhere along a line, so a line
+    // holding `▲` or `△` is never skipped: swallowing it would drop those moves
+    // without a word, which is the silent loss D1 exists to remove.
+    #[test]
+    fn ki2_skips_the_same_lines_kif_does_and_no_more() {
+        use crate::parser::parse_ki2_str;
+        for (src, moves) in [
+            ("手合割：平手\n▲７六歩 △３四歩\n感想：良い将棋\n", 2),
+            (
+                "手合割：平手\n▲７六歩 △３四歩\nまで2手で中断\n感想：良い\n",
+                3,
+            ),
+            ("手合割：平手\n▲７六歩\n# メモ\n△３四歩\n", 2),
+            ("手合割：平手\n▲７六歩 △３四歩\n解説A\n解説B\n", 2),
+        ] {
+            let jkf = parse_ki2_str(src).unwrap_or_else(|e| panic!("{src:?}: {e}"));
+            assert_eq!(moves, jkf.moves.len() - 1, "{src:?}");
+        }
+
+        // A skipped line must not be allowed to carry a move away with it.
+        for src in [
+            "手合割：平手\n▲７六歩 ほげ △３四歩\n",
+            "手合割：平手\n▲７六歩\nほげ △３四歩\n",
+        ] {
+            assert!(
+                parse_ki2_str(src).is_err(),
+                "{src:?} lost a move in silence"
+            );
+        }
+
+        // Skipping must not swallow a `変化：` block that follows it.
+        let jkf = parse_ki2_str("手合割：平手\n▲７六歩 △３四歩\n解説A\n\n変化：2手\n△８四歩\n")
+            .expect("parses");
+        assert!(
+            jkf.moves[2].forks.is_some(),
+            "the branch after the prose is gone: {:?}",
+            jkf.moves
+        );
+    }
+
     #[test]
     fn parse_empty() {
         assert_eq!(
             Ok((
                 "",
-                JsonKifuFormat {
-                    header: HashMap::new(),
-                    initial: Some(Initial {
-                        preset: Preset::PresetHirate,
-                        data: None,
-                    }),
-                    moves: vec![MoveFormat::default()],
-                }
+                (
+                    JsonKifuFormat {
+                        header: HashMap::new(),
+                        initial: Some(Initial {
+                            preset: Preset::PresetHirate,
+                            data: None,
+                        }),
+                        moves: vec![MoveFormat::default()],
+                    },
+                    // Nothing was read, so no header line was consumed either.
+                    false
+                )
             )),
             parse("")
         );

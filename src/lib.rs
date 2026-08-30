@@ -27,6 +27,7 @@ pub mod error;
 mod handicap;
 pub mod jkf;
 mod normalizer;
+mod notation;
 pub mod parser;
 mod shogi_core;
 

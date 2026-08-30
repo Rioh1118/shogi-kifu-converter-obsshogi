@@ -6,7 +6,7 @@ mod kif;
 
 use crate::error::ParseError;
 use crate::jkf::JsonKifuFormat;
-use encoding_rs::{SHIFT_JIS, UTF_8};
+use encoding_rs::{Encoding, SHIFT_JIS, UTF_8};
 use nom::error::convert_error;
 use nom::Finish;
 use std::fs::File;
@@ -17,7 +17,7 @@ use std::path::Path;
 ///
 /// # Errors
 ///
-/// This function returns [`ConvertError`](crate::error::ConvertError) if it fails to parse the file.
+/// This function returns [`ParseError`] if it fails to parse the file.
 pub fn parse_csa_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseError> {
     let mut file = File::open(&path)?;
     let mut buf = String::new();
@@ -29,7 +29,7 @@ pub fn parse_csa_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseEr
 ///
 /// # Errors
 ///
-/// This function returns [`ConvertError`](crate::error::ConvertError) if it fails to parse the string.
+/// This function returns [`ParseError`] if it fails to parse the string.
 pub fn parse_csa_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
     let mut jkf = JsonKifuFormat::try_from(csa::parse_csa(s)?)?;
     jkf.normalize()?;
@@ -44,77 +44,116 @@ pub fn parse_csa_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
 ///
 /// # Errors
 ///
-/// This function returns [`ConvertError`](crate::error::ConvertError) if it fails to parse the file.
+/// This function returns [`ParseError`] if it fails to parse the file.
 pub fn parse_kif_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseError> {
-    let mut file = File::open(&path)?;
-    let ext = path.as_ref().extension().ok_or(ParseError::FileExtension)?;
-    let encoding = match ext.to_str() {
-        Some("kif") => SHIFT_JIS,
-        Some("kifu") => UTF_8,
-        _ => return Err(ParseError::FileExtension),
-    };
-    let mut buf = Vec::new();
-    file.read_to_end(&mut buf)?;
-    let (cow, _, had_errors) = encoding.decode(&buf);
-    if had_errors {
-        // Decoding failed outright, try UTF-8
-        let (cow_utf8, _, had_errors_utf8) = UTF_8.decode(&buf);
-        if had_errors_utf8 {
-            return Err(ParseError::Decode);
-        }
-        return parse_kif_str(&cow_utf8);
-    }
-    // Decoding succeeded, but the content may be garbled (e.g. UTF-8 file decoded as Shift-JIS).
-    // Only retry on parse-grammar errors (ParseError::Kif) — for Normalize errors, retrying
-    // with another encoding produces the same error and doubles the cost of a 4 s parse.
-    match parse_kif_str(&cow) {
-        Ok(jkf) => Ok(jkf),
-        Err(err @ ParseError::Kif(_)) if encoding == SHIFT_JIS => {
-            let (cow_utf8, _, had_errors_utf8) = UTF_8.decode(&buf);
-            if had_errors_utf8 {
-                return Err(err);
-            }
-            parse_kif_str(&cow_utf8).or(Err(err))
-        }
-        Err(err) => Err(err),
-    }
+    let text = read_kifu(path, &[("kif", SHIFT_JIS), ("kifu", UTF_8)])?;
+    parse_kif_str(&text)
 }
 
-/// Whether the reader got no move out of `jkf` and left `rest` behind.
+/// Reads `path` as text, picking the encoding from its extension and the bytes.
 ///
-/// Every reader here returns an empty record rather than an error for input it
-/// recognised no part of. That is a silent failure on its own, and it becomes a
-/// loud one in the consumer: obs-shogi tries encodings in turn and takes the
-/// first `Ok`, so a mojibake decode that yields an empty record wins over the
-/// decode that would have read the game (D1).
+/// `extensions` maps each extension this reader claims to the encoding it names.
 ///
-/// This is narrower than the strictness D1 asks for — a record whose *tail* is
-/// unreadable still comes back truncated (GAP-005) — but it separates "read
-/// nothing" from "read a record that has no moves", which a header-only file
-/// legitimately is.
-fn read_nothing(jkf: &JsonKifuFormat, rest: &str) -> bool {
-    !rest.trim().is_empty()
+/// R-REQ-003: the extension names an encoding but does not guarantee one. A
+/// `.kif` holding UTF-8 and a `.ki2` holding Shift-JIS both turn up, so the
+/// bytes get the last word — a decode that reports errors is not the one the
+/// file was written in.
+///
+/// Deciding on the decode rather than on a failed parse is what makes this
+/// reachable at all. The full-width forms a kifu is written in (`７`, `：`) sit
+/// at U+FF00 and up, whose UTF-8 lead byte is `0xEF`; Shift-JIS has nothing
+/// there, so a UTF-8 file read as Shift-JIS fails at the decode and never gets
+/// as far as a parse error to retry on.
+fn read_kifu<P: AsRef<Path>>(
+    path: P,
+    extensions: &[(&str, &'static Encoding)],
+) -> Result<String, ParseError> {
+    // Case-folded: a file saved on Windows arrives as `.KIF` just as often as
+    // `.kif`, and the extension is only a hint at the encoding to begin with.
+    let ext = path
+        .as_ref()
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .map(str::to_ascii_lowercase)
+        .ok_or(ParseError::FileExtension)?;
+    let named = extensions
+        .iter()
+        .find(|(name, _)| *name == ext)
+        .map(|(_, encoding)| *encoding)
+        .ok_or(ParseError::FileExtension)?;
+    let mut buf = Vec::new();
+    File::open(&path)?.read_to_end(&mut buf)?;
+    let other = if named == SHIFT_JIS { UTF_8 } else { SHIFT_JIS };
+    for encoding in [named, other] {
+        let (text, _, had_errors) = encoding.decode(&buf);
+        if !had_errors {
+            return Ok(text.into_owned());
+        }
+    }
+    Err(ParseError::Decode)
+}
+
+/// The error for input the reader stopped on, with `rest` located in `whole`.
+///
+/// D1: a reader that stops early has to say so. Returning `Ok` with the record
+/// truncated is the worst of the three outcomes — the caller cannot tell it
+/// from a short game, so obs-shogi indexes a fraction of the moves and nobody
+/// finds out (GAP-005: 79% of `bug_big.kif` went missing this way).
+///
+/// It also decides an encoding: the consumer tries encodings in turn and takes
+/// the first `Ok`, so a mojibake decode that yields an empty record used to win
+/// over the decode that would have read the game.
+fn stopped_at(whole: &str, rest: &str) -> String {
+    convert_error(
+        whole,
+        nom::error::VerboseError {
+            errors: vec![(
+                rest,
+                nom::error::VerboseErrorKind::Context("cannot read this"),
+            )],
+        },
+    )
+}
+
+/// Whether `jkf` holds nothing the reader actually recognised.
+///
+/// Leftover input is not enough on its own. A line the move list has no shape
+/// for is skipped whole, so an input made only of such lines — a CSA file
+/// renamed to `.kif`, a JSON, a mojibake decode with no newline in it — leaves
+/// nothing behind to report and comes back as an empty record.
+///
+/// That empty record is worse than an error, because the consumer picks a text
+/// encoding on this answer: obs-shogi tries encodings in turn and takes the
+/// first `Ok`, so `bug_big.kif` — which D1 means to reject at its unreadable
+/// line — instead came back as a UTF-16LE mojibake holding zero moves, and
+/// *that* won. The error D1 exists to raise never reached anyone.
+///
+/// A header-only kifu is not this: it fills in `header` or `initial`.
+fn recognised_nothing(jkf: &JsonKifuFormat, read_header: bool) -> bool {
+    !read_header
         && jkf
             .moves
             .iter()
-            .all(|mf| mf.move_.is_none() && mf.special.is_none())
+            .all(|mf| mf.move_.is_none() && mf.special.is_none() && mf.comments.is_none())
 }
 
 /// Parses a KIF formatted string to [`jkf::JsonKifuFormat`](crate::jkf::JsonKifuFormat)
 ///
 /// # Errors
 ///
-/// This function returns [`ConvertError`](crate::error::ConvertError) if it fails to parse the string.
+/// Returns [`ParseError::Kif`] when the reader stops before the end of `s` —
+/// a numbered line whose word is not in the KIF vocabulary (R-KIF-007) is the
+/// usual cause — or when nothing in `s` was recognised as a kifu at all (D1).
+/// Returns [`ParseError::Normalize`] when a move cannot be played from the
+/// position before it.
 pub fn parse_kif_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
     match kif::parse(s).finish() {
-        Ok((rest, mut jkf)) => {
-            if read_nothing(&jkf, rest) {
-                return Err(ParseError::Kif(convert_error(
-                    s,
-                    nom::error::VerboseError {
-                        errors: vec![(rest, nom::error::VerboseErrorKind::Context("no KIF here"))],
-                    },
-                )));
+        Ok((rest, (mut jkf, read_header))) => {
+            if !rest.trim().is_empty() {
+                return Err(ParseError::Kif(stopped_at(s, rest)));
+            }
+            if !s.trim().is_empty() && recognised_nothing(&jkf, read_header) {
+                return Err(ParseError::Kif(stopped_at(s, s)));
             }
             // KIF moves carry an explicit `from`, so `relative` inference is dead work.
             // Downstream consumers (e.g. KI2 conversion) can opt-in via `populate_relative()`.
@@ -133,39 +172,28 @@ pub fn parse_kif_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
 ///
 /// # Errors
 ///
-/// This function returns [`ConvertError`](crate::error::ConvertError) if it fails to parse the file.
+/// This function returns [`ParseError`] if it fails to parse the file.
 pub fn parse_ki2_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseError> {
-    let mut file = File::open(&path)?;
-    let ext = path.as_ref().extension().ok_or(ParseError::FileExtension)?;
-    let encoding = match ext.to_str() {
-        Some("ki2") => SHIFT_JIS,
-        Some("ki2u") => UTF_8,
-        _ => return Err(ParseError::FileExtension),
-    };
-    let mut buf = Vec::new();
-    file.read_to_end(&mut buf)?;
-    let (cow, _, had_errors) = encoding.decode(&buf);
-    if had_errors {
-        return Err(ParseError::Decode);
-    }
-    parse_ki2_str(&cow)
+    let text = read_kifu(path, &[("ki2", SHIFT_JIS), ("ki2u", UTF_8)])?;
+    parse_ki2_str(&text)
 }
 
 /// Parses a KI2 formatted string to [`jkf::JsonKifuFormat`](crate::jkf::JsonKifuFormat)
 ///
 /// # Errors
 ///
-/// This function returns [`ConvertError`](crate::error::ConvertError) if it fails to parse the string.
+/// Returns [`ParseError::Ki2`] when the reader stops before the end of `s`, or
+/// when nothing in `s` was recognised as a kifu at all (D1). Returns
+/// [`ParseError::Normalize`] when a move cannot be played from the position
+/// before it.
 pub fn parse_ki2_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
     match ki2::parse(s).finish() {
-        Ok((rest, mut jkf)) => {
-            if read_nothing(&jkf, rest) {
-                return Err(ParseError::Ki2(convert_error(
-                    s,
-                    nom::error::VerboseError {
-                        errors: vec![(rest, nom::error::VerboseErrorKind::Context("no KI2 here"))],
-                    },
-                )));
+        Ok((rest, (mut jkf, read_header))) => {
+            if !rest.trim().is_empty() {
+                return Err(ParseError::Ki2(stopped_at(s, rest)));
+            }
+            if !s.trim().is_empty() && recognised_nothing(&jkf, read_header) {
+                return Err(ParseError::Ki2(stopped_at(s, s)));
             }
             jkf.normalize_with_color_correction(true)?;
             Ok(jkf)
@@ -178,7 +206,7 @@ pub fn parse_ki2_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
 ///
 /// # Errors
 ///
-/// This function returns [`ConvertError`](crate::error::ConvertError) if it fails to parse the file.
+/// This function returns [`ParseError`] if it fails to parse the file.
 pub fn parse_jkf_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseError> {
     let file = File::open(&path)?;
     let mut jkf = serde_json::from_reader::<_, JsonKifuFormat>(BufReader::new(file))?;
@@ -186,11 +214,11 @@ pub fn parse_jkf_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseEr
     Ok(jkf)
 }
 
-/// Parses a JSON file to [`jkf::JsonKifuFormat`](crate::jkf::JsonKifuFormat)
+/// Parses a JSON string to [`jkf::JsonKifuFormat`](crate::jkf::JsonKifuFormat)
 ///
 /// # Errors
 ///
-/// This function returns [`ConvertError`](crate::error::ConvertError) if it fails to parse the file.
+/// This function returns [`ParseError`] if it fails to parse the string.
 pub fn parse_jkf_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
     let mut jkf = serde_json::from_str::<JsonKifuFormat>(s)?;
     jkf.normalize()?;
@@ -281,6 +309,130 @@ mod tests {
         }
     }
 
+    // D1: a reader that stops early has to say so. Returning `Ok` with the
+    // record truncated is the worst of the three outcomes — the caller cannot
+    // tell it from a short game. `bug_big.kif` lost 79% of its moves this way
+    // and reported success (GAP-005).
+    //
+    // The word that stopped the reader is the one thing it cannot recover, so
+    // the error has to carry it and point at its own line.
+    #[test]
+    fn a_record_the_reader_stops_in_the_middle_of_is_an_error() {
+        const HEAD: &str = "手合割：平手\n手数----指手---------消費時間--\n";
+        for (tail, line, word) in [
+            // `パス` is a real token in files written by analysis software, and
+            // it is not in R-KIF-007's vocabulary. JKF has no `MoveSpecial` that
+            // means "the turn passes" and neither does tsshogi's JKF, so there
+            // is nothing to read it into — D8.
+            ("   1 ７六歩(77)\n   2 パス\n   3 ２六歩(27)\n", 4, "パス"),
+            // A KI2 move line in a KIF. tsshogi rejects this too.
+            ("   1 ７六歩(77)\n▲２六歩\n   2 ３四歩(33)\n", 4, "▲２六歩"),
+            // A numbered line whose word is nothing the format has.
+            ("   1 ７六歩(77)\n   2 ほげ\n", 4, "ほげ"),
+        ] {
+            let err =
+                parse_kif_str(&format!("{HEAD}{tail}")).expect_err("{word} should stop the reader");
+            let text = err.to_string();
+            assert!(text.contains(word), "{word} is missing from {text:?}");
+            assert!(
+                text.contains(&format!("at line {line}")),
+                "{word} should point at line {line}: {text:?}"
+            );
+        }
+    }
+
+    // Leftover input is not enough on its own. A line the move list has no
+    // shape for is skipped whole, so an input made only of such lines leaves
+    // nothing behind to report and used to come back as an empty record.
+    //
+    // The consumer decides a text encoding on this answer: obs-shogi tries
+    // encodings in turn and takes the first `Ok`. `bug_big.kif` is meant to be
+    // rejected at its unreadable line (D1/D8) — instead the UTF-16LE attempt
+    // decoded it to one long line of mojibake, that came back `Ok` with zero
+    // moves, and *that* won. The error D1 exists to raise reached nobody.
+    #[test]
+    fn a_file_that_is_not_a_kifu_is_an_error_not_an_empty_record() {
+        for src in [
+            // No newline at all: one line the reader has no shape for.
+            "これは棋譜ではないただの塊",
+            "これは棋譜ではない\nただの文章だ\n",
+            // A `.kif` holding something else entirely.
+            "{\"header\":{},\"moves\":[{}]}\n",
+            "V2.2\nPI\n+\n+7776FU\n",
+        ] {
+            assert!(parse_kif_str(src).is_err(), "{src:?} came back as a record");
+            assert!(parse_ki2_str(src).is_err(), "{src:?} came back as a record");
+        }
+    }
+
+    // A record can legitimately hold no moves — a header the reader understood
+    // is enough to say the file is a kifu. `手合割：平手` and a file that is not
+    // a kifu produce the same `initial`, so only the reader can tell them
+    // apart, and it does that by whether it consumed a header line.
+    #[test]
+    fn a_kifu_with_nothing_but_a_header_is_still_a_kifu() {
+        for src in [
+            "手合割：平手\n",
+            "手合割：平手\n手数----指手---------消費時間--\n",
+            "先手：Aさん\n",
+            "*ひとこと\n",
+            "",
+            "  \n\n",
+        ] {
+            let jkf = parse_kif_str(src).unwrap_or_else(|e| panic!("{src:?}: {e}"));
+            assert_eq!(0, jkf.moves.len() - 1, "{src:?}");
+        }
+    }
+
+    // The other side of the same check: the lines a record legitimately ends
+    // with are accounted for, so a whole file does not come back as an error.
+    // `まで<N>手で<結末>` is one of them, and it need not have a newline after it.
+    #[test]
+    fn the_lines_a_record_ends_with_are_not_leftover_input() {
+        const RECORD: &str =
+            "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n   2 ３四歩(33)\n";
+        for tail in [
+            "",
+            "まで2手で中断\n",
+            "まで2手で中断",
+            "\n\n",
+            "変化：2\n   2 ８四歩(83)\n",
+            // More than one trailing line. The run parser already swallows the
+            // first, so stopping there would accept one and call the second
+            // unreadable.
+            "まで2手で中断\n感想：良い将棋\n",
+            "解説A\n解説B\n",
+        ] {
+            let jkf = parse_kif_str(&format!("{RECORD}{tail}"))
+                .unwrap_or_else(|e| panic!("{tail:?} was rejected: {e}"));
+            assert_eq!(2, jkf.moves.len() - 1, "{tail:?}");
+        }
+    }
+
+    // KI2 reads a whole line at a time, so a line it cannot spell out is the
+    // same silent truncation in a different shape.
+    //
+    // A line with no move on it is a different matter: D10 skips those, the
+    // same way KIF always has. `ki2_skips_the_same_lines_kif_does_and_no_more`
+    // draws that boundary.
+    #[test]
+    fn a_ki2_record_the_reader_stops_in_the_middle_of_is_an_error() {
+        for (src, word) in [
+            // Mid-line: the rest of the line holds a move, so skipping the line
+            // would take that move with it.
+            ("手合割：平手\n▲７六歩 ほげ △三四歩\n", "ほげ"),
+            ("手合割：平手\n▲７六歩\nほげほげ △３四歩\n", "ほげほげ"),
+            // A KIF move line in a KI2.
+            ("手合割：平手\n▲７六歩\n   2 ３四歩(33)\n", "３四歩(33)"),
+        ] {
+            let err = parse_ki2_str(src).expect_err("{word} should stop the reader");
+            assert!(
+                err.to_string().contains(word),
+                "{word} is missing from {err}"
+            );
+        }
+    }
+
     use super::*;
     use crate::jkf::*;
     use serde_json::Value;
@@ -321,6 +473,21 @@ mod tests {
             parse_ki2_file(scratch("sjis.ki2", &sjis(KI2))).expect("reads .ki2")
         );
 
+        // Windows writes `.KIF` as readily as `.kif`, and the extension is only
+        // a hint at the encoding to begin with — so it is matched case-folded.
+        for name in ["upper.KIF", "mixed.Kif"] {
+            assert!(
+                parse_kif_file(scratch(name, &sjis(KIF))).is_ok(),
+                "{name} was rejected"
+            );
+        }
+        for name in ["upper.KI2", "mixed.Ki2"] {
+            assert!(
+                parse_ki2_file(scratch(name, &sjis(KI2))).is_ok(),
+                "{name} was rejected"
+            );
+        }
+
         for path in [
             scratch("kifu.txt", KIF.as_bytes()),
             scratch("noextension", KIF.as_bytes()),
@@ -336,16 +503,42 @@ mod tests {
         }
     }
 
-    // A `.kif` holding UTF-8 is common enough that the reader falls back rather
-    // than failing. Which fallback carries it matters: the full-width forms a
-    // KIF is written in (`７`, `：`) sit at U+FF00 and up, whose UTF-8 lead byte
-    // is `0xEF`, and no Shift-JIS character starts there — so the *decode*
-    // reports an error and the UTF-8 retry happens before any parsing.
+    // R-REQ-003: the extension names an encoding but does not guarantee one, so
+    // every extension has to read both. All four combinations turn up — a `.kif`
+    // holding UTF-8 above all — and three of the four used to come back as
+    // `Decode Error`.
+    //
+    // The decision belongs at the decode, not at a failed parse. The full-width
+    // forms a kifu is written in (`７`, `：`) sit at U+FF00 and up, whose UTF-8
+    // lead byte is `0xEF`, and Shift-JIS has nothing there — so a UTF-8 file
+    // read as Shift-JIS fails while decoding and never reaches a parse error to
+    // retry on. A retry hung off `ParseError::Kif` is unreachable.
     #[test]
-    fn a_utf8_file_named_kif_is_still_read() {
+    fn either_encoding_is_read_whatever_the_extension_says() {
         const KIF: &str = "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n";
-        let mislabelled = parse_kif_file(scratch("utf8.kif", KIF.as_bytes())).expect("reads");
-        assert_eq!(1, mislabelled.moves.len() - 1);
+        const KI2: &str = "手合割：平手\n▲７六歩 △３四歩\n";
+        let sjis = |s: &str| SHIFT_JIS.encode(s).0.into_owned();
+
+        for (name, bytes) in [
+            ("both.kif", sjis(KIF)),
+            ("both_utf8.kif", KIF.as_bytes().to_vec()),
+            ("both.kifu", KIF.as_bytes().to_vec()),
+            ("both_sjis.kifu", sjis(KIF)),
+        ] {
+            let jkf = parse_kif_file(scratch(name, &bytes))
+                .unwrap_or_else(|e| panic!("{name} was not read: {e}"));
+            assert_eq!(1, jkf.moves.len() - 1, "{name}");
+        }
+        for (name, bytes) in [
+            ("both.ki2", sjis(KI2)),
+            ("both_utf8.ki2", KI2.as_bytes().to_vec()),
+            ("both.ki2u", KI2.as_bytes().to_vec()),
+            ("both_sjis.ki2u", sjis(KI2)),
+        ] {
+            let jkf = parse_ki2_file(scratch(name, &bytes))
+                .unwrap_or_else(|e| panic!("{name} was not read: {e}"));
+            assert_eq!(2, jkf.moves.len() - 1, "{name}");
+        }
     }
 
     #[test]

@@ -1,8 +1,11 @@
-use super::kakinoki::{move_comment_line, move_to, not_move_line, parse_without_moves, piece_kind};
+use super::kakinoki::{
+    blank_line, end_of_line, move_comment_line, move_to, not_move_line, parse_without_moves,
+    piece_kind,
+};
 use crate::jkf::*;
 use nom::branch::alt;
 use nom::bytes::complete::tag;
-use nom::character::complete::{digit1, line_ending, not_line_ending, space0};
+use nom::character::complete::{digit1, not_line_ending, space0};
 use nom::combinator::{map, map_res, opt, value};
 use nom::error::{ParseError, VerboseError};
 use nom::multi::{many0, many1};
@@ -35,11 +38,13 @@ fn move_from(input: &str) -> IResult<&str, Option<PlaceFormat>, VerboseError<&st
 
 /// The KIF outcome words, longest first so that a word is never cut short by a
 /// prefix of itself. [`MoveSpecial::from_kif_word`] holds the mapping.
-const KIF_SPECIAL_WORDS: [&str; 10] = [
+const KIF_SPECIAL_WORDS: [&str; 12] = [
     "切れ負け",
     "入玉勝ち",
     "反則負け",
     "反則勝ち",
+    "不戦勝",
+    "不戦敗",
     "千日手",
     "持将棋",
     "投了",
@@ -70,6 +75,41 @@ fn move_special(
             input,
             nom::error::ErrorKind::Alt,
         )))
+    }
+}
+
+/// A line between the runs of moves: blank, or one the move list has no shape
+/// for — `変化：<N>手`, `まで<N>手で<結末>`, the `手数----指手---` rule.
+fn skippable_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
+    alt((blank_line, not_move_line))(input)
+}
+
+/// Skips the blank lines and `#` lines that may sit between two moves of a run
+/// (R-KIF-002). Ending the run on one leaves every move after it to be read as
+/// a branch of a ply that does not exist, and dropped (GAP-008).
+///
+/// Only these two. A line the format has no meaning for still ends the run, and
+/// the leftover-input check then reports it (D1) rather than guessing.
+///
+/// Written by hand rather than as `many0(alt((blank_line, program_comment_line)))`
+/// because it runs once per move and almost always matches nothing: the nom
+/// version allocates a `VerboseError` on each of those misses, which cost 13%
+/// of the time to read the whole corpus.
+fn skip_interruptions(mut input: &str) -> &str {
+    loop {
+        let rest = if let Some(rest) = input.strip_prefix('#') {
+            rest
+        } else {
+            let trimmed = input.trim_start_matches([' ', '\t']);
+            if !(trimmed.starts_with('\n') || trimmed.starts_with("\r\n")) {
+                return input;
+            }
+            trimmed
+        };
+        input = match rest.find('\n') {
+            Some(i) => &rest[i + 1..],
+            None => return "",
+        };
     }
 }
 
@@ -153,7 +193,7 @@ fn move_line(
     let side_to_move = known_side.unwrap_or_else(|| crate::handicap::side_to_move_at_ply(start, i));
     let (input, mut mf) = preceded(space0, alt((move_special(side_to_move), move_move)))(input)?;
     let (input, time) = preceded(space0, opt(move_time))(input)?;
-    let (input, _) = preceded(not_line_ending, line_ending)(input)?;
+    let (input, _) = preceded(not_line_ending, end_of_line)(input)?;
     if let Some(mmf) = &mut mf.move_ {
         mmf.color = side_to_move;
     }
@@ -195,6 +235,13 @@ fn moves_with_index(
     start: Color,
     input: &str,
 ) -> IResult<&str, (usize, Vec<MoveFormat>), VerboseError<&str>> {
+    // A run can open with comment lines, and the node they make carries no ply:
+    // JKF lets a node hold only comments (R-JKF-002) and KIF has no numbered
+    // line for one, so `to_kif` writes them straight after the `変化：N手`
+    // header. Refusing them here means this crate writes `変化：` blocks its own
+    // reader rejects — and a `&` bookmark in the same place was worse, swallowed
+    // as an unreadable line and gone without a word (R-KIF-011).
+    let (input, leading) = opt(many1(move_comment_line))(input)?;
     let (mut input, (first_ply, first)) = move_with_comments(start, None, input)?;
     // Whose turn the next line is. Only a move passes the turn; an outcome takes
     // a ply number without taking a turn, which is why the parity of the number
@@ -203,22 +250,33 @@ fn moves_with_index(
         &first,
         crate::handicap::side_to_move_at_ply(start, first_ply),
     );
-    let mut out = vec![first];
+    let mut out: Vec<MoveFormat> = leading
+        .map(|comments| MoveFormat {
+            comments: Some(comments),
+            ..Default::default()
+        })
+        .into_iter()
+        .chain([first])
+        .collect();
     loop {
+        let skipped = skip_interruptions(input);
         // `many1` stops on `Error` and throws anything else back. Swallowing a
         // `Failure` here would drop the rest of the record without a word,
         // which is the failure this branch exists to remove.
-        match move_with_comments(start, Some(side), input) {
+        match move_with_comments(start, Some(side), skipped) {
             Ok((rest, (_, mf))) => {
                 side = next_side(&mf, side);
                 out.push(mf);
                 input = rest;
             }
+            // `input` stays before the skipped lines: what ends a run is
+            // usually the blank line before a `変化：` block, and the caller
+            // needs to see it.
             Err(nom::Err::Error(_)) => break,
             Err(err) => return Err(err),
         }
     }
-    let (input, _) = opt(not_move_line)(input)?;
+    let (input, _) = opt(skippable_line)(input)?;
     Ok((input, (first_ply, out)))
 }
 
@@ -243,6 +301,47 @@ fn main_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Verbo
 }
 
 fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
+    /// Where in `run` the node at ply `at` sits, `base` being the ply of the
+    /// run's first numbered line.
+    ///
+    /// The ply is the number on the line, not the position in the array. A node
+    /// carrying only comments takes no number (`occupies_a_ply`), so counting
+    /// array slots instead puts a `変化：N手` block one move off for every such
+    /// node before it. The writer numbers the same way
+    /// (`converter/kif.rs::write_move_lines`), and a reader that counts
+    /// differently reads back a tree the writer did not write.
+    fn index_of_ply(run: &[MoveFormat], base: usize, at: usize) -> Option<usize> {
+        let mut ply = base;
+        for (index, mf) in run.iter().enumerate() {
+            if !mf.occupies_a_ply() {
+                continue;
+            }
+            if ply == at {
+                return Some(index);
+            }
+            ply += 1;
+        }
+        None
+    }
+
+    /// Hangs `fork`, which starts at ply `at`, off `run`, whose first numbered
+    /// line is ply `base`.
+    ///
+    /// A run is the alternative *to* the move at its own ply (R-JKF-004). A run
+    /// numbered past the end of `run` is not an alternative to a move that is
+    /// not there: it is `run` carrying on, and that is how tsshogi reads it
+    /// (D3 rule 4 — `research/tables/20-fork-merge.md` T5). Dropping it returned
+    /// `Ok` with those moves gone and said nothing.
+    fn attach(run: &mut Vec<MoveFormat>, base: usize, at: usize, fork: Vec<MoveFormat>) {
+        match index_of_ply(run, base, at) {
+            Some(index) => match &mut run[index].forks {
+                Some(v) => v.push(fork),
+                None => run[index].forks = Some(vec![fork]),
+            },
+            None => run.extend(fork),
+        }
+    }
+
     fn merge_forks(
         (mut moves, mut forks): (Vec<MoveFormat>, Vec<(usize, Vec<MoveFormat>)>),
     ) -> Vec<MoveFormat> {
@@ -252,55 +351,59 @@ fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Ver
             if let Some((i, last)) = forks.last_mut() {
                 while stack.last().is_some_and(|(j, _)| j > i) {
                     if let Some((j, fork)) = stack.pop() {
-                        // Defend against malformed `変化:` indices (j < i, or out of range).
-                        if let Some(node) = j.checked_sub(*i).and_then(|k| last.get_mut(k)) {
-                            if let Some(v) = &mut node.forks {
-                                v.push(fork);
-                            } else {
-                                node.forks = Some(vec![fork]);
-                            }
-                        }
+                        attach(last, *i, j, fork);
                     }
                 }
             }
         }
+        // The main line opens with the initial position's slot, which takes no
+        // number of its own, so its first numbered line is ply 1 (R-JKF-001).
         while let Some((i, fork)) = stack.pop() {
-            if i < moves.len() {
-                if let Some(v) = &mut moves[i].forks {
-                    v.push(fork);
-                } else {
-                    moves[i].forks = Some(vec![fork]);
-                }
-            }
+            attach(&mut moves, 1, i, fork);
         }
         moves
     }
 
-    let (input, _) = many0(not_move_line)(input)?;
+    let (input, _) = many0(skippable_line)(input)?;
     let (mut input, main) = main_moves(start, input)?;
     let mut forks = Vec::new();
     loop {
-        let (rest, _) = many0(not_move_line)(input)?;
+        let (rest, _) = many0(skippable_line)(input)?;
         match moves_with_index(start, rest) {
-            Ok((rest, run)) => {
+            Ok((after_run, run)) => {
                 forks.push(run);
-                input = rest;
+                input = after_run;
             }
-            Err(nom::Err::Error(_)) => break,
+            // The lines just skipped are accounted for even though no run
+            // followed them. A record trails off into prose — `まで<N>手で…`,
+            // a comment block — and the run parser already swallows one such
+            // line, so stopping here would accept one trailing line and call
+            // the second one unreadable input (D1). Skip them the same way.
+            Err(nom::Err::Error(_)) => {
+                input = rest;
+                break;
+            }
             Err(err) => return Err(err),
         }
     }
     Ok((input, merge_forks((main, forks))))
 }
 
-pub(crate) fn parse(input: &str) -> IResult<&str, JsonKifuFormat, VerboseError<&str>> {
-    let (input, mut jkf) = parse_without_moves(input)?;
+/// Reads a record, and says whether the header block held anything.
+///
+/// A KIF whose whole content is `手合割：平手` and a file that is not a kifu at
+/// all come out as the same record: the preset defaults to 平手 and nothing
+/// else is set. Only the reader knows the difference — one consumed a line and
+/// the other did not — so it has to say so here (D1, `parse_kif_str`).
+pub(crate) fn parse(input: &str) -> IResult<&str, (JsonKifuFormat, bool), VerboseError<&str>> {
+    let (rest, mut jkf) = parse_without_moves(input)?;
+    let read_header = rest.len() < input.len();
     // The side has to come from the starting position, not the ply parity: a
     // handicap record has White at every odd ply (R-HC-001).
     let start = crate::handicap::starting_side(jkf.initial.as_ref());
-    let (input, moves) = entire_moves(start, input)?;
+    let (input, moves) = entire_moves(start, rest)?;
     jkf.moves.extend(moves);
-    Ok((input, jkf))
+    Ok((input, (jkf, read_header)))
 }
 
 #[cfg(test)]
@@ -385,7 +488,15 @@ mod tests {
     }
 
     // R-KIF-007. Every word KIF defines for an outcome, and what it means here.
-    // 不戦勝 / 不戦敗 are the two the JKF vocabulary cannot express.
+    //
+    // 不戦勝 / 不戦敗 have no counterpart among JKF's fourteen, so this crate
+    // extends the enum for them (D1). Reading them as nothing was the worse
+    // answer once the reader stopped truncating in silence: they are spec
+    // vocabulary, so a valid KIF using one made the whole file an error.
+    //
+    // Both are defined against Black (the upper hand) outright, not against
+    // whoever is to move — unlike 反則勝ち in the same table — so the ply does
+    // not change what they mean.
     #[test]
     fn kif_outcome_words() {
         // Ply 2, so it is White to move and 反則勝ち accuses Black.
@@ -400,8 +511,8 @@ mod tests {
             ("入玉勝ち", Some(MoveSpecial::SpecialKachi)),
             ("詰み", Some(MoveSpecial::SpecialTsumi)),
             ("不詰", Some(MoveSpecial::SpecialFuzumi)),
-            ("不戦勝", None),
-            ("不戦敗", None),
+            ("不戦勝", Some(MoveSpecial::SpecialFusensho)),
+            ("不戦敗", Some(MoveSpecial::SpecialFusenpai)),
         ] {
             let line = format!("   2 {word}\n");
             let got = move_line(Color::Black, None, &line)
@@ -830,10 +941,17 @@ mod tests {
         }
     }
 
+    // A run numbered past the end of the run it belongs to is that run carrying
+    // on, not an alternative to a move that is not there (D3 rule 4). Here
+    // 変化:5 is three plies past 変化:2, which holds one move.
+    //
+    // This test used to fix the opposite: that 変化:5 is dropped. Dropping it
+    // returns `Ok` with the moves gone, which is the silent loss this reader is
+    // being taken apart to remove — and tsshogi appends. Indexing straight into
+    // the run is what panicked with `index out of bounds` before `checked_sub`,
+    // so neither the panic nor the silent drop is the answer.
     #[test]
-    fn parse_entire_moves_malformed_fork_index() {
-        // 変化:5 sits inside 変化:2 with offset 3, but 変化:2 only has 1 move.
-        // The pre-`checked_sub` code panicked with `index out of bounds`.
+    fn a_branch_numbered_past_the_end_carries_the_run_on() {
         let input = &r#"
 手数----指手---------消費時間--
    1 ７六歩(77)    (00:00 / 00:00:00)
@@ -845,14 +963,192 @@ mod tests {
 変化：5
    5 投了 ( 0:00/ 0:00:00)
 "#[1..];
-        let ret = entire_moves(Color::Black, input);
-        let (_, moves) = ret.expect("entire_moves should not panic on malformed input");
-        // 変化:2 attaches at index 2; 変化:5 is silently dropped.
+        let (_, moves) = entire_moves(Color::Black, input).expect("parses");
         let forks = moves[2]
             .forks
             .as_ref()
             .expect("変化:2 should attach at index 2");
         assert_eq!(1, forks.len());
-        assert_eq!(1, forks[0].len(), "the inner 変化:5 must NOT be merged in");
+        assert_eq!(
+            2,
+            forks[0].len(),
+            "変化:5 continues 変化:2 rather than vanishing"
+        );
+        assert_eq!(
+            Some(MoveSpecial::SpecialToryo),
+            forks[0][1].special,
+            "and it is the outcome it was"
+        );
+    }
+
+    // The same rule on the main line. A record whose ply numbers jump — which
+    // is what a reader that stopped on a line it could not place produces —
+    // must not lose the moves after the jump.
+    #[test]
+    fn a_branch_numbered_past_the_main_line_carries_it_on() {
+        let input = &r#"
+手数----指手---------消費時間--
+   1 ７六歩(77)    (00:00 / 00:00:00)
+
+変化：9
+   9 ３四歩(33)    (00:00 / 00:00:00)
+"#[1..];
+        let (_, moves) = entire_moves(Color::Black, input).expect("parses");
+        assert_eq!(3, moves.len(), "index 0 plus two moves");
+        assert!(
+            moves.iter().all(|m| m.forks.is_none()),
+            "nothing branched: {moves:?}"
+        );
+    }
+
+    // A `変化：` block can open with a node carrying only comments: JKF allows
+    // one (R-JKF-002), KIF has no numbered line for it, and `to_kif` writes it
+    // straight after the `変化：N手` header. The reader has to take back what
+    // the writer puts out — refusing it made this crate reject its own output,
+    // and the KI2 reader produces exactly this shape (`parser::ki2::tests::
+    // a_comment_only_node_does_not_shift_the_outcome_ply`).
+    //
+    // A `&` bookmark in the same place was worse than an error: it was taken
+    // for an unreadable line and skipped, so it came back missing with nothing
+    // said (R-KIF-011).
+    //
+    // The ply is the number on the line, not the position in the array, so the
+    // comment node must not shift where the block attaches either.
+    #[test]
+    fn a_branch_can_open_with_a_comment_and_survives_a_kif_round_trip() {
+        use crate::converter::ToKif;
+        use crate::parser::{parse_ki2_str, parse_kif_str};
+        for opening in ["*このあとは", "&しおり"] {
+            let ki2 = format!(
+                "手合割：平手\n▲７六歩 △３四歩\nまで2手で中断\n\n変化：2手\n{opening}\n△８四歩\nまで2手で反則勝ち\n"
+            );
+            let jkf = parse_ki2_str(&ki2).unwrap_or_else(|e| panic!("{opening}: {e}"));
+            let branch = &jkf.moves[2]
+                .forks
+                .as_ref()
+                .unwrap_or_else(|| panic!("{opening}: no branch"))[0];
+            assert_eq!(3, branch.len(), "{opening}: comment, move, outcome");
+
+            let kif = jkf
+                .try_to_kif_owned()
+                .unwrap_or_else(|e| panic!("{opening}: {e}"));
+            let back = parse_kif_str(&kif).unwrap_or_else(|e| {
+                panic!("{opening}: this crate cannot read its own KIF: {e}\n{kif}")
+            });
+            assert_eq!(jkf, back, "{opening}: {kif:?}");
+        }
+    }
+
+    // The same node must not move the branch either. Here the block that opens
+    // with a comment is itself the target of a later `変化：`, so counting array
+    // slots instead of ply numbers hangs the second block off the wrong move.
+    #[test]
+    fn a_comment_node_does_not_shift_where_a_branch_attaches() {
+        use crate::parser::parse_kif_str;
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77)
+   2 ３四歩(33)
+   3 ２六歩(27)
+
+変化：2
+*このあとは
+   2 ８四歩(83)
+   3 ２六歩(27)
+
+変化：3
+   3 ７八金(69)
+";
+        let jkf = parse_kif_str(kif).expect("parses");
+        let outer = &jkf.moves[2].forks.as_ref().expect("a branch at ply 2")[0];
+        assert_eq!(
+            [false, true, true],
+            [0, 1, 2].map(|i| outer[i].occupies_a_ply()),
+            "comment node first, then plies 2 and 3: {outer:?}"
+        );
+        // `変化：3` is an alternative to ply 3, which is `outer[2]` — not
+        // `outer[3]`, which does not exist.
+        assert!(
+            outer[2].forks.is_some(),
+            "the inner branch hangs off ply 3: {outer:?}"
+        );
+    }
+
+    // R-KIF-002: a blank line and a `#` line may sit anywhere in the move list.
+    // Ending the run of moves on one left every move after it to be read as a
+    // branch of a ply that is not there, and dropped — the record came back
+    // with one move and `Ok` (GAP-008). tsshogi reads all three.
+    //
+    // The blank line is the harder of the two: `not_move_line` used to start on
+    // the newline itself and take the line after it as its content, so the move
+    // following a blank line was eaten whole.
+    #[test]
+    fn a_blank_or_program_comment_line_does_not_end_the_move_list() {
+        use crate::parser::parse_kif_str;
+        const HEAD: &str = "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n";
+        const TAIL: &str = "   2 ３四歩(33)\n   3 ２六歩(27)\n";
+        for middle in ["", "\n", "# メモ\n", "\n# メモ\n\n", "   \n"] {
+            let jkf = parse_kif_str(&format!("{HEAD}{middle}{TAIL}"))
+                .unwrap_or_else(|e| panic!("{middle:?} was rejected: {e}"));
+            assert_eq!(3, jkf.moves.len() - 1, "{middle:?}");
+        }
+    }
+
+    // The blank line before a `変化：` block is what ends the run, so tolerating
+    // blank lines inside a run must not swallow the block that follows one. The
+    // two readings of a blank line compete: the run skips it and carries on,
+    // and the branch reader needs it to have ended the run. What settles it is
+    // what comes after — a numbered move line continues the run, a `変化：`
+    // header does not.
+    #[test]
+    fn a_blank_line_still_lets_a_branch_start() {
+        use crate::parser::parse_kif_str;
+        const HEAD: &str =
+            "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n   2 ３四歩(33)\n";
+        const BRANCH: &str = "\n変化：2\n   2 ８四歩(83)\n";
+
+        for (middle, main_line) in [("", 2), ("\n   3 ２六歩(27)\n", 3)] {
+            let jkf = parse_kif_str(&format!("{HEAD}{middle}{BRANCH}"))
+                .unwrap_or_else(|e| panic!("{middle:?} was rejected: {e}"));
+            assert_eq!(main_line, jkf.moves.len() - 1, "{middle:?}");
+            let forks = jkf.moves[2]
+                .forks
+                .as_ref()
+                .unwrap_or_else(|| panic!("no branch at ply 2 for {middle:?}"));
+            assert_eq!(1, forks.len(), "{middle:?}");
+            assert_eq!(1, forks[0].len(), "the branch holds its one move");
+        }
+    }
+
+    // A text file need not end with a newline, and kifu written by hand or by
+    // other software turn up without one. Requiring one dropped whatever was on
+    // the last line — a move, a comment, or `まで<N>手で…` — and returned `Ok`,
+    // so the record came back one line short with nothing said about it
+    // (R-REQ-004).
+    #[test]
+    fn the_last_line_is_read_without_a_trailing_newline() {
+        use crate::parser::parse_kif_str;
+        const HEAD: &str = "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n";
+
+        let moves = parse_kif_str(&format!("{HEAD}   2 ３四歩(33)")).expect("parses");
+        assert_eq!(
+            2,
+            moves.moves.len() - 1,
+            "the second move is on the last line"
+        );
+
+        let comment = parse_kif_str(&format!("{HEAD}*memo")).expect("parses");
+        assert_eq!(
+            Some(&vec![String::from("memo")]),
+            comment.moves[1].comments.as_ref(),
+            "the comment is on the last line"
+        );
+
+        let outcome = parse_kif_str(&format!("{HEAD}   2 投了")).expect("parses");
+        assert_eq!(
+            Some(MoveSpecial::SpecialToryo),
+            outcome.moves[2].special,
+            "the outcome is on the last line"
+        );
     }
 }

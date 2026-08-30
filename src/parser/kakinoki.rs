@@ -1,8 +1,8 @@
 use crate::jkf::*;
 use nom::branch::alt;
 use nom::bytes::complete::{is_not, tag};
-use nom::character::complete::{line_ending, none_of, not_line_ending, one_of};
-use nom::combinator::{map, map_res, opt, value};
+use nom::character::complete::{line_ending, none_of, not_line_ending, one_of, space0};
+use nom::combinator::{eof, map, map_res, opt, value};
 use nom::error::{ErrorKind, ParseError, VerboseError};
 use nom::multi::{count, many0, many1};
 use nom::sequence::{delimited, pair, preceded, separated_pair, terminated, tuple};
@@ -55,24 +55,60 @@ impl InformationData {
     }
 }
 
+/// Ends a line, at the end of the file as well as at a newline.
+///
+/// A text file need not end with a newline, and kifu written by hand and by
+/// other software both turn up without one. Requiring `line_ending` drops the
+/// last line — a move, a comment or the `まで<N>手で…` — and says nothing about
+/// it. Every line parser here is anchored on something it must consume first,
+/// so accepting the empty match at the end cannot loop.
+pub(super) fn end_of_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
+    alt((line_ending, eof))(input)
+}
+
+/// A line with nothing on it but spaces.
+///
+/// KIF puts one before each `変化：` block, and R-KIF-002 lets one sit anywhere
+/// in the move list.
+pub(super) fn blank_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
+    terminated(space0, line_ending)(input)
+}
+
+/// A `#` line: a note from the program that wrote the file (R-KIF-002).
+pub(super) fn program_comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
+    comment_line(input)
+}
+
 fn comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
     map(
-        delimited(tag("#"), not_line_ending, line_ending),
+        delimited(tag("#"), not_line_ending, end_of_line),
         String::from,
     )(input)
 }
 
+/// A line that is none of the shapes the move list is made of, skipped whole.
+///
+/// The excluded set is every character a line the reader *does* understand can
+/// start with. `&` is one of them: a bookmark is kept as a comment
+/// (R-KIF-011), and letting this parser take the line instead drops it without
+/// a word — which is what happened to a bookmark at the head of a `変化：`
+/// block that `to_kif` had just written.
+///
+/// The line endings have to be excluded too. Without them the parser starts on
+/// the newline of a *blank* line, takes the line after it as this line's
+/// content, and swallows two lines where one was meant — so a blank line in the
+/// middle of a record destroys the move that follows it.
 pub(super) fn not_move_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
-    delimited(none_of(" 0123456789*▲△"), not_line_ending, line_ending)(input)
+    delimited(none_of(" \r\n0123456789*&▲△"), not_line_ending, end_of_line)(input)
 }
 
 pub(super) fn move_comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
     alt((
         map(
-            delimited(tag("*"), not_line_ending, line_ending),
+            delimited(tag("*"), not_line_ending, end_of_line),
             String::from,
         ),
-        map(delimited(tag("&"), not_line_ending, line_ending), |s| {
+        map(delimited(tag("&"), not_line_ending, end_of_line), |s| {
             String::from("&") + s
         }),
     ))(input)
@@ -436,14 +472,37 @@ mod tests {
         assert_eq!(u8::MAX, merged[0].FU);
     }
 
+    // A line the move list has no shape for is skipped whole — one line, not
+    // two. The parser is anchored on the line's first character, and a newline
+    // must not be allowed to be it: starting on the newline of a *blank* line
+    // takes the line after it as this line's content, so a blank line in the
+    // middle of a record destroys the move that follows it (R-KIF-002).
+    //
+    // `skippable_line` tries `blank_line` first, which hides this. The guard is
+    // what keeps the two orderings from meaning different things.
+    #[test]
+    fn a_skipped_line_never_swallows_the_line_after_it() {
+        assert_eq!(
+            Ok(("   2 ３四歩(33)\n", "化：2")),
+            not_move_line("変化：2\n   2 ３四歩(33)\n")
+        );
+        assert!(not_move_line("\n   2 ３四歩(33)\n").is_err());
+        assert!(not_move_line("\r\n   2 ３四歩(33)\n").is_err());
+    }
+
     #[test]
     fn parse_comment_line() {
         assert!(comment_line("").is_err());
-        assert!(comment_line("# comment with not line ending").is_err());
         assert!(comment_line("not comment\n").is_err());
         assert_eq!(
             Ok(("", String::from(" comment"))),
             comment_line("# comment\n")
+        );
+        // A file need not end with a newline. Insisting on one dropped the last
+        // line and said nothing, so the record came back short.
+        assert_eq!(
+            Ok(("", String::from(" comment"))),
+            comment_line("# comment")
         );
     }
 

@@ -1,4 +1,4 @@
-use crate::error::{ConvertError, NormalizeError};
+use crate::error::{ConvertError, NormalizeError, NormalizeErrorKind};
 use crate::jkf;
 use shogi_core::{Color, Hand, Move, PartialPosition, Piece, PieceKind, Position, Square};
 use std::collections::HashMap;
@@ -98,11 +98,17 @@ impl TryFrom<&Position> for jkf::JsonKifuFormat {
     fn try_from(pos: &Position) -> Result<Self, Self::Error> {
         let mut moves = vec![jkf::MoveFormat::default()];
         let mut pp = pos.initial_position().clone();
+        // `moves` opens with the initial position's slot, so the move being
+        // built lands at the index this vector already has (R-JKF-001).
         for &mv in pos.moves() {
+            let ply = moves.len();
             let mmf = match mv {
                 Move::Normal { from, to, promote } => {
                     let piece = pp.piece_at(from).ok_or_else(|| {
-                        ConvertError::Normalize(NormalizeError::NoPieceAt(from).to_string())
+                        ConvertError::from(NormalizeError::at(
+                            ply,
+                            NormalizeErrorKind::NoPieceAt(from),
+                        ))
                     })?;
                     jkf::MoveMoveFormat {
                         color: pp.side_to_move().into(),
@@ -132,7 +138,10 @@ impl TryFrom<&Position> for jkf::JsonKifuFormat {
                 ..Default::default()
             });
             pp.make_move(mv).ok_or_else(|| {
-                ConvertError::Normalize(NormalizeError::MakeMoveFailed(mv).to_string())
+                ConvertError::from(NormalizeError::at(
+                    ply,
+                    NormalizeErrorKind::MakeMoveFailed(mv),
+                ))
             })?;
         }
         let mut ret = jkf::JsonKifuFormat {
@@ -142,7 +151,7 @@ impl TryFrom<&Position> for jkf::JsonKifuFormat {
         };
         match ret.normalize() {
             Ok(()) => Ok(ret),
-            Err(err) => Err(ConvertError::Normalize(err.to_string())),
+            Err(err) => Err(err.into()),
         }
     }
 }
