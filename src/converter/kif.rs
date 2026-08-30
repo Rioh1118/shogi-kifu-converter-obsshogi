@@ -1,6 +1,8 @@
 use super::kakinoki::{write_header, write_initial, write_kansuji, write_sanyou_suji};
+use super::WriteResult as Result;
+use crate::error::ConvertError;
 use crate::jkf::*;
-use std::fmt::{Result, Write};
+use std::fmt::Write;
 
 /// A type that is convertible to KIF format.
 pub trait ToKif {
@@ -8,15 +10,21 @@ pub trait ToKif {
     ///
     /// # Errors
     ///
-    /// Returns `Err` if `sink` fails, or if the record holds something KIF
-    /// cannot spell — a coordinate outside the board, or more pieces in hand
-    /// than a set contains. Such a record comes from outside this crate; it is
-    /// not a value any parser here produces.
+    /// Returns [`ConvertError::Write`] if `sink` fails, and otherwise the
+    /// variant naming what KIF cannot spell: [`InvalidSquare`] for a coordinate
+    /// outside the board, [`UnspellableNumber`] for more pieces in hand than a
+    /// set contains, [`UnknownPreset`] for a handicap with no board. A
+    /// caller that has just failed to save a game has to tell these apart —
+    /// they are different things to say to the user.
+    ///
+    /// [`InvalidSquare`]: ConvertError::InvalidSquare
+    /// [`UnspellableNumber`]: ConvertError::UnspellableNumber
+    /// [`UnknownPreset`]: ConvertError::UnknownPreset
     fn to_kif<W: Write>(&self, sink: &mut W) -> Result;
 
     /// Returns `self`'s string representation, or the error [`Self::to_kif`]
     /// gave.
-    fn try_to_kif_owned(&self) -> std::result::Result<String, std::fmt::Error> {
+    fn try_to_kif_owned(&self) -> std::result::Result<String, ConvertError> {
         let mut s = String::new();
         self.to_kif(&mut s)?;
         Ok(s)
@@ -109,7 +117,7 @@ fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) 
                 // record. `(00)` is not a KIF origin (R-KIF-006) and this
                 // crate's own reader takes it straight back as the sentinel, so
                 // writing it produces a corruption that round-trips forever.
-                shogi_core::Square::try_from(&from).map_err(|_| std::fmt::Error)?;
+                shogi_core::Square::try_from(&from)?;
                 sink.write_fmt(format_args!("({}{})", from.x, from.y))?;
                 offset += 4;
             } else {

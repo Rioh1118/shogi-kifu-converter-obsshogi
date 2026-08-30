@@ -1036,10 +1036,13 @@ mod tests {
             ],
             "５三角(31)",
         );
-        assert!(
-            jkf.try_to_ki2_owned().is_err(),
-            "three bishops reach 5三: {:?}",
+        // Naming the move is the point: the consumer has to be able to tell
+        // the user which move it could not save.
+        assert_eq!(
+            "The notation cannot tell this move apart: ３一→５三",
             jkf.try_to_ki2_owned()
+                .expect_err("three bishops reach 5三")
+                .to_string()
         );
     }
 

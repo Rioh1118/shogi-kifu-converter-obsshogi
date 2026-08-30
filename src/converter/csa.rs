@@ -1,6 +1,8 @@
+use super::WriteResult as Result;
+use crate::error::ConvertError;
 use crate::jkf::*;
 use std::collections::HashMap;
-use std::fmt::{Result, Write};
+use std::fmt::Write;
 
 /// A type that is convertible to CSA format.
 pub trait ToCsa {
@@ -8,15 +10,21 @@ pub trait ToCsa {
     ///
     /// # Errors
     ///
-    /// Returns `Err` if `sink` fails, or if the record holds something CSA
-    /// cannot spell — a coordinate outside the board, or more pieces in hand
-    /// than a set contains. Such a record comes from outside this crate; it is
-    /// not a value any parser here produces.
+    /// Returns [`ConvertError::Write`] if `sink` fails, and otherwise the
+    /// variant naming what CSA cannot spell: [`InvalidSquare`] for a coordinate
+    /// outside the board, [`UnspellableNumber`] for more pieces in hand than a
+    /// set contains, [`UnknownPreset`] for a handicap with no board. A
+    /// caller that has just failed to save a game has to tell these apart —
+    /// they are different things to say to the user.
+    ///
+    /// [`InvalidSquare`]: ConvertError::InvalidSquare
+    /// [`UnspellableNumber`]: ConvertError::UnspellableNumber
+    /// [`UnknownPreset`]: ConvertError::UnknownPreset
     fn to_csa<W: Write>(&self, sink: &mut W) -> Result;
 
     /// Returns `self`'s string representation, or the error [`Self::to_csa`]
     /// gave.
-    fn try_to_csa_owned(&self) -> std::result::Result<String, std::fmt::Error> {
+    fn try_to_csa_owned(&self) -> std::result::Result<String, ConvertError> {
         let mut s = String::new();
         self.to_csa(&mut s)?;
         Ok(s)
@@ -82,7 +90,7 @@ fn write_kind<W: Write>(kind: Kind, sink: &mut W) -> Result {
 /// not a coordinate.
 fn write_place<W: Write>(place: &Option<PlaceFormat>, sink: &mut W) -> Result {
     if let Some(p) = place {
-        shogi_core::Square::try_from(p).map_err(|_| std::fmt::Error)?;
+        shogi_core::Square::try_from(p)?;
         sink.write_fmt(format_args!("{}{}", p.x, p.y))?;
     } else {
         sink.write_str("00")?;
@@ -157,7 +165,7 @@ fn write_initial_preset<W: Write>(preset: Preset, sink: &mut W) -> Result {
     // `PI` is the even game; each removed piece follows as position + kind
     // (R-CSA-006). `その他` never reaches here — it carries a board instead.
     let Some(handicap) = crate::handicap::lookup(preset) else {
-        return Err(std::fmt::Error);
+        return Err(ConvertError::UnknownPreset(preset));
     };
     sink.write_str("PI")?;
     for &(file, rank, kind) in handicap.removed {

@@ -14,6 +14,25 @@ pub enum ConvertError {
     /// Invalid [`shogi_core::PieceKind`] for [`shogi_core::Hand`]
     #[error("Invalid piece kind for `Hand`: {0:?}")]
     InvalidHandPiece(shogi_core::PieceKind),
+    /// The starting position names a handicap with no board (R-HC-004)
+    #[error("No board for preset: {0:?}")]
+    UnknownPreset(crate::jkf::Preset),
+    /// A number the notation has no characters for
+    ///
+    /// A file or a rank outside 1-9, or a count in hand above 18. Writing it
+    /// anyway would produce a file this crate's own reader cannot read back.
+    #[error("The notation cannot spell the number {0}")]
+    UnspellableNumber(u8),
+    /// More than one piece could have made the move and the notation has no
+    /// suffix that tells them apart (R-NOT-004 stage 3)
+    #[error("The notation cannot tell this move apart: {}", crate::notation::MoveText(*.0))]
+    UnspellableMove(shogi_core::Move),
+    /// The sink refused the write
+    ///
+    /// Writing into a `String` never fails, so this only reaches a caller that
+    /// supplied its own sink.
+    #[error("Failed to write")]
+    Write,
     /// An error that occurred while normalizing [`JsonKifuFormat`](crate::jkf::JsonKifuFormat)
     ///
     /// Boxed rather than flattened to its message: the two enums refer to each
@@ -26,6 +45,12 @@ pub enum ConvertError {
 impl From<NormalizeError> for ConvertError {
     fn from(err: NormalizeError) -> Self {
         Self::Normalize(Box::new(err))
+    }
+}
+
+impl From<std::fmt::Error> for ConvertError {
+    fn from(_: std::fmt::Error) -> Self {
+        Self::Write
     }
 }
 

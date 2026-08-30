@@ -14,6 +14,16 @@ use crate::error::ConvertError;
 use crate::jkf::JsonKifuFormat;
 use shogi_core::{PartialPosition, Position, ToUsi};
 
+/// What every writer under this module returns: it either wrote, or the record
+/// held something the format cannot spell.
+///
+/// `std::fmt::Error` would be the obvious choice, since these all write into a
+/// sink — but its `Display` is one fixed sentence, and a consumer that has just
+/// failed to save a game needs to know whether the fault was an off-board
+/// coordinate, a hand holding more than a set contains, or a move the notation
+/// cannot tell apart. Each of those is a different thing to tell the user.
+type WriteResult = std::result::Result<(), ConvertError>;
+
 /// Spells `pos` as USI: the starting position, then the moves played from it.
 fn write_usi<W: std::fmt::Write>(pos: &Position, sink: &mut W) -> std::fmt::Result {
     if pos.initial_position() == &PartialPosition::startpos() {
@@ -76,7 +86,7 @@ impl JsonKifuFormat {
         let pos = Position::try_from(self)?;
         let mut s = String::new();
         // `write_usi` only fails when `sink` does, and a `String` never does.
-        write_usi(&pos, &mut s).map_err(|_| ConvertError::InvalidSquare((0, 0)))?;
+        write_usi(&pos, &mut s)?;
         Ok(s)
     }
 }

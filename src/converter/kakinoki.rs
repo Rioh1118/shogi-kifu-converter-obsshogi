@@ -1,7 +1,9 @@
+use super::WriteResult as Result;
+use crate::error::ConvertError;
 use crate::jkf::*;
 use crate::notation::{board_word, KANSUJI, SANYOU_SUJI};
 use std::collections::HashMap;
-use std::fmt::{Result, Write};
+use std::fmt::Write;
 
 /// Writes a file as a full-width digit.
 ///
@@ -13,7 +15,7 @@ pub(super) fn write_sanyou_suji<W: Write>(num: u8, sink: &mut W) -> Result {
     let c = num
         .checked_sub(1)
         .and_then(|i| SANYOU_SUJI.get(i as usize))
-        .ok_or(std::fmt::Error)?;
+        .ok_or(ConvertError::UnspellableNumber(num))?;
     sink.write_char(*c)?;
     Ok(())
 }
@@ -25,7 +27,7 @@ pub(super) fn write_sanyou_suji<W: Write>(num: u8, sink: &mut W) -> Result {
 /// parser cannot read back.
 pub(super) fn write_kansuji<W: Write>(mut num: u8, sink: &mut W) -> Result {
     if num > 18 {
-        return Err(std::fmt::Error);
+        return Err(ConvertError::UnspellableNumber(num));
     }
     if num > 10 {
         sink.write_char('十')?;
@@ -34,7 +36,7 @@ pub(super) fn write_kansuji<W: Write>(mut num: u8, sink: &mut W) -> Result {
     let c = num
         .checked_sub(1)
         .and_then(|i| KANSUJI.get(i as usize))
-        .ok_or(std::fmt::Error)?;
+        .ok_or(ConvertError::UnspellableNumber(num))?;
     sink.write_char(*c)?;
     Ok(())
 }
@@ -116,7 +118,7 @@ fn write_initial_preset<W: Write>(preset: Preset, sink: &mut W) -> Result {
     // `その他` never reaches here — it carries a board instead.
     let name = match crate::handicap::lookup(preset) {
         Some(handicap) => handicap.kif_name,
-        None => return Err(std::fmt::Error),
+        None => return Err(ConvertError::UnknownPreset(preset)),
     };
     sink.write_str("手合割：")?;
     sink.write_str(name)?;
@@ -276,8 +278,14 @@ mod tests {
     /// Coordinates and hand counts come from the record, so they can be out of
     /// range. Spelling one is an error the caller can see, not an index into a
     /// table that takes the process down.
+    ///
+    /// Which one it was has to survive to the caller. The consumer saves a game
+    /// through here and has to tell the user what went wrong; "an error occurred
+    /// when formatting an argument" — all `std::fmt::Error` can say — is not
+    /// something anyone can act on.
     #[test]
     fn unspellable_records_are_errors() {
+        use crate::error::ConvertError;
         use crate::jkf::*;
         let bad_square = JsonKifuFormat {
             moves: vec![
@@ -298,7 +306,12 @@ mod tests {
             ],
             ..Default::default()
         };
-        assert!(bad_square.try_to_kif_owned().is_err());
+        assert_eq!(
+            ConvertError::UnspellableNumber(0),
+            bad_square
+                .try_to_kif_owned()
+                .expect_err("(0, 0) is not a square")
+        );
 
         let mut state = StateFormat {
             color: Color::Black,
@@ -322,9 +335,12 @@ mod tests {
                 }),
                 ..Default::default()
             };
-            assert!(
-                too_many.try_to_kif_owned().is_err(),
-                "{count} pieces in hand should not be spellable"
+            assert_eq!(
+                ConvertError::UnspellableNumber(count),
+                too_many
+                    .try_to_kif_owned()
+                    .expect_err("{count} pieces in hand should not be spellable"),
+                "{count} pieces in hand"
             );
         }
     }

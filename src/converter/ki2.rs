@@ -1,6 +1,8 @@
 use super::kakinoki::{write_header, write_initial, write_kansuji, write_sanyou_suji};
+use super::WriteResult as Result;
+use crate::error::ConvertError;
 use crate::jkf::*;
-use std::fmt::{Result, Write};
+use std::fmt::Write;
 
 /// A type that is convertible to KI2 format.
 pub trait ToKi2 {
@@ -8,15 +10,26 @@ pub trait ToKi2 {
     ///
     /// # Errors
     ///
-    /// Returns `Err` if `sink` fails, or if the record holds something KI2
-    /// cannot spell — a coordinate outside the board, or more pieces in hand
-    /// than a set contains. Such a record comes from outside this crate; it is
-    /// not a value any parser here produces.
+    /// Returns [`ConvertError::Write`] if `sink` fails, and otherwise the
+    /// variant naming what KI2 cannot spell: [`InvalidSquare`] for a coordinate
+    /// outside the board, [`UnspellableNumber`] for more pieces in hand than a
+    /// set contains, [`UnknownPreset`] for a handicap with no board. A
+    /// caller that has just failed to save a game has to tell these apart —
+    /// they are different things to say to the user.
+    ///
+    /// [`InvalidSquare`]: ConvertError::InvalidSquare
+    /// [`UnspellableNumber`]: ConvertError::UnspellableNumber
+    /// [`UnknownPreset`]: ConvertError::UnknownPreset
+    /// [`UnspellableMove`] is KI2's own: the traditional notation has no suffix
+    /// for a move two pieces could have made (R-NOT-004), and writing it bare
+    /// produces a file this crate cannot read back (R-KI2-003).
+    ///
+    /// [`UnspellableMove`]: ConvertError::UnspellableMove
     fn to_ki2<W: Write>(&self, sink: &mut W) -> Result;
 
     /// Returns `self`'s string representation, or the error [`Self::to_ki2`]
     /// gave.
-    fn try_to_ki2_owned(&self) -> std::result::Result<String, std::fmt::Error> {
+    fn try_to_ki2_owned(&self) -> std::result::Result<String, ConvertError> {
         let mut s = String::new();
         self.to_ki2(&mut s)?;
         Ok(s)
@@ -53,7 +66,8 @@ fn write_move_kind<W: Write>(kind: Kind, sink: &mut W) -> Result {
         Kind::NG => sink.write_str("成銀"),
         Kind::UM => sink.write_str("馬"),
         Kind::RY => sink.write_str("竜"),
-    }
+    }?;
+    Ok(())
 }
 
 /// Writes the KI2 notation for `moves`, deriving the disambiguating suffix from
@@ -166,7 +180,9 @@ fn write_line<'a, W: Write>(
                         // (R-KI2-003), and the record it came from is the only
                         // copy — so refuse rather than save something that will
                         // not open.
-                        Suffix::Unspellable => return Err(std::fmt::Error),
+                        Suffix::Unspellable => {
+                            return Err(ConvertError::UnspellableMove(core_move))
+                        }
                     }
                 }
                 _ => mv.relative,
