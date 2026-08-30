@@ -6,7 +6,7 @@ use nom::character::complete::{digit1, line_ending, not_line_ending, space0};
 use nom::combinator::{map, map_res, opt, value};
 use nom::error::{ParseError, VerboseError};
 use nom::multi::{many0, many1};
-use nom::sequence::{delimited, pair, preceded, terminated, tuple};
+use nom::sequence::{delimited, preceded, terminated, tuple};
 use nom::IResult;
 
 fn single_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
@@ -70,6 +70,7 @@ fn single_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
 /// `ply` is the ply the outcome occupies, which decides whose turn it is and
 /// therefore which side 反則勝ち accuses.
 fn end_of_game_line(
+    start: Color,
     ply: usize,
 ) -> impl FnMut(&str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
     move |input| {
@@ -81,7 +82,7 @@ fn end_of_game_line(
             .split_once("手で")
             .map_or(phrase, |(_, rest)| rest)
             .trim();
-        let side_to_move = [Color::White, Color::Black][ply % 2];
+        let side_to_move = crate::handicap::side_to_move_at_ply(start, ply);
         match MoveSpecial::from_ki2_phrase(phrase, side_to_move) {
             Some(special) => Ok((
                 input,
@@ -109,11 +110,12 @@ fn branch_header(input: &str) -> IResult<&str, usize, VerboseError<&str>> {
 
 /// Reads one run of moves plus the optional outcome line.
 fn move_run(
+    start: Color,
     first_ply: usize,
 ) -> impl FnMut(&str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
     move |input| {
         let (input, v) = many0(single_move)(input)?;
-        let (input, end) = opt(end_of_game_line(first_ply + v.len()))(input)?;
+        let (input, end) = opt(end_of_game_line(start, first_ply + v.len()))(input)?;
         let mut out = v;
         out.extend(end);
         Ok((input, out))
@@ -161,9 +163,11 @@ fn attach_branch(
     path.push((start_ply, forks.len() - 1));
 }
 
-fn moves(input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
+/// Reads the main line and every `変化：N手` block. `start` is whose turn ply 1
+/// is, which the outcome line needs and the ply parity cannot supply.
+fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
     let (input, comments) = preceded(many0(line_ending), opt(many1(move_comment_line)))(input)?;
-    let (mut input, main) = move_run(1)(input)?;
+    let (mut input, main) = move_run(start, 1)(input)?;
     let mut out = vec![MoveFormat {
         comments,
         ..Default::default()
@@ -172,7 +176,7 @@ fn moves(input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
     // `変化：N手` blocks, in the order the file lists them.
     let mut path = Vec::new();
     while let Ok((rest, start_ply)) = branch_header(input) {
-        let (rest, branch) = move_run(start_ply)(rest)?;
+        let (rest, branch) = move_run(start, start_ply)(rest)?;
         if branch.is_empty() {
             input = rest;
             continue;
@@ -184,10 +188,13 @@ fn moves(input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
 }
 
 pub(crate) fn parse(input: &str) -> IResult<&str, JsonKifuFormat, VerboseError<&str>> {
-    map(pair(parse_without_moves, moves), |(mut jkf, moves)| {
-        jkf.moves.extend(moves);
-        jkf
-    })(input)
+    let (input, mut jkf) = parse_without_moves(input)?;
+    // The side has to come from the starting position, not the ply parity: a
+    // handicap record has White at every odd ply (R-HC-001).
+    let start = crate::handicap::starting_side(jkf.initial.as_ref());
+    let (input, moves) = moves(start, input)?;
+    jkf.moves.extend(moves);
+    Ok((input, jkf))
 }
 
 #[cfg(test)]
@@ -362,7 +369,7 @@ mod tests {
                     ..Default::default()
                 }]
             )),
-            moves("*comment\n")
+            moves(Color::Black, "*comment\n")
         );
         assert_eq!(
             Ok((
@@ -410,7 +417,7 @@ mod tests {
                     }
                 ]
             )),
-            moves("▲６八銀 △３四歩 ▲５六歩")
+            moves(Color::Black, "▲６八銀 △３四歩 ▲５六歩")
         )
     }
 
@@ -458,6 +465,7 @@ mod tests {
                 ]
             )),
             moves(
+                Color::Black,
                 &r#"
 △７四歩
 *-2732

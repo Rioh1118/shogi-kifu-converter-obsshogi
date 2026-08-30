@@ -13,7 +13,7 @@
 //! Board layout and the pieces removed come from `research/40-handicap.md`
 //! (R-HC-003).
 
-use crate::jkf::{Color, Kind, Piece, Preset};
+use crate::jkf::{Color, Initial, Kind, Piece, Preset};
 use crate::normalizer::HIRATE_BOARD;
 
 /// A handicap: the name KIF gives it and what the upper hand takes off.
@@ -151,6 +151,37 @@ pub(crate) fn side_to_move(preset: Preset) -> Color {
     match preset {
         Preset::PresetHirate => Color::Black,
         _ => Color::White,
+    }
+}
+
+/// Whose turn it is at ply 1.
+///
+/// An explicit board states it; otherwise the handicap decides, and only the
+/// even game starts with Black (R-HC-001).
+pub(crate) fn starting_side(initial: Option<&Initial>) -> Color {
+    match initial {
+        None => Color::Black,
+        Some(initial) => match &initial.data {
+            Some(data) => data.color,
+            None => side_to_move(initial.preset),
+        },
+    }
+}
+
+/// Whose turn it is at `ply`, given that `start` plays ply 1.
+///
+/// The parity of the ply does not decide this on its own: the upper hand moves
+/// first in every handicap (R-HC-001), so a handicap record has White at every
+/// odd ply. Reading the side off the parity alone swaps 先手 and 後手 for the
+/// whole record.
+pub(crate) fn side_to_move_at_ply(start: Color, ply: usize) -> Color {
+    if ply % 2 == 1 {
+        start
+    } else {
+        match start {
+            Color::Black => Color::White,
+            Color::White => Color::Black,
+        }
     }
 }
 

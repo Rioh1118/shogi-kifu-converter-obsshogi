@@ -89,11 +89,14 @@ fn write_moves<W: Write>(
     // ply 5, or the ply-6 block reads as a continuation of the ply-5 one.
     // Taking blocks off the end gives that, and pushing each node's branches in
     // reverse keeps siblings in their original order.
+    let start = position
+        .as_ref()
+        .map_or(Color::Black, |pos| pos.side_to_move().into());
     let mut stack = Vec::new();
-    write_line(rest, 1, position, &mut stack, sink)?;
+    write_line(rest, 1, position, start, &mut stack, sink)?;
     while let Some((start_ply, branch, at)) = stack.pop() {
         sink.write_fmt(format_args!("\n変化：{start_ply}手\n"))?;
-        write_line(branch, start_ply, at, &mut stack, sink)?;
+        write_line(branch, start_ply, at, start, &mut stack, sink)?;
     }
     Ok(())
 }
@@ -109,6 +112,7 @@ fn write_line<'a, W: Write>(
     moves: &'a [MoveFormat],
     first_ply: usize,
     mut position: Option<shogi_core::PartialPosition>,
+    start: Color,
     stack: &mut Vec<(usize, &'a [MoveFormat], Option<shogi_core::PartialPosition>)>,
     sink: &mut W,
 ) -> Result {
@@ -181,7 +185,13 @@ fn write_line<'a, W: Write>(
             if !at_line_start {
                 sink.write_char('\n')?;
             }
-            let side_to_move = [Color::White, Color::Black][ply % 2];
+            // The board knows whose turn it is; the ply parity does not, since
+            // a handicap starts with White (R-HC-001). Falling back to the
+            // parity only matters once an illegal move has cost us the board.
+            let side_to_move = position.as_ref().map_or_else(
+                || crate::handicap::side_to_move_at_ply(start, ply),
+                |pos| pos.side_to_move().into(),
+            );
             sink.write_fmt(format_args!(
                 "まで{}手で{}",
                 ply - 1,
@@ -413,6 +423,34 @@ mod tests {
         );
         let back = crate::parser::parse_ki2_str(&ki2).expect("reads back");
         assert_eq!(shape(&jkf.moves[1..], 1), shape(&back.moves[1..], 1));
+    }
+
+    // The upper hand moves first in every handicap (R-HC-001), so the parity of
+    // the ply does not say whose turn it is. Both records below resign at ply 2,
+    // and the side that resigned is the opposite one — reading the side off the
+    // parity names the loser as the winner for every handicap record.
+    #[test]
+    fn a_handicap_names_the_right_side_at_the_outcome() {
+        for (handicap, first_move, want) in [
+            ("平手", "７六歩(77)", "まで1手で先手の勝ち"),
+            ("香落ち", "３四歩(33)", "まで1手で後手の勝ち"),
+            ("四枚落ち", "３四歩(33)", "まで1手で後手の勝ち"),
+        ] {
+            let kif = format!(
+                "手合割：{handicap}\n手数----指手---------消費時間--\n   1 {first_move}\n   2 投了\n"
+            );
+            let jkf = crate::parser::parse_kif_str(&kif)
+                .unwrap_or_else(|e| panic!("failed to parse {handicap}: {e}"));
+            let ki2 = jkf.to_ki2_owned();
+            assert!(ki2.contains(want), "{handicap} wrote {ki2:?}");
+            let back = crate::parser::parse_ki2_str(&ki2)
+                .unwrap_or_else(|e| panic!("failed to read back {handicap}: {e}"));
+            assert_eq!(
+                Some(MoveSpecial::SpecialToryo),
+                back.moves.last().and_then(|mf| mf.special),
+                "round trip for {handicap}"
+            );
+        }
     }
 
     // `%+ILLEGAL_ACTION` is a foul *by* Black, so White wins (R-CSA-007). The

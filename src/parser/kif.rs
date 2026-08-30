@@ -6,7 +6,7 @@ use nom::character::complete::{digit1, line_ending, not_line_ending, space0};
 use nom::combinator::{map, map_res, opt, value};
 use nom::error::{ParseError, VerboseError};
 use nom::multi::{many0, many1};
-use nom::sequence::{delimited, pair, preceded, separated_pair, terminated, tuple};
+use nom::sequence::{delimited, preceded, separated_pair, terminated, tuple};
 use nom::IResult;
 
 fn move_from(input: &str) -> IResult<&str, Option<PlaceFormat>, VerboseError<&str>> {
@@ -121,60 +121,83 @@ fn move_time(input: &str) -> IResult<&str, Time, VerboseError<&str>> {
     )(input)
 }
 
-fn move_line(input: &str) -> IResult<&str, (usize, MoveFormat), VerboseError<&str>> {
-    // The ply number has to be read before the rest: it decides whose turn it
-    // is, and 反則勝ち means the *other* player committed the foul.
-    let (input, i) = preceded(space0, map_res(digit1, str::parse::<usize>))(input)?;
-    let side_to_move = [Color::White, Color::Black][i % 2];
-    let (input, mut mf) = preceded(space0, alt((move_special(side_to_move), move_move)))(input)?;
-    let (input, time) = preceded(space0, opt(move_time))(input)?;
-    let (input, _) = preceded(not_line_ending, line_ending)(input)?;
-    if let Some(mmf) = &mut mf.move_ {
-        mmf.color = side_to_move;
+/// Reads one `<ply> <move>` line. `start` is whose turn ply 1 is.
+fn move_line(
+    start: Color,
+) -> impl FnMut(&str) -> IResult<&str, (usize, MoveFormat), VerboseError<&str>> {
+    move |input| {
+        // The ply number has to be read before the rest: it decides whose turn
+        // it is, and 反則勝ち means the *other* player committed the foul.
+        let (input, i) = preceded(space0, map_res(digit1, str::parse::<usize>))(input)?;
+        let side_to_move = crate::handicap::side_to_move_at_ply(start, i);
+        let (input, mut mf) =
+            preceded(space0, alt((move_special(side_to_move), move_move)))(input)?;
+        let (input, time) = preceded(space0, opt(move_time))(input)?;
+        let (input, _) = preceded(not_line_ending, line_ending)(input)?;
+        if let Some(mmf) = &mut mf.move_ {
+            mmf.color = side_to_move;
+        }
+        mf.time = time;
+        Ok((input, (i, mf)))
     }
-    mf.time = time;
-    Ok((input, (i, mf)))
 }
 
-fn move_with_comments(input: &str) -> IResult<&str, (usize, MoveFormat), VerboseError<&str>> {
-    map(
-        pair(move_line, many0(move_comment_line)),
-        |((i, mf), comments)| {
-            (
-                i,
-                MoveFormat {
-                    comments: Some(comments).filter(|v| !v.is_empty()),
-                    ..mf
-                },
-            )
-        },
-    )(input)
+// `start` has to be threaded down to `move_line` rather than closed over: a
+// parser built by a nom combinator is tied to one input lifetime, so these
+// cannot hand back a parser value and are applied to the input directly.
+fn move_with_comments(
+    start: Color,
+    input: &str,
+) -> IResult<&str, (usize, MoveFormat), VerboseError<&str>> {
+    let (input, (i, mf)) = move_line(start)(input)?;
+    let (input, comments) = many0(move_comment_line)(input)?;
+    Ok((
+        input,
+        (
+            i,
+            MoveFormat {
+                comments: Some(comments).filter(|v| !v.is_empty()),
+                ..mf
+            },
+        ),
+    ))
 }
 
-fn moves_with_index(input: &str) -> IResult<&str, (usize, Vec<MoveFormat>), VerboseError<&str>> {
-    map(
-        terminated(many1(move_with_comments), opt(not_move_line)),
-        |v| (v[0].0, v.into_iter().map(|(_, mf)| mf).collect()),
-    )(input)
+fn moves_with_index(
+    start: Color,
+    input: &str,
+) -> IResult<&str, (usize, Vec<MoveFormat>), VerboseError<&str>> {
+    let (mut input, (first_ply, first)) = move_with_comments(start, input)?;
+    let mut out = vec![first];
+    while let Ok((rest, (_, mf))) = move_with_comments(start, input) {
+        out.push(mf);
+        input = rest;
+    }
+    let (input, _) = opt(not_move_line)(input)?;
+    Ok((input, (first_ply, out)))
 }
 
-fn main_moves(input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
-    map(
-        pair(opt(many1(move_comment_line)), opt(moves_with_index)),
-        |(comments, o)| {
-            [
-                vec![MoveFormat {
-                    comments,
-                    ..Default::default()
-                }],
-                o.map_or(Vec::new(), |(_, v)| v),
-            ]
-            .concat()
-        },
-    )(input)
+fn main_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
+    let (input, comments) = opt(many1(move_comment_line))(input)?;
+    let (input, run) = match moves_with_index(start, input) {
+        Ok((rest, (_, v))) => (rest, v),
+        Err(nom::Err::Error(_)) => (input, Vec::new()),
+        Err(err) => return Err(err),
+    };
+    Ok((
+        input,
+        [
+            vec![MoveFormat {
+                comments,
+                ..Default::default()
+            }],
+            run,
+        ]
+        .concat(),
+    ))
 }
 
-fn entire_moves(input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
+fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
     fn merge_forks(
         (mut moves, mut forks): (Vec<MoveFormat>, Vec<(usize, Vec<MoveFormat>)>),
     ) -> Vec<MoveFormat> {
@@ -208,23 +231,30 @@ fn entire_moves(input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str
         moves
     }
 
-    map(
-        pair(
-            preceded(many0(not_move_line), main_moves),
-            many0(preceded(many0(not_move_line), moves_with_index)),
-        ),
-        merge_forks,
-    )(input)
+    let (input, _) = many0(not_move_line)(input)?;
+    let (mut input, main) = main_moves(start, input)?;
+    let mut forks = Vec::new();
+    loop {
+        let Ok((rest, _)) = many0(not_move_line)(input) else {
+            break;
+        };
+        let Ok((rest, run)) = moves_with_index(start, rest) else {
+            break;
+        };
+        forks.push(run);
+        input = rest;
+    }
+    Ok((input, merge_forks((main, forks))))
 }
 
 pub(crate) fn parse(input: &str) -> IResult<&str, JsonKifuFormat, VerboseError<&str>> {
-    map(
-        pair(parse_without_moves, entire_moves),
-        |(mut jkf, moves)| {
-            jkf.moves.extend(moves);
-            jkf
-        },
-    )(input)
+    let (input, mut jkf) = parse_without_moves(input)?;
+    // The side has to come from the starting position, not the ply parity: a
+    // handicap record has White at every odd ply (R-HC-001).
+    let start = crate::handicap::starting_side(jkf.initial.as_ref());
+    let (input, moves) = entire_moves(start, input)?;
+    jkf.moves.extend(moves);
+    Ok((input, jkf))
 }
 
 #[cfg(test)]
@@ -251,7 +281,9 @@ mod tests {
             ("不戦敗", None),
         ] {
             let line = format!("   2 {word}\n");
-            let got = move_line(&line).ok().and_then(|(_, (_, mf))| mf.special);
+            let got = move_line(Color::Black)(&line)
+                .ok()
+                .and_then(|(_, (_, mf))| mf.special);
             assert_eq!(want, got, "reading {word}");
         }
     }
@@ -289,7 +321,9 @@ mod tests {
                 continue;
             };
             let line = format!("   2 {word}\n");
-            let got = move_line(&line).ok().and_then(|(_, (_, mf))| mf.special);
+            let got = move_line(Color::Black)(&line)
+                .ok()
+                .and_then(|(_, (_, mf))| mf.special);
             assert!(
                 got.is_some(),
                 "{special:?} writes {word}, which cannot be read"
@@ -369,7 +403,7 @@ mod tests {
 
     #[test]
     fn parse_move_line() {
-        assert!(move_line("").is_err());
+        assert!(move_line(Color::Black)("").is_err());
         assert_eq!(
             Ok((
                 "",
@@ -404,7 +438,7 @@ mod tests {
                     }
                 )
             )),
-            move_line("1 ７六歩(77) ( 0:16/00:00:16)\n")
+            move_line(Color::Black)("1 ７六歩(77) ( 0:16/00:00:16)\n")
         );
         assert_eq!(
             Ok((
@@ -431,7 +465,7 @@ mod tests {
                     }
                 )
             )),
-            move_line("3 中断 ( 0:03/ 0:00:19)\n")
+            move_line(Color::Black)("3 中断 ( 0:03/ 0:00:19)\n")
         );
         assert_eq!(
             Ok((
@@ -465,7 +499,7 @@ mod tests {
                     }
                 )
             )),
-            move_line("   1 ７八金(69)    (00:01 / 00:00:01)\n")
+            move_line(Color::Black)("   1 ７八金(69)    (00:01 / 00:00:01)\n")
         )
     }
 
@@ -551,6 +585,7 @@ mod tests {
                 ]
             )),
             main_moves(
+                Color::Black,
                 &r#"
 1 ７六歩(77) ( 0:16/00:00:16)
 2 ３四歩(33) ( 0:00/00:00:00)
@@ -593,6 +628,7 @@ mod tests {
                 ]
             )),
             main_moves(
+                Color::Black,
                 &r#"
 *開始局面のコメント
   1 ２六歩(27) ( 0:01/00:00:01)
@@ -644,7 +680,7 @@ mod tests {
   14 同　金(32)    (00:00 / 00:00:00)
   15 ７七銀(68)    (00:00 / 00:00:00)
 "#[1..];
-        let ret = entire_moves(input);
+        let ret = entire_moves(Color::Black, input);
         let (rest, moves) = ret.expect("failed to parse");
         assert!(rest.is_empty());
         assert_eq!(13, moves.len());
@@ -682,7 +718,7 @@ mod tests {
 変化：5
    5 投了 ( 0:00/ 0:00:00)
 "#[1..];
-        let ret = entire_moves(input);
+        let ret = entire_moves(Color::Black, input);
         let (_, moves) = ret.expect("entire_moves should not panic on malformed input");
         // 変化:2 attaches at index 2; 変化:5 is silently dropped.
         let forks = moves[2]
