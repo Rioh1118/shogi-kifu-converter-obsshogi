@@ -876,12 +876,22 @@ fn populate_relative_moves(
         // off the position *before* it — and written only once that position
         // turns out to explain the move at all. A suffix taken from a board the
         // move never came from is a wrong answer written into the record.
-        let suffix = infer_relative_from_position(&pos, mv);
+        //
+        // Only worked out when it will be used. Deriving it regardless costs a
+        // scan of all 81 squares per move, and a record that already carries
+        // `relative` — which is every record that came from anywhere but a KIF
+        // — spends the whole of it on a value that is then thrown away. R-REQ-006
+        // took that same waste out of the KIF path; this is the same waste in
+        // the function that fills the field in.
+        let suffix = mmf
+            .relative
+            .is_none()
+            .then(|| infer_relative_from_position(&pos, mv));
         if pos.make_move(mv).is_none() {
             board.unplayable(|| NormalizeError::at(ply, NormalizeErrorKind::MakeMoveFailed(mv)))?;
             continue;
         }
-        if mmf.relative.is_none() {
+        if let Some(suffix) = suffix {
             mmf.relative = match suffix {
                 Suffix::Only(relative) => Some(relative),
                 Suffix::Nothing | Suffix::Unspellable => None,
