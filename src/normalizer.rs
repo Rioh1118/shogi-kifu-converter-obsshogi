@@ -343,32 +343,39 @@ fn calculate_from(
             let relative = mmf
                 .relative
                 .ok_or_else(|| NormalizeError::AmbiguousMoveFrom(froms.clone()))?;
-            let (to_rel_file, to_rel_rank) = (to.relative_file(color), to.relative_rank(color));
+            let to_rel_rank = to.relative_rank(color);
+            // 左/右 rank the candidates against *each other*; only 直 and the
+            // 動作 part compare the origin with the destination (R-NOT-004).
+            //
+            // The difference is not cosmetic. 馬 and 龍 reach a square from its
+            // own file, so a candidate can be named 左 or 右 while sitting on
+            // the destination's file — `▲４四馬右` from 4三 is what the writers
+            // in use produce. Comparing that origin with the destination leaves
+            // no candidate at all and the move reads back as ambiguous.
+            let leftmost = froms.iter().map(|sq| sq.relative_file(color)).max();
+            let rightmost = froms.iter().map(|sq| sq.relative_file(color)).min();
             match relative {
-                Relative::L => froms.retain(|sq| sq.relative_file(color) > to_rel_file),
+                Relative::L | Relative::LU | Relative::LM | Relative::LD => {
+                    froms.retain(|sq| Some(sq.relative_file(color)) == leftmost);
+                }
+                Relative::R | Relative::RU | Relative::RM | Relative::RD => {
+                    froms.retain(|sq| Some(sq.relative_file(color)) == rightmost);
+                }
                 Relative::C => froms.retain(|sq| sq.file() == to.file()),
-                Relative::R => froms.retain(|sq| sq.relative_file(color) < to_rel_file),
-                Relative::U => froms.retain(|sq| sq.relative_rank(color) > to_rel_rank),
-                Relative::M => froms.retain(|sq| sq.rank() == to.rank()),
-                Relative::D => froms.retain(|sq| sq.relative_rank(color) < to_rel_rank),
-                Relative::LU => froms.retain(|sq| {
-                    sq.relative_file(color) > to_rel_file && sq.relative_rank(color) > to_rel_rank
-                }),
-                Relative::LM => froms
-                    .retain(|sq| sq.relative_file(color) > to_rel_file && sq.rank() == to.rank()),
-                Relative::LD => froms.retain(|sq| {
-                    sq.relative_file(color) > to_rel_file && sq.relative_rank(color) < to_rel_rank
-                }),
-                Relative::RU => froms.retain(|sq| {
-                    sq.relative_file(color) < to_rel_file && sq.relative_rank(color) > to_rel_rank
-                }),
-                Relative::RM => froms
-                    .retain(|sq| sq.relative_file(color) < to_rel_file && sq.rank() == to.rank()),
-                Relative::RD => froms.retain(|sq| {
-                    sq.relative_file(color) < to_rel_file && sq.relative_rank(color) < to_rel_rank
-                }),
                 _ => {}
-            };
+            }
+            match relative {
+                Relative::U | Relative::LU | Relative::RU => {
+                    froms.retain(|sq| sq.relative_rank(color) > to_rel_rank);
+                }
+                Relative::M | Relative::LM | Relative::RM => {
+                    froms.retain(|sq| sq.rank() == to.rank());
+                }
+                Relative::D | Relative::LD | Relative::RD => {
+                    froms.retain(|sq| sq.relative_rank(color) < to_rel_rank);
+                }
+                _ => {}
+            }
             if froms.len() == 1 {
                 Ok(Some(PlaceFormat {
                     x: froms[0].file(),
@@ -632,6 +639,43 @@ fn populate_relative_moves(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // 馬 reaches a square from that square's own file, so one of two candidates
+    // can be named 右 while standing on the destination's file. Comparing the
+    // origin with the destination instead of the candidates with each other
+    // leaves no candidate and the move reads back as ambiguous — which is how a
+    // `.ki2` written by any of the tools in use became unreadable here.
+    #[test]
+    fn a_horse_on_the_destination_file_still_takes_a_left_or_right() {
+        let kif = "手合割：その他
+後手の持駒：なし
+  ９ ８ ７ ６ ５ ４ ３ ２ １
++---------------------------+
+| ・ ・ ・ ・v玉 ・ ・ ・ ・|一
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|二
+| ・ ・ ・ ・ 馬 馬 ・ ・ ・|三
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|四
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|五
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|六
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|七
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|八
+| ・ ・ ・ ・ 玉 ・ ・ ・ ・|九
++---------------------------+
+先手の持駒：なし
+先手番
+手数----指手---------消費時間--
+   1 ４四馬(43)
+";
+        use crate::converter::ToKi2;
+        let jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        let ki2 = jkf.to_ki2_owned();
+        assert!(ki2.contains("▲４四馬右"), "wrote {ki2:?}");
+        let back = crate::parser::parse_ki2_str(&ki2).expect("reads back");
+        assert_eq!(
+            Some(PlaceFormat { x: 4, y: 3 }),
+            back.moves[1].move_.expect("a move").from,
+        );
+    }
 
     /// Two black bishops on 7a and 3a, both able to reach 5c, so every move to
     /// 5c needs a 左/右 disambiguator (R-NOT-004). `{mv}` is the move line.
