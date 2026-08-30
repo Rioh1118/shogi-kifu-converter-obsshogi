@@ -150,11 +150,12 @@ fn add_timeformat(lhs: &TimeFormat, rhs: &TimeFormat) -> TimeFormat {
         + (lhs.m as u64 + rhs.m as u64) * 60
         + (lhs.s as u64 + rhs.s as u64);
     TimeFormat {
-        // Hours past 255 saturate rather than wrap. A cumulative time that long
-        // is broken input, and a wrapped value would be a plausible-looking lie.
-        h: Some((total / 3600).min(u8::MAX as u64) as u8),
-        m: ((total / 60) % 60) as u8,
-        s: (total % 60) as u8,
+        // Hours past what the field holds saturate rather than wrap. A
+        // cumulative time that long is broken input, and a wrapped value would
+        // be a plausible-looking lie.
+        h: Some((total / 3600).min(u16::MAX as u64) as u16),
+        m: ((total / 60) % 60) as u16,
+        s: (total % 60) as u16,
     }
 }
 
@@ -1117,6 +1118,28 @@ mod tests {
         );
     }
 
+    // R-KIF-008 puts no limit on the minutes a move took, and a title game with
+    // nine hours on the clock produces `256:00` and more. A field too narrow to
+    // hold it makes the time column unparseable, and `opt` then reports the move
+    // as having no time at all — so saving it back drops the column.
+    #[test]
+    fn a_move_longer_than_a_byte_of_minutes_keeps_its_time() {
+        use crate::converter::ToKif;
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77) (300:00/05:00:00)
+";
+        let jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        let now = jkf.moves[1].time.expect("a time").now;
+        assert_eq!((300, 0), (now.m, now.s), "300 minutes");
+        assert!(
+            jkf.try_to_kif_owned()
+                .expect("writes KIF")
+                .contains("(300:00/05:00:00)"),
+            "the column survives a round trip"
+        );
+    }
+
     // A move the board turns out not to explain keeps whatever it said. The
     // normalization runs before anyone knows the board holds the move, so it has
     // to run on a copy: otherwise a 銀 comes back as the 金 that stood on that
@@ -1328,12 +1351,12 @@ mod tests {
         );
     }
 
-    // Cumulative times are summed from values the file states, so they can pass
-    // what a `u8` holds. Wrapping would put a small, ordinary-looking number
-    // where a broken one belongs, and nothing downstream could tell.
+    // Cumulative times are summed from values the file states, so they outgrow
+    // a byte. Wrapping would put a small, ordinary-looking number where a broken
+    // one belongs, and nothing downstream could tell.
     #[test]
     fn a_cumulative_time_past_the_hour_limit_does_not_wrap() {
-        // Black plays twice at 255 hours each: 510, which is 254 once it wraps.
+        // Black plays twice at 255 hours each: 510, which is 254 in a `u8`.
         let kif = "手合割：平手
 手数----指手---------消費時間--
    1 ７六歩(77) (255:00:00/255:00:00)
@@ -1342,7 +1365,7 @@ mod tests {
 ";
         let jkf = crate::parser::parse_kif_str(kif).expect("parses");
         let total = jkf.moves[3].time.expect("a time").total;
-        assert_eq!(Some(u8::MAX), total.h, "hours must saturate, not wrap");
+        assert_eq!(Some(510), total.h, "hours add up rather than wrap");
     }
 
     // 馬 reaches a square from that square's own file, so one of two candidates

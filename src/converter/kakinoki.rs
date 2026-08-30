@@ -145,7 +145,14 @@ pub(super) fn write_header<W: Write>(header: &HashMap<String, String>, sink: &mu
     for (k, v) in header {
         sink.write_str(k)?;
         sink.write_char('：')?;
-        sink.write_str(v)?;
+        // R-KIF-004: a header is one line. A value carrying a newline — JKF puts
+        // no limit on it, and the consumer builds its own headers — would end
+        // the header block early, and the reader skips what follows as a
+        // non-move line. Which header survives then depends on `HashMap`
+        // iteration order, so the same record loses a different one each save.
+        for line in v.lines() {
+            sink.write_str(line)?;
+        }
         sink.write_char('\n')?;
     }
     Ok(())
@@ -195,6 +202,34 @@ mod tests {
 手数----指手---------消費時間--
    1 ５三飛(52)   ( 0:00/00:00:00)
 ";
+
+    /// R-KIF-004: a header is one line. A value with a newline in it splits the
+    /// header block, and everything after the split is skipped as a non-move
+    /// line — a different header each time, because the order comes from a
+    /// `HashMap`.
+    #[test]
+    fn a_header_value_never_breaks_the_header_block() {
+        use crate::jkf::*;
+        let mut header = std::collections::HashMap::new();
+        header.insert("備考".to_owned(), "一行目\n二行目".to_owned());
+        header.insert("棋戦".to_owned(), "テスト".to_owned());
+        let jkf = JsonKifuFormat {
+            header,
+            initial: Some(Initial {
+                preset: Preset::PresetHirate,
+                data: None,
+            }),
+            moves: vec![MoveFormat::default()],
+        };
+        let kif = jkf.try_to_kif_owned().expect("writes KIF");
+        let back = parse_kif_str(&kif).expect("reads back");
+        assert_eq!(
+            Some(&"テスト".to_owned()),
+            back.header.get("棋戦"),
+            "the header after the multi-line one survives: {kif:?}"
+        );
+        assert_eq!(2, back.header.len(), "{kif:?}");
+    }
 
     /// The other side of the same line: the counts that *are* spellable. The
     /// rejection test alone leaves the writer free to stop writing counts

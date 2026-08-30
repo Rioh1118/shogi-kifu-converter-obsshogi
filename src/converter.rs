@@ -122,7 +122,7 @@ mod tests {
     #[test]
     fn a_node_without_a_move_line_writes_no_time_line() {
         use crate::jkf::{Color, Kind, MoveMoveFormat, PlaceFormat, Time, TimeFormat};
-        let ticks = |s: u8| Time {
+        let ticks = |s: u16| Time {
             now: TimeFormat { h: None, m: 0, s },
             total: TimeFormat { h: None, m: 0, s },
         };

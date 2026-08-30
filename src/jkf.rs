@@ -478,11 +478,15 @@ pub struct Time {
 pub struct TimeFormat {
     /// 時間
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub h: Option<u8>,
+    pub h: Option<u16>,
     /// 分
-    pub m: u8,
+    ///
+    /// Wider than the 0..59 a clock shows, because a KIF states the time spent
+    /// on one move as 分:秒 with no limit on the minutes (R-KIF-008): a title
+    /// game with nine hours on the clock has moves of `256:00` and more.
+    pub m: u16,
     /// 秒
-    pub s: u8,
+    pub s: u16,
 }
 
 #[cfg(test)]

@@ -32,11 +32,8 @@ pub fn parse_csa_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseEr
 /// This function returns [`ConvertError`](crate::error::ConvertError) if it fails to parse the string.
 pub fn parse_csa_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
     let mut jkf = JsonKifuFormat::try_from(csa::parse_csa(s)?)?;
-    if let Err(err) = jkf.normalize() {
-        Err(ParseError::Normalize(err.to_string()))
-    } else {
-        Ok(jkf)
-    }
+    jkf.normalize()?;
+    Ok(jkf)
 }
 
 /// Parses a KIF file to [`jkf::JsonKifuFormat`](crate::jkf::JsonKifuFormat)
@@ -121,11 +118,8 @@ pub fn parse_kif_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
             }
             // KIF moves carry an explicit `from`, so `relative` inference is dead work.
             // Downstream consumers (e.g. KI2 conversion) can opt-in via `populate_relative()`.
-            if let Err(err) = jkf.normalize_with_options(true, false) {
-                Err(ParseError::Normalize(err.to_string()))
-            } else {
-                Ok(jkf)
-            }
+            jkf.normalize_with_options(true, false)?;
+            Ok(jkf)
         }
         Err(err) => Err(ParseError::Kif(convert_error(s, err))),
     }
@@ -173,11 +167,8 @@ pub fn parse_ki2_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
                     },
                 )));
             }
-            if let Err(err) = jkf.normalize_with_color_correction(true) {
-                Err(ParseError::Normalize(err.to_string()))
-            } else {
-                Ok(jkf)
-            }
+            jkf.normalize_with_color_correction(true)?;
+            Ok(jkf)
         }
         Err(err) => Err(ParseError::Ki2(convert_error(s, err))),
     }
@@ -191,11 +182,8 @@ pub fn parse_ki2_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
 pub fn parse_jkf_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseError> {
     let file = File::open(&path)?;
     let mut jkf = serde_json::from_reader::<_, JsonKifuFormat>(BufReader::new(file))?;
-    if let Err(err) = jkf.normalize() {
-        Err(ParseError::Normalize(err.to_string()))
-    } else {
-        Ok(jkf)
-    }
+    jkf.normalize()?;
+    Ok(jkf)
 }
 
 /// Parses a JSON file to [`jkf::JsonKifuFormat`](crate::jkf::JsonKifuFormat)
@@ -205,11 +193,8 @@ pub fn parse_jkf_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseEr
 /// This function returns [`ConvertError`](crate::error::ConvertError) if it fails to parse the file.
 pub fn parse_jkf_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
     let mut jkf = serde_json::from_str::<JsonKifuFormat>(s)?;
-    if let Err(err) = jkf.normalize() {
-        Err(ParseError::Normalize(err.to_string()))
-    } else {
-        Ok(jkf)
-    }
+    jkf.normalize()?;
+    Ok(jkf)
 }
 
 #[cfg(test)]
