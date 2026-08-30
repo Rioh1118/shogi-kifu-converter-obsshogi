@@ -156,7 +156,18 @@ fn write_line<'a, W: Write>(
             let core_move = shogi_core::Move::try_from(mv).ok();
             let relative = match (&position, core_move) {
                 (Some(pos), Some(core_move)) => {
-                    crate::normalizer::infer_relative_from_position(pos, core_move)
+                    use crate::normalizer::Suffix;
+                    match crate::normalizer::infer_relative_from_position(pos, core_move) {
+                        Suffix::Nothing => None,
+                        Suffix::Only(relative) => Some(relative),
+                        // R-NOT-004 stage 3: more than one piece could have made
+                        // this move and the notation has no way to say which.
+                        // Writing it bare produces KI2 that cannot be read back
+                        // (R-KI2-003), and the record it came from is the only
+                        // copy — so refuse rather than save something that will
+                        // not open.
+                        Suffix::Unspellable => return Err(std::fmt::Error),
+                    }
                 }
                 _ => mv.relative,
             };

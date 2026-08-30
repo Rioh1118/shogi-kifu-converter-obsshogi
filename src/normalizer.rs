@@ -348,43 +348,19 @@ fn calculate_from(
             y: sq.rank(),
         })),
         2.. => {
-            let mut froms: Vec<_> = bb.into_iter().collect();
+            let all: Vec<_> = bb.into_iter().collect();
             let relative = mmf
                 .relative
-                .ok_or_else(|| NormalizeError::AmbiguousMoveFrom(froms.clone()))?;
-            let to_rel_rank = to.relative_rank(color);
-            // 左/右 rank the candidates against *each other*; only 直 and the
-            // 動作 part compare the origin with the destination (R-NOT-004).
-            //
-            // The difference is not cosmetic. 馬 and 龍 reach a square from its
-            // own file, so a candidate can be named 左 or 右 while sitting on
-            // the destination's file — `▲４四馬右` from 4三 is what the writers
-            // in use produce. Comparing that origin with the destination leaves
-            // no candidate at all and the move reads back as ambiguous.
-            let leftmost = froms.iter().map(|sq| sq.relative_file(color)).max();
-            let rightmost = froms.iter().map(|sq| sq.relative_file(color)).min();
-            match relative {
-                Relative::L | Relative::LU | Relative::LM | Relative::LD => {
-                    froms.retain(|sq| Some(sq.relative_file(color)) == leftmost);
-                }
-                Relative::R | Relative::RU | Relative::RM | Relative::RD => {
-                    froms.retain(|sq| Some(sq.relative_file(color)) == rightmost);
-                }
-                Relative::C => froms.retain(|sq| sq.file() == to.file()),
-                _ => {}
-            }
-            match relative {
-                Relative::U | Relative::LU | Relative::RU => {
-                    froms.retain(|sq| sq.relative_rank(color) > to_rel_rank);
-                }
-                Relative::M | Relative::LM | Relative::RM => {
-                    froms.retain(|sq| sq.rank() == to.rank());
-                }
-                Relative::D | Relative::LD | Relative::RD => {
-                    froms.retain(|sq| sq.relative_rank(color) < to_rel_rank);
-                }
-                _ => {}
-            }
+                .ok_or_else(|| NormalizeError::AmbiguousMoveFrom(all.clone()))?;
+            // Ask which candidate the writer would have spelled this way. Any
+            // other reading of the suffix is a second copy of R-NOT-004, and the
+            // two copies drift: 左/右 were fixed on this side once and 直 was
+            // left behind, so a `▲５八金直` this crate wrote came back ambiguous.
+            let froms: Vec<_> = all
+                .iter()
+                .copied()
+                .filter(|&from| suffix_for(pos, from, to, bb) == Suffix::Only(relative))
+                .collect();
             if froms.len() == 1 {
                 Ok(Some(PlaceFormat {
                     x: froms[0].file(),
@@ -480,7 +456,12 @@ fn normalize_move(
     };
     // Set relative?
     if infer_relative && mmf.relative.is_none() {
-        mmf.relative = infer_relative_from_position(pos, mv);
+        // A move the notation cannot spell has no suffix to record; the writer
+        // is where that has to become an error, not the JKF field.
+        mmf.relative = match infer_relative_from_position(pos, mv) {
+            Suffix::Only(relative) => Some(relative),
+            Suffix::Nothing | Suffix::Unspellable => None,
+        };
     }
     Ok(mv)
 }
@@ -628,63 +609,99 @@ enum Side {
     Right,
 }
 
-/// Infers the disambiguating suffix (左/右/直/上/寄/引/打) for `mv` in `pos`.
+/// What the traditional notation says about a move.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Suffix {
+    /// Only one piece could have made the move, so nothing is written.
+    Nothing,
+    /// The suffix that names which one it was.
+    Only(Relative),
+    /// More than one piece could have made it and no spelling separates them.
+    /// R-NOT-004 stage 3 calls this an error: the notation cannot say it.
+    Unspellable,
+}
+
+/// The suffix for the piece on `from`, given everything that could have moved
+/// to `to`.
+///
+/// **Both directions go through here.** The writer asks what to spell; the
+/// reader asks which candidate would have been spelled the way the file reads.
+/// A second copy of the rule is how 直 came to be written by one side and
+/// unreadable by the other.
+///
+/// R-NOT-004 takes the shortest that names it: the motion alone, else the file
+/// alone, else both.
+fn suffix_for(
+    pos: &PartialPosition,
+    from: shogi_core::Square,
+    to: shogi_core::Square,
+    candidates: shogi_core::Bitboard,
+) -> Suffix {
+    if candidates.count() < 2 {
+        return Suffix::Nothing;
+    }
+    let (Some((by_motion, motion)), Some((by_file, side))) = (
+        by_motion(pos, from, to, candidates),
+        by_file(pos, from, to, candidates),
+    ) else {
+        return Suffix::Unspellable;
+    };
+    if by_motion.count() == 1 {
+        return Suffix::Only(match motion {
+            Motion::Up => Relative::U,
+            Motion::Down => Relative::D,
+            Motion::Across => Relative::M,
+        });
+    }
+    // `side` is `None` for a move the notation has no word for — a gold-like
+    // piece going straight *back*, which 直 does not cover. Stage 1 had its
+    // chance above; there is nothing to fall back to.
+    let Some(side) = side else {
+        return Suffix::Unspellable;
+    };
+    if by_file.count() == 1 {
+        return Suffix::Only(match side {
+            Side::Left => Relative::L,
+            Side::Straight => Relative::C,
+            Side::Right => Relative::R,
+        });
+    }
+    if (by_file & by_motion).count() == 1 {
+        return match (side, motion) {
+            (Side::Left, Motion::Up) => Suffix::Only(Relative::LU),
+            (Side::Left, Motion::Down) => Suffix::Only(Relative::LD),
+            (Side::Left, Motion::Across) => Suffix::Only(Relative::LM),
+            (Side::Right, Motion::Up) => Suffix::Only(Relative::RU),
+            (Side::Right, Motion::Down) => Suffix::Only(Relative::RD),
+            (Side::Right, Motion::Across) => Suffix::Only(Relative::RM),
+            // 直 settles a move on its own or not at all; there is no 直上.
+            (Side::Straight, _) => Suffix::Unspellable,
+        };
+    }
+    Suffix::Unspellable
+}
+
+/// The suffix (左/右/直/上/寄/引/打) for `mv` in `pos`.
 ///
 /// R-NOT-004: a suffix is written only when more than one piece of that kind
-/// could have made the move, and then the shortest one that names it — the
-/// motion alone, else the file alone, else both. R-NOT-003 does the same for a
-/// drop: 打 only when a piece already on the board could have gone there.
-///
-/// This is the only place that decides a suffix. Two copies is what let the
-/// promotion bug live in one caller and not the other.
-pub(crate) fn infer_relative_from_position(
-    pos: &PartialPosition,
-    mv: shogi_core::Move,
-) -> Option<Relative> {
+/// could have made the move. R-NOT-003 does the same for a drop: 打 only when a
+/// piece already on the board could have gone there.
+pub(crate) fn infer_relative_from_position(pos: &PartialPosition, mv: shogi_core::Move) -> Suffix {
     match mv {
         // R-NOT-003.
         shogi_core::Move::Drop { to, piece } => {
             let on_board = shogi_core::Piece::new(piece.piece_kind(), pos.side_to_move());
-            (!candidates_reaching(pos, to, on_board).is_empty()).then_some(Relative::H)
+            if candidates_reaching(pos, to, on_board).is_empty() {
+                Suffix::Nothing
+            } else {
+                Suffix::Only(Relative::H)
+            }
         }
         shogi_core::Move::Normal { from, to, .. } => {
-            let piece = pos.piece_at(from)?;
-            let candidates = candidates_reaching(pos, to, piece);
-            if candidates.count() < 2 {
-                return None;
-            }
-            let (by_motion, motion) = by_motion(pos, from, to, candidates)?;
-            let (by_file, side) = by_file(pos, from, to, candidates)?;
-            // Shortest first (R-NOT-004): stage 1, then stage 2, then both.
-            if by_motion.count() == 1 {
-                return Some(match motion {
-                    Motion::Up => Relative::U,
-                    Motion::Down => Relative::D,
-                    Motion::Across => Relative::M,
-                });
-            }
-            if by_file.count() == 1 {
-                return match side? {
-                    Side::Left => Some(Relative::L),
-                    Side::Straight => Some(Relative::C),
-                    Side::Right => Some(Relative::R),
-                };
-            }
-            if (by_file & by_motion).count() == 1 {
-                return match (side?, motion) {
-                    (Side::Left, Motion::Up) => Some(Relative::LU),
-                    (Side::Left, Motion::Down) => Some(Relative::LD),
-                    (Side::Left, Motion::Across) => Some(Relative::LM),
-                    (Side::Right, Motion::Up) => Some(Relative::RU),
-                    (Side::Right, Motion::Down) => Some(Relative::RD),
-                    (Side::Right, Motion::Across) => Some(Relative::RM),
-                    // 直 settles a move on its own or not at all.
-                    (Side::Straight, _) => None,
-                };
-            }
-            // R-NOT-004 stage 3 found nothing: the traditional notation cannot
-            // spell this move.
-            None
+            let Some(piece) = pos.piece_at(from) else {
+                return Suffix::Nothing;
+            };
+            suffix_for(pos, from, to, candidates_reaching(pos, to, piece))
         }
     }
 }
@@ -770,7 +787,10 @@ fn populate_relative_moves(
                 Err(err) => return Err(NormalizeError::Convert(err.to_string())),
             };
             if mmf.relative.is_none() {
-                mmf.relative = infer_relative_from_position(&pos, mv);
+                mmf.relative = match infer_relative_from_position(&pos, mv) {
+                    Suffix::Only(relative) => Some(relative),
+                    Suffix::Nothing | Suffix::Unspellable => None,
+                };
             }
             if pos.make_move(mv).is_none() {
                 return Err(NormalizeError::MakeMoveFailed(mv));
@@ -842,6 +862,99 @@ mod tests {
         assert_eq!(
             Some(PlaceFormat { x: 5, y: 9 }),
             back.moves[1].move_.expect("a move").from,
+        );
+    }
+
+    /// Builds a board holding `pieces`, plus a king for each side, and reads
+    /// the KIF for `mv` played from it.
+    fn from_board(pieces: &[(usize, usize, Color, Kind)], mv: &str) -> JsonKifuFormat {
+        let mut board = String::new();
+        let mut cells = [[None; 9]; 9];
+        // Kings in the corners, out of the way of the squares these tests use.
+        cells[0][8] = Some((Color::Black, Kind::OU));
+        cells[0][0] = Some((Color::White, Kind::OU));
+        for &(x, y, color, kind) in pieces {
+            cells[x - 1][y - 1] = Some((color, kind));
+        }
+        for rank in 1..=9usize {
+            board.push('|');
+            for file in (1..=9usize).rev() {
+                match cells[file - 1][rank - 1] {
+                    None => board.push_str(" ・"),
+                    Some((color, kind)) => {
+                        board.push(if color == Color::Black { ' ' } else { 'v' });
+                        board.push_str(match kind {
+                            Kind::KI => "金",
+                            Kind::GI => "銀",
+                            Kind::TO => "と",
+                            Kind::KA => "角",
+                            Kind::UM => "馬",
+                            Kind::HI => "飛",
+                            Kind::RY => "龍",
+                            Kind::OU => "玉",
+                            _ => unreachable!("only the kinds these tests place"),
+                        });
+                    }
+                }
+            }
+            board.push('|');
+            board.push_str(["一", "二", "三", "四", "五", "六", "七", "八", "九"][rank - 1]);
+            board.push('\n');
+        }
+        let kif = format!(
+            "手合割：その他\n後手の持駒：なし\n  ９ ８ ７ ６ ５ ４ ３ ２ １\n\
++---------------------------+\n{board}+---------------------------+\n\
+先手の持駒：なし\n先手番\n手数----指手---------消費時間--\n   1 {mv}\n"
+        );
+        crate::parser::parse_kif_str(&kif).unwrap_or_else(|e| panic!("{kif}\n{e}"))
+    }
+
+    // R-NOT-004 stage 2: 直 is for a gold-like piece going straight *up*. A gold
+    // directly behind the destination is not 直 — it would be 引 — so a reader
+    // that only checks the file keeps it as a candidate and the move comes back
+    // ambiguous. The writer already knew; only the reader did not, which is what
+    // a second copy of the rule buys.
+    //
+    // 5七 / 5九 / 4九 all reach 5八, and the move is 5九→5八.
+    #[test]
+    fn a_gold_behind_the_destination_is_not_直() {
+        use crate::converter::ToKi2;
+        let jkf = from_board(
+            &[
+                (5, 7, Color::Black, Kind::KI),
+                (5, 9, Color::Black, Kind::KI),
+                (4, 9, Color::Black, Kind::KI),
+            ],
+            "５八金(59)",
+        );
+        let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
+        assert!(ki2.contains("▲５八金直"), "{ki2:?}");
+        let back = crate::parser::parse_ki2_str(&ki2).expect("reads back");
+        assert_eq!(
+            Some(PlaceFormat { x: 5, y: 9 }),
+            back.moves[1].move_.expect("a move").from,
+        );
+    }
+
+    // R-NOT-004 stage 3: three bishops reaching one square cannot be told apart
+    // — the notation has 左 and 右 and nothing else for them. Writing the move
+    // bare produces KI2 nothing can read (R-KI2-003), and the record being saved
+    // is the only copy, so the write has to fail instead.
+    #[test]
+    fn a_move_the_notation_cannot_spell_is_not_written() {
+        use crate::converter::ToKi2;
+        let jkf = from_board(
+            &[
+                (1, 7, Color::Black, Kind::KA),
+                (3, 1, Color::Black, Kind::KA),
+                (6, 2, Color::Black, Kind::KA),
+            ],
+            "５三角(31)",
+        );
+        assert!(
+            jkf.try_to_ki2_owned().is_err(),
+            "three bishops reach 5三: {:?}",
+            jkf.try_to_ki2_owned()
         );
     }
 

@@ -28,16 +28,19 @@ fn single_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
                 value(Relative::L, tag("左")),
                 value(Relative::C, tag("直")),
                 value(Relative::R, tag("右")),
-                value(Relative::U, tag("上")),
+                // R-NOT-006 / R-KI2-005: 飛・角の「上」は紙面で「行」と書かれる。
+                // 書き出しは正規形だけを使い、読み取りでは揺れを受ける。
+                value(Relative::U, alt((tag("上"), tag("行")))),
                 value(Relative::M, tag("寄")),
                 value(Relative::D, tag("引")),
                 value(Relative::H, tag("打")),
             ))),
-            // R-NOT-005: 不成 is written out, unlike KIF (R-KIF-006). The order
-            // of these two does not matter — `tag` anchors at the start of the
-            // input and `不成` does not begin with `成` — but keeping the longer
-            // spelling first matches how the rest of this file reads.
-            opt(alt((value(false, tag("不成")), value(true, tag("成"))))),
+            // R-NOT-005: 不成 is written out, unlike KIF (R-KIF-006).
+            // R-NOT-006 / R-KI2-005: 生 is how 不成 appears in print.
+            opt(alt((
+                value(false, alt((tag("不成"), tag("生")))),
+                value(true, tag("成")),
+            ))),
             preceded(
                 tuple((space0, opt(line_ending))),
                 opt(many1(move_comment_line)),
