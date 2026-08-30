@@ -85,38 +85,14 @@ fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) 
                 offset += 2;
             }
         } else if let Some(special) = &mf.special {
-            match special {
-                MoveSpecial::SpecialToryo => {
-                    sink.write_str("投了")?;
-                    offset += 4;
-                }
-                MoveSpecial::SpecialSennichite => {
-                    sink.write_str("千日手")?;
-                    offset += 6;
-                }
-                MoveSpecial::SpecialTimeUp => {
-                    sink.write_str("切れ負け")?;
-                    offset += 8;
-                }
-                MoveSpecial::SpecialIllegalMove => {
-                    sink.write_str("反則負け")?;
-                    offset += 8;
-                }
-                MoveSpecial::SpecialJishogi => {
-                    sink.write_str("持将棋")?;
-                    offset += 6;
-                }
-                MoveSpecial::SpecialKachi => {
-                    sink.write_str("入玉勝ち")?;
-                    offset += 8;
-                }
-                MoveSpecial::SpecialTsumi => {
-                    sink.write_str("詰み")?;
-                    offset += 4;
-                }
-                // TODO: SpecialIllegalActionBlack, SpecialIllegalActionWhite, SpecialFuzumi, SpecialError, etc...
-                _ => sink.write_str("中断")?,
-            }
+            // 待った and エラー have no KIF word (R-KIF-007). 中断 is the
+            // closest thing KIF can say — the game stopped here — so that is
+            // what a reader will make of them, and the distinction is lost.
+            let word = special.kif_word().unwrap_or("中断");
+            sink.write_str(word)?;
+            // The time column is measured in half-widths and every one of these
+            // words is full-width.
+            offset += word.chars().count() * 2;
         } else {
             unreachable!()
         }

@@ -182,22 +182,7 @@ fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
             write_kind(kind, sink)?;
         } else if let Some(special) = &mf.special {
             sink.write_char('%')?;
-            match special {
-                MoveSpecial::SpecialToryo => sink.write_str("TORYO")?,
-                MoveSpecial::SpecialChudan => sink.write_str("CHUDAN")?,
-                MoveSpecial::SpecialSennichite => sink.write_str("SENNICHITE")?,
-                MoveSpecial::SpecialTimeUp => sink.write_str("TIME_UP")?,
-                MoveSpecial::SpecialIllegalMove => sink.write_str("ILLEGAL_MOVE")?,
-                MoveSpecial::SpecialIllegalActionBlack => sink.write_str("+ILLEGAL_ACTION")?,
-                MoveSpecial::SpecialIllegalActionWhite => sink.write_str("-ILLEGAL_ACTION")?,
-                MoveSpecial::SpecialJishogi => sink.write_str("JISHOGI")?,
-                MoveSpecial::SpecialKachi => sink.write_str("KACHI")?,
-                MoveSpecial::SpecialHikiwake => sink.write_str("HIKIWAKE")?,
-                MoveSpecial::SpecialMatta => sink.write_str("MATTA")?,
-                MoveSpecial::SpecialTsumi => sink.write_str("TSUMI")?,
-                MoveSpecial::SpecialFuzumi => sink.write_str("FUZUMI")?,
-                MoveSpecial::SpecialError => sink.write_str("ERROR")?,
-            }
+            sink.write_str(special.csa_word())?;
         } else {
             unreachable!()
         }
