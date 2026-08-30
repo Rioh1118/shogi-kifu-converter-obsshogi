@@ -2,7 +2,7 @@ use crate::jkf::*;
 use nom::branch::alt;
 use nom::bytes::complete::{is_not, tag};
 use nom::character::complete::{line_ending, none_of, not_line_ending, one_of};
-use nom::combinator::{map, map_res, opt, value};
+use nom::combinator::{eof, map, map_res, opt, value};
 use nom::error::{ErrorKind, ParseError, VerboseError};
 use nom::multi::{count, many0, many1};
 use nom::sequence::{delimited, pair, preceded, separated_pair, terminated, tuple};
@@ -55,24 +55,35 @@ impl InformationData {
     }
 }
 
+/// Ends a line, at the end of the file as well as at a newline.
+///
+/// A text file need not end with a newline, and kifu written by hand and by
+/// other software both turn up without one. Requiring `line_ending` drops the
+/// last line — a move, a comment or the `まで<N>手で…` — and says nothing about
+/// it. Every line parser here is anchored on something it must consume first,
+/// so accepting the empty match at the end cannot loop.
+pub(super) fn end_of_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
+    alt((line_ending, eof))(input)
+}
+
 fn comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
     map(
-        delimited(tag("#"), not_line_ending, line_ending),
+        delimited(tag("#"), not_line_ending, end_of_line),
         String::from,
     )(input)
 }
 
 pub(super) fn not_move_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
-    delimited(none_of(" 0123456789*▲△"), not_line_ending, line_ending)(input)
+    delimited(none_of(" 0123456789*▲△"), not_line_ending, end_of_line)(input)
 }
 
 pub(super) fn move_comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
     alt((
         map(
-            delimited(tag("*"), not_line_ending, line_ending),
+            delimited(tag("*"), not_line_ending, end_of_line),
             String::from,
         ),
-        map(delimited(tag("&"), not_line_ending, line_ending), |s| {
+        map(delimited(tag("&"), not_line_ending, end_of_line), |s| {
             String::from("&") + s
         }),
     ))(input)
@@ -439,11 +450,16 @@ mod tests {
     #[test]
     fn parse_comment_line() {
         assert!(comment_line("").is_err());
-        assert!(comment_line("# comment with not line ending").is_err());
         assert!(comment_line("not comment\n").is_err());
         assert_eq!(
             Ok(("", String::from(" comment"))),
             comment_line("# comment\n")
+        );
+        // A file need not end with a newline. Insisting on one dropped the last
+        // line and said nothing, so the record came back short.
+        assert_eq!(
+            Ok(("", String::from(" comment"))),
+            comment_line("# comment")
         );
     }
 

@@ -1,8 +1,10 @@
-use super::kakinoki::{move_comment_line, move_to, not_move_line, parse_without_moves, piece_kind};
+use super::kakinoki::{
+    end_of_line, move_comment_line, move_to, not_move_line, parse_without_moves, piece_kind,
+};
 use crate::jkf::*;
 use nom::branch::alt;
 use nom::bytes::complete::tag;
-use nom::character::complete::{digit1, line_ending, not_line_ending, space0};
+use nom::character::complete::{digit1, not_line_ending, space0};
 use nom::combinator::{map, map_res, opt, value};
 use nom::error::{ParseError, VerboseError};
 use nom::multi::{many0, many1};
@@ -153,7 +155,7 @@ fn move_line(
     let side_to_move = known_side.unwrap_or_else(|| crate::handicap::side_to_move_at_ply(start, i));
     let (input, mut mf) = preceded(space0, alt((move_special(side_to_move), move_move)))(input)?;
     let (input, time) = preceded(space0, opt(move_time))(input)?;
-    let (input, _) = preceded(not_line_ending, line_ending)(input)?;
+    let (input, _) = preceded(not_line_ending, end_of_line)(input)?;
     if let Some(mmf) = &mut mf.move_ {
         mmf.color = side_to_move;
     }
@@ -854,5 +856,37 @@ mod tests {
             .expect("変化:2 should attach at index 2");
         assert_eq!(1, forks.len());
         assert_eq!(1, forks[0].len(), "the inner 変化:5 must NOT be merged in");
+    }
+
+    // A text file need not end with a newline, and kifu written by hand or by
+    // other software turn up without one. Requiring one dropped whatever was on
+    // the last line — a move, a comment, or `まで<N>手で…` — and returned `Ok`,
+    // so the record came back one line short with nothing said about it
+    // (R-REQ-004).
+    #[test]
+    fn the_last_line_is_read_without_a_trailing_newline() {
+        use crate::parser::parse_kif_str;
+        const HEAD: &str = "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n";
+
+        let moves = parse_kif_str(&format!("{HEAD}   2 ３四歩(33)")).expect("parses");
+        assert_eq!(
+            2,
+            moves.moves.len() - 1,
+            "the second move is on the last line"
+        );
+
+        let comment = parse_kif_str(&format!("{HEAD}*memo")).expect("parses");
+        assert_eq!(
+            Some(&vec![String::from("memo")]),
+            comment.moves[1].comments.as_ref(),
+            "the comment is on the last line"
+        );
+
+        let outcome = parse_kif_str(&format!("{HEAD}   2 投了")).expect("parses");
+        assert_eq!(
+            Some(MoveSpecial::SpecialToryo),
+            outcome.moves[2].special,
+            "the outcome is on the last line"
+        );
     }
 }
