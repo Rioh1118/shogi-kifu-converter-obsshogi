@@ -373,6 +373,30 @@ mod tests {
     use super::*;
     use crate::normalizer::HIRATE_BOARD;
 
+    // The counts come from the file, so they can add up past what a `u8` holds.
+    // Wrapping would turn a broken hand into a small plausible one and hand it
+    // to the rest of the crate as a fact.
+    #[test]
+    fn a_hand_that_overflows_a_u8_does_not_wrap() {
+        // 18 pawns fifteen times: 270, which is 14 once it wraps.
+        let overflowing = "歩十八 ".repeat(15);
+        assert!(
+            information_value_hand(overflowing.trim_end()).is_err(),
+            "a hand of 270 must not parse"
+        );
+
+        // Stated before *and* after the board. Each line is under the limit on
+        // its own, so the guard that matters here is the one merging them.
+        let (_, half) =
+            information_value_hand("歩十八 歩十八 歩十八 歩十八 歩十八 歩十八 歩十八 歩十八")
+                .expect("144 pawns parses");
+        assert_eq!(144, half.FU);
+        // 288 wraps to 32; saturating keeps it obviously wrong.
+        let merged =
+            InformationData::merged_hands([half, Hand::default()], [half, Hand::default()]);
+        assert_eq!(u8::MAX, merged[0].FU);
+    }
+
     #[test]
     fn parse_comment_line() {
         assert!(comment_line("").is_err());

@@ -641,6 +641,23 @@ fn populate_relative_moves(
 mod tests {
     use super::*;
 
+    // Cumulative times are summed from values the file states, so they can pass
+    // what a `u8` holds. Wrapping would put a small, ordinary-looking number
+    // where a broken one belongs, and nothing downstream could tell.
+    #[test]
+    fn a_cumulative_time_past_the_hour_limit_does_not_wrap() {
+        // Black plays twice at 255 hours each: 510, which is 254 once it wraps.
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77) (255:00:00/255:00:00)
+   2 ３四歩(33) ( 0:00/00:00:00)
+   3 ２六歩(27) (255:00:00/255:00:00)
+";
+        let jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        let total = jkf.moves[3].time.expect("a time").total;
+        assert_eq!(Some(u8::MAX), total.h, "hours must saturate, not wrap");
+    }
+
     // 馬 reaches a square from that square's own file, so one of two candidates
     // can be named 右 while standing on the destination's file. Comparing the
     // origin with the destination instead of the candidates with each other
