@@ -2,3 +2,5 @@
 /Cargo.lock
 /test
 .DS_Store
+/research
+.claude/settings.local.json
