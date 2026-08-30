@@ -1,6 +1,7 @@
 use crate::error::NormalizeError;
 use crate::jkf::*;
 use shogi_core::{LegalityChecker, PartialPosition};
+use shogi_legality_lite::prelegality::is_valid;
 use shogi_legality_lite::LiteLegalityChecker;
 use shogi_official_kifu::display_single_move_kansuji;
 
@@ -52,108 +53,6 @@ pub(crate) const HIRATE_BOARD: [[Piece; 9]; 9] = {
     ]
 };
 
-const STATE_HIRATE: StateFormat = StateFormat {
-    color: Color::Black,
-    board: HIRATE_BOARD,
-    hands: [Hand::empty(); 2],
-};
-
-const STATE_KY: StateFormat = {
-    let mut board = HIRATE_BOARD;
-    board[0][0] = Piece::empty();
-    StateFormat {
-        color: Color::White,
-        board,
-        hands: [Hand::empty(); 2],
-    }
-};
-
-const STATE_KA: StateFormat = {
-    let mut board = HIRATE_BOARD;
-    board[1][1] = Piece::empty();
-    StateFormat {
-        color: Color::White,
-        board,
-        hands: [Hand::empty(); 2],
-    }
-};
-
-const STATE_HI: StateFormat = {
-    let mut board = HIRATE_BOARD;
-    board[7][1] = Piece::empty();
-    StateFormat {
-        color: Color::White,
-        board,
-        hands: [Hand::empty(); 2],
-    }
-};
-
-const STATE_HIKY: StateFormat = {
-    let mut board = HIRATE_BOARD;
-    board[0][0] = Piece::empty();
-    board[7][1] = Piece::empty();
-    StateFormat {
-        color: Color::White,
-        board,
-        hands: [Hand::empty(); 2],
-    }
-};
-
-const STATE_2: StateFormat = {
-    let mut board = HIRATE_BOARD;
-    board[1][1] = Piece::empty();
-    board[7][1] = Piece::empty();
-    StateFormat {
-        color: Color::White,
-        board,
-        hands: [Hand::empty(); 2],
-    }
-};
-
-const STATE_4: StateFormat = {
-    let mut board = STATE_2.board;
-    board[0][0] = Piece::empty();
-    board[8][0] = Piece::empty();
-    StateFormat {
-        color: Color::White,
-        board,
-        hands: [Hand::empty(); 2],
-    }
-};
-
-const STATE_6: StateFormat = {
-    let mut board = STATE_4.board;
-    board[1][0] = Piece::empty();
-    board[7][0] = Piece::empty();
-    StateFormat {
-        color: Color::White,
-        board,
-        hands: [Hand::empty(); 2],
-    }
-};
-
-const STATE_8: StateFormat = {
-    let mut board = STATE_6.board;
-    board[2][0] = Piece::empty();
-    board[6][0] = Piece::empty();
-    StateFormat {
-        color: Color::White,
-        board,
-        hands: [Hand::empty(); 2],
-    }
-};
-
-const STATE_10: StateFormat = {
-    let mut board = STATE_8.board;
-    board[3][0] = Piece::empty();
-    board[5][0] = Piece::empty();
-    StateFormat {
-        color: Color::White,
-        board,
-        hands: [Hand::empty(); 2],
-    }
-};
-
 impl Piece {
     pub(crate) const fn empty() -> Self {
         Self {
@@ -200,42 +99,48 @@ impl Hand {
             HI: 0,
         }
     }
-    pub(crate) fn increment(&mut self, kind: Kind) {
-        match kind {
-            Kind::FU => self.FU += 1,
-            Kind::KY => self.KY += 1,
-            Kind::KE => self.KE += 1,
-            Kind::GI => self.GI += 1,
-            Kind::KI => self.KI += 1,
-            Kind::KA => self.KA += 1,
-            Kind::HI => self.HI += 1,
-            _ => unreachable!(),
-        }
+    /// The slot for `kind`, or `None` for a king or a promoted piece.
+    ///
+    /// Neither can sit in hand (R-CSA-006), but a broken CSA can say they do,
+    /// and that has to come back as an error rather than take the process down.
+    fn slot(&mut self, kind: Kind) -> Option<&mut u8> {
+        Some(match kind {
+            Kind::FU => &mut self.FU,
+            Kind::KY => &mut self.KY,
+            Kind::KE => &mut self.KE,
+            Kind::GI => &mut self.GI,
+            Kind::KI => &mut self.KI,
+            Kind::KA => &mut self.KA,
+            Kind::HI => &mut self.HI,
+            _ => return None,
+        })
     }
-    pub(crate) fn decrement(&mut self, kind: Kind) {
-        match kind {
-            Kind::FU => self.FU -= 1,
-            Kind::KY => self.KY -= 1,
-            Kind::KE => self.KE -= 1,
-            Kind::GI => self.GI -= 1,
-            Kind::KI => self.KI -= 1,
-            Kind::KA => self.KA -= 1,
-            Kind::HI => self.HI -= 1,
-            _ => unreachable!(),
-        }
+    /// Adds one to `kind`. `None` if it cannot be held, or would overflow.
+    pub(crate) fn increment(&mut self, kind: Kind) -> Option<()> {
+        let slot = self.slot(kind)?;
+        *slot = slot.checked_add(1)?;
+        Some(())
+    }
+    /// Takes one from `kind`. `None` if it cannot be held, or none are left —
+    /// which means the board holds more of that piece than a set contains.
+    pub(crate) fn decrement(&mut self, kind: Kind) -> Option<()> {
+        let slot = self.slot(kind)?;
+        *slot = slot.checked_sub(1)?;
+        Some(())
     }
 }
 
 fn add_timeformat(lhs: &TimeFormat, rhs: &TimeFormat) -> TimeFormat {
-    let s = (lhs.h.unwrap_or_default() + rhs.h.unwrap_or_default()) as u64 * 3600
-        + (lhs.m + rhs.m) as u64 * 60
-        + (lhs.s + rhs.s) as u64;
-    let m = (s / 60) % 60;
-    let h = s / 3600;
+    // Widen before adding: two times that each fit in a `u8` need not.
+    let total = (lhs.h.unwrap_or_default() as u64 + rhs.h.unwrap_or_default() as u64) * 3600
+        + (lhs.m as u64 + rhs.m as u64) * 60
+        + (lhs.s as u64 + rhs.s as u64);
     TimeFormat {
-        h: Some(h as u8),
-        m: m as u8,
-        s: (s % 60) as u8,
+        // Hours past 255 saturate rather than wrap. A cumulative time that long
+        // is broken input, and a wrapped value would be a plausible-looking lie.
+        h: Some((total / 3600).min(u8::MAX as u64) as u8),
+        m: ((total / 60) % 60) as u8,
+        s: (total % 60) as u8,
     }
 }
 
@@ -282,7 +187,7 @@ impl JsonKifuFormat {
                     .and_then(|mf| mf.move_.map(|mmf| mmf.color == Color::Black))
                     .unwrap_or_default()
             {
-                for mv in self.moves[1..].iter_mut() {
+                for mv in self.moves.iter_mut().skip(1) {
                     if let Some(mmf) = &mut mv.move_ {
                         mmf.color = match mmf.color {
                             Color::Black => Color::White,
@@ -298,8 +203,14 @@ impl JsonKifuFormat {
         } else {
             PartialPosition::startpos()
         };
+        let (_, rest) = match self.moves.split_first_mut() {
+            Some(split) => split,
+            // Index 0 is the initial position's comments, so an empty `moves`
+            // has no plies to normalize rather than being an error.
+            None => return Ok(()),
+        };
         normalize_moves(
-            &mut self.moves[1..],
+            rest,
             pos,
             [TimeFormat::default(); 2],
             correct_color,
@@ -308,6 +219,19 @@ impl JsonKifuFormat {
         Ok(())
     }
 
+    /// Normalizes the JKF data, inferring `relative` for every move.
+    ///
+    /// Equivalent to [`Self::normalize_with_options`] with `infer_relative` set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NormalizeError`] if a move cannot be resolved against the
+    /// position it is played from.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `moves` is empty. Index 0 is reserved for the initial
+    /// position's comments, so a well-formed value always has one element.
     pub fn normalize_with_color_correction(
         &mut self,
         correct_color: bool,
@@ -315,8 +239,39 @@ impl JsonKifuFormat {
         self.normalize_with_options(correct_color, true)
     }
 
+    /// Normalizes the JKF data, requiring the move colors to already be right.
+    ///
+    /// Equivalent to [`Self::normalize_with_options`] with `correct_color`
+    /// cleared and `infer_relative` set: a color that disagrees with the
+    /// position's side to move is an error rather than something to overwrite.
+    /// Use this for sources where the color is recorded explicitly (CSA, JKF)
+    /// and [`Self::normalize_with_color_correction`] for those where it is
+    /// derived from the move number (KIF, KI2).
+    ///
+    /// The following fields are recomputed from the position and overwrite
+    /// whatever the input held: `piece`, `same`, `promote`, `capture` and
+    /// `time.total`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NormalizeError`] if a move cannot be resolved against the
+    /// position it is played from.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `moves` is empty. Index 0 is reserved for the initial
+    /// position's comments, so a well-formed value always has one element.
     pub fn normalize(&mut self) -> Result<(), NormalizeError> {
         self.normalize_with_options(false, true)
+    }
+
+    /// The position the moves start from, or `None` if `initial` cannot be
+    /// turned into one.
+    pub(crate) fn starting_position(&self) -> Option<PartialPosition> {
+        match &self.initial {
+            Some(initial) => PartialPosition::try_from(initial).ok(),
+            None => Some(PartialPosition::startpos()),
+        }
     }
 
     /// Fills in `relative` (左/右/上/...) for every move whose `relative` is `None`,
@@ -332,55 +287,35 @@ impl JsonKifuFormat {
         } else {
             PartialPosition::startpos()
         };
-        populate_relative_moves(&mut self.moves[1..], pos)
+        match self.moves.split_first_mut() {
+            Some((_, rest)) => populate_relative_moves(rest, pos),
+            None => Ok(()),
+        }
     }
 }
 
+/// Folds a board that matches a named handicap back into its preset.
+///
+/// The comparison walks the same table the writers use, so a handicap added
+/// there is folded here without a second list to keep in step.
 fn normalize_initial(jkf: &mut JsonKifuFormat) -> Result<(), NormalizeError> {
     if let Some(initial) = &mut jkf.initial {
-        *initial = match initial.data {
-            Some(STATE_HIRATE) => Initial {
-                preset: Preset::PresetHirate,
-                data: None,
-            },
-            Some(STATE_KY) => Initial {
-                preset: Preset::PresetKY,
-                data: None,
-            },
-            Some(STATE_KA) => Initial {
-                preset: Preset::PresetKA,
-                data: None,
-            },
-            Some(STATE_HI) => Initial {
-                preset: Preset::PresetHI,
-                data: None,
-            },
-            Some(STATE_HIKY) => Initial {
-                preset: Preset::PresetHIKY,
-                data: None,
-            },
-            Some(STATE_2) => Initial {
-                preset: Preset::Preset2,
-                data: None,
-            },
-            Some(STATE_4) => Initial {
-                preset: Preset::Preset4,
-                data: None,
-            },
-            Some(STATE_6) => Initial {
-                preset: Preset::Preset6,
-                data: None,
-            },
-            Some(STATE_8) => Initial {
-                preset: Preset::Preset8,
-                data: None,
-            },
-            Some(STATE_10) => Initial {
-                preset: Preset::Preset10,
-                data: None,
-            },
-            _ => *initial,
+        let Some(data) = initial.data else {
+            return Ok(());
         };
+        for handicap in crate::handicap::HANDICAPS {
+            let matches = crate::handicap::board(handicap.preset)
+                .is_some_and(|board| board == data.board)
+                && data.color == crate::handicap::side_to_move(handicap.preset)
+                && data.hands == [Hand::empty(); 2];
+            if matches {
+                *initial = Initial {
+                    preset: handicap.preset,
+                    data: None,
+                };
+                break;
+            }
+        }
     }
     Ok(())
 }
@@ -529,26 +464,108 @@ fn normalize_move(
     };
     // Set relative?
     if infer_relative && mmf.relative.is_none() {
-        if let Some(mut display) = display_single_move_kansuji(pos, mv) {
-            mmf.relative = match (display.pop(), display.pop()) {
-                (Some('左'), _) => Some(Relative::L),
-                (Some('直'), _) => Some(Relative::C),
-                (Some('右'), _) => Some(Relative::R),
-                (Some('上'), Some('左')) => Some(Relative::LU),
-                (Some('上'), Some('右')) => Some(Relative::RU),
-                (Some('上'), _) => Some(Relative::U),
-                (Some('引'), Some('左')) => Some(Relative::LD),
-                (Some('引'), Some('右')) => Some(Relative::RD),
-                (Some('引'), _) => Some(Relative::D),
-                (Some('寄'), Some('左')) => Some(Relative::LM),
-                (Some('寄'), Some('右')) => Some(Relative::RM),
-                (Some('寄'), _) => Some(Relative::M),
-                (Some('打'), _) => Some(Relative::H),
-                _ => None,
-            };
-        }
+        mmf.relative = infer_relative_from_position(pos, mv);
     }
     Ok(mv)
+}
+
+/// Infers the disambiguating suffix (左/右/直/上/寄/引/打) for `mv` in `pos`.
+///
+/// The traditional notation orders a move as
+/// `<destination><piece><relative><motion><promotion>` (R-NOT-001), so the
+/// promotion suffix has to come off before the relative part is reachable.
+/// Reading the tail without stripping it makes every promoting move look like
+/// it has no disambiguator, which produces KI2 that cannot be read back
+/// (R-NOT-004 / R-NOT-005).
+///
+/// This is the only place that maps a rendered move back to [`Relative`].
+/// Keeping a second copy is what let the promotion bug live in one caller and
+/// not the other.
+///
+/// Rendering is skipped for moves that cannot carry a suffix; see
+/// [`needs_disambiguation`].
+pub(crate) fn infer_relative_from_position(
+    pos: &PartialPosition,
+    mv: shogi_core::Move,
+) -> Option<Relative> {
+    if !needs_disambiguation(pos, mv) {
+        return None;
+    }
+    let mut display = display_single_move_kansuji(pos, mv)?;
+    // `不成` has to be tested first: it also ends with `成`.
+    let cut = if let Some(rest) = display.strip_suffix("不成") {
+        rest.len()
+    } else if let Some(rest) = display.strip_suffix('成') {
+        rest.len()
+    } else {
+        display.len()
+    };
+    display.truncate(cut);
+    match (display.pop(), display.pop()) {
+        (Some('左'), _) => Some(Relative::L),
+        (Some('直'), _) => Some(Relative::C),
+        (Some('右'), _) => Some(Relative::R),
+        (Some('上'), Some('左')) => Some(Relative::LU),
+        (Some('上'), Some('右')) => Some(Relative::RU),
+        (Some('上'), _) => Some(Relative::U),
+        (Some('引'), Some('左')) => Some(Relative::LD),
+        (Some('引'), Some('右')) => Some(Relative::RD),
+        (Some('引'), _) => Some(Relative::D),
+        (Some('寄'), Some('左')) => Some(Relative::LM),
+        (Some('寄'), Some('右')) => Some(Relative::RM),
+        (Some('寄'), _) => Some(Relative::M),
+        (Some('打'), _) => Some(Relative::H),
+        _ => None,
+    }
+}
+
+/// Whether the traditional notation for `mv` can carry a disambiguating suffix
+/// at all.
+///
+/// `shogi_official_kifu` decides this from the set of squares holding the same
+/// piece that could reach the destination: a normal move gets no suffix unless
+/// that set has two or more members, and a drop gets `打` only when a board
+/// piece could have gone there instead. Answering the question here first is
+/// worth the duplication because that crate reaches the answer by enumerating
+/// every legal move in the position — about 15,000 candidates — for each single
+/// move, while this scan only touches squares that already hold the right piece.
+///
+/// Uses the same prelegality check the renderer uses. A legality check that
+/// also rejects pinned pieces would disagree on a small number of positions and
+/// silently change the notation.
+fn needs_disambiguation(pos: &PartialPosition, mv: shogi_core::Move) -> bool {
+    use shogi_core::{Move, Square};
+
+    let can_reach = |from: Square, to: Square| {
+        [false, true]
+            .into_iter()
+            .any(|promote| is_valid(pos, Move::Normal { from, to, promote }))
+    };
+    match mv {
+        Move::Normal { from, to, .. } => {
+            let piece = match pos.piece_at(from) {
+                Some(piece) => piece,
+                None => return false,
+            };
+            let mut found = 0;
+            for square in Square::all() {
+                if pos.piece_at(square) == Some(piece) && can_reach(square, to) {
+                    found += 1;
+                    if found >= 2 {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        // A drop is written `打` exactly when the same piece could have been
+        // moved to that square instead.
+        Move::Drop { to, piece } => {
+            let on_board = shogi_core::Piece::new(piece.piece_kind(), pos.side_to_move());
+            Square::all()
+                .any(|square| pos.piece_at(square) == Some(on_board) && can_reach(square, to))
+        }
+    }
 }
 
 fn normalize_moves(
@@ -600,24 +617,7 @@ fn populate_relative_moves(
                 Err(err) => return Err(NormalizeError::Convert(err.to_string())),
             };
             if mmf.relative.is_none() {
-                if let Some(mut display) = display_single_move_kansuji(&pos, mv) {
-                    mmf.relative = match (display.pop(), display.pop()) {
-                        (Some('左'), _) => Some(Relative::L),
-                        (Some('直'), _) => Some(Relative::C),
-                        (Some('右'), _) => Some(Relative::R),
-                        (Some('上'), Some('左')) => Some(Relative::LU),
-                        (Some('上'), Some('右')) => Some(Relative::RU),
-                        (Some('上'), _) => Some(Relative::U),
-                        (Some('引'), Some('左')) => Some(Relative::LD),
-                        (Some('引'), Some('右')) => Some(Relative::RD),
-                        (Some('引'), _) => Some(Relative::D),
-                        (Some('寄'), Some('左')) => Some(Relative::LM),
-                        (Some('寄'), Some('右')) => Some(Relative::RM),
-                        (Some('寄'), _) => Some(Relative::M),
-                        (Some('打'), _) => Some(Relative::H),
-                        _ => None,
-                    };
-                }
+                mmf.relative = infer_relative_from_position(&pos, mv);
             }
             if pos.make_move(mv).is_none() {
                 return Err(NormalizeError::MakeMoveFailed(mv));
@@ -632,6 +632,56 @@ fn populate_relative_moves(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two black bishops on 7a and 3a, both able to reach 5c, so every move to
+    /// 5c needs a 左/右 disambiguator (R-NOT-004). `{mv}` is the move line.
+    fn ambiguous_bishop_kif(mv: &str) -> String {
+        format!(
+            "手合割：その他
+後手の持駒：なし
+  ９ ８ ７ ６ ５ ４ ３ ２ １
++---------------------------+
+| ・ ・ 角 ・v玉 ・ 角 ・ ・|一
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|二
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|三
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|四
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|五
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|六
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|七
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|八
+| ・ ・ ・ ・ 玉 ・ ・ ・ ・|九
++---------------------------+
+先手の持駒：なし
+先手番
+手数----指手---------消費時間--
+   1 {mv}   ( 0:00/00:00:00)
+"
+        )
+    }
+
+    // R-NOT-004 / R-NOT-005: the promotion suffix must not hide the
+    // disambiguator. `不成` is covered too — stripping only `成` leaves it
+    // broken, and a KI2 written without the disambiguator cannot be read back.
+    #[test]
+    fn relative_survives_promotion_suffix() {
+        for (mv, want) in [
+            ("５三角成(71)", Relative::L),
+            ("５三角成(31)", Relative::R),
+            ("５三角(71)", Relative::L),
+            ("５三角(31)", Relative::R),
+        ] {
+            let src = ambiguous_bishop_kif(mv);
+            let mut jkf = crate::parser::parse_kif_str(&src)
+                .unwrap_or_else(|e| panic!("failed to parse {mv}: {e}"));
+            jkf.populate_relative()
+                .unwrap_or_else(|e| panic!("failed to populate {mv}: {e}"));
+            assert_eq!(
+                Some(want),
+                jkf.moves[1].move_.expect("a move").relative,
+                "relative for {mv}"
+            );
+        }
+    }
 
     #[test]
     fn normalize_moves_empty() {

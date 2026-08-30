@@ -7,9 +7,20 @@
 //!
 //! See [https://github.com/na2hiro/json-kifu-format](https://github.com/na2hiro/json-kifu-format).
 
+// The only consumer pins this crate by git tag, so the public surface is the
+// contract. An undocumented `pub` is a contract nobody can read.
+#![warn(missing_docs)]
+// The consumer is a Tauri command, so a panic takes the application down. Every
+// input here comes from a file written by someone else, which means none of
+// these may sit on a path an input can reach. Tests are exempt.
+#![cfg_attr(not(test), deny(clippy::unimplemented, clippy::todo))]
+#![cfg_attr(not(test), deny(clippy::unreachable, clippy::panic))]
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 pub mod converter;
 mod csa;
 pub mod error;
+mod handicap;
 pub mod jkf;
 mod normalizer;
 pub mod parser;

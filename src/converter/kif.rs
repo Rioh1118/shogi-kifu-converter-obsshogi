@@ -6,16 +6,30 @@ use std::fmt::{Result, Write};
 pub trait ToKif {
     /// Write `self` in KIF format.
     ///
-    /// This function returns Err(core::fmt::Error)
-    /// if and only if it fails to write to `sink`.
+    /// # Errors
+    ///
+    /// Returns `Err` if `sink` fails, or if the record holds something KIF
+    /// cannot spell — a coordinate outside the board, or more pieces in hand
+    /// than a set contains. Such a record comes from outside this crate; it is
+    /// not a value any parser here produces.
     fn to_kif<W: Write>(&self, sink: &mut W) -> Result;
 
+    /// Returns `self`'s string representation, or the error [`Self::to_kif`]
+    /// gave.
+    fn try_to_kif_owned(&self) -> std::result::Result<String, std::fmt::Error> {
+        let mut s = String::new();
+        self.to_kif(&mut s)?;
+        Ok(s)
+    }
+
     /// Returns `self`'s string representation.
+    ///
+    /// A record that cannot be spelled in KIF yields whatever was written
+    /// before the failure. Use [`Self::try_to_kif_owned`] to see the error
+    /// instead of a truncated file.
     fn to_kif_owned(&self) -> String {
         let mut s = String::new();
-        // guaranteed to be Ok(())
-        let result = self.to_kif(&mut s);
-        debug_assert_eq!(result, Ok(()));
+        let _ = self.to_kif(&mut s);
         s
     }
 }
@@ -62,7 +76,13 @@ fn write_move_kind<W: Write>(kind: Kind, sink: &mut W, offset: &mut usize) -> Re
 fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) -> Result {
     let mut forks_stack = Vec::new();
     for (i, mf) in (index..).zip(moves) {
-        sink.write_fmt(format_args!("{:4} ", i))?;
+        // A node with neither a move nor an outcome carries only comments,
+        // which JKF allows and KIF has no line for. Its comments still belong
+        // to the position, so they are written without a move line.
+        let has_line = mf.move_.is_some() || mf.special.is_some();
+        if has_line {
+            sink.write_fmt(format_args!("{:4} ", i))?;
+        }
         let mut offset = 0;
         if let Some(mv) = &mf.move_ {
             if mv.same.is_some() {
@@ -85,53 +105,29 @@ fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) 
                 offset += 2;
             }
         } else if let Some(special) = &mf.special {
-            match special {
-                MoveSpecial::SpecialToryo => {
-                    sink.write_str("投了")?;
-                    offset += 4;
-                }
-                MoveSpecial::SpecialSennichite => {
-                    sink.write_str("千日手")?;
-                    offset += 6;
-                }
-                MoveSpecial::SpecialTimeUp => {
-                    sink.write_str("切れ負け")?;
-                    offset += 8;
-                }
-                MoveSpecial::SpecialIllegalMove => {
-                    sink.write_str("反則負け")?;
-                    offset += 8;
-                }
-                MoveSpecial::SpecialJishogi => {
-                    sink.write_str("持将棋")?;
-                    offset += 6;
-                }
-                MoveSpecial::SpecialKachi => {
-                    sink.write_str("入玉勝ち")?;
-                    offset += 8;
-                }
-                MoveSpecial::SpecialTsumi => {
-                    sink.write_str("詰み")?;
-                    offset += 4;
-                }
-                // TODO: SpecialIllegalActionBlack, SpecialIllegalActionWhite, SpecialFuzumi, SpecialError, etc...
-                _ => sink.write_str("中断")?,
+            // 待った and エラー have no KIF word (R-KIF-007). 中断 is the
+            // closest thing KIF can say — the game stopped here — so that is
+            // what a reader will make of them, and the distinction is lost.
+            let word = special.kif_word().unwrap_or("中断");
+            sink.write_str(word)?;
+            // The time column is measured in half-widths and every one of these
+            // words is full-width.
+            offset += word.chars().count() * 2;
+        }
+        if has_line {
+            if let Some(time) = mf.time {
+                (0..13usize.saturating_sub(offset)).try_for_each(|_| sink.write_char(' '))?;
+                sink.write_fmt(format_args!(
+                    "({:2}:{:02}/{:02}:{:02}:{:02})",
+                    time.now.m,
+                    time.now.s,
+                    time.total.h.unwrap_or_default(),
+                    time.total.m,
+                    time.total.s
+                ))?;
             }
-        } else {
-            unreachable!()
+            sink.write_char('\n')?;
         }
-        if let Some(time) = mf.time {
-            (0..13 - offset).try_for_each(|_| sink.write_char(' '))?;
-            sink.write_fmt(format_args!(
-                "({:2}:{:02}/{:02}:{:02}:{:02})",
-                time.now.m,
-                time.now.s,
-                time.total.h.unwrap_or_default(),
-                time.total.m,
-                time.total.s
-            ))?;
-        }
-        sink.write_char('\n')?;
         if let Some(comments) = &mf.comments {
             for comment in comments {
                 if !comment.starts_with('&') {
@@ -157,7 +153,10 @@ fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) 
 
 fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
     sink.write_str("手数----指手---------消費時間--\n")?;
-    if let Some(comments) = &moves[0].comments {
+    let Some((head, rest)) = moves.split_first() else {
+        return Ok(());
+    };
+    if let Some(comments) = &head.comments {
         for comment in comments {
             if !comment.starts_with('&') {
                 sink.write_char('*')?;
@@ -166,7 +165,7 @@ fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
             sink.write_char('\n')?;
         }
     }
-    write_move_lines(&moves[1..], 1, sink)
+    write_move_lines(rest, 1, sink)
 }
 
 #[cfg(test)]

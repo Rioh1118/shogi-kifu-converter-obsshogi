@@ -6,16 +6,30 @@ use std::fmt::{Result, Write};
 pub trait ToCsa {
     /// Write `self` in CSA format.
     ///
-    /// This function returns Err(core::fmt::Error)
-    /// if and only if it fails to write to `sink`.
+    /// # Errors
+    ///
+    /// Returns `Err` if `sink` fails, or if the record holds something CSA
+    /// cannot spell — a coordinate outside the board, or more pieces in hand
+    /// than a set contains. Such a record comes from outside this crate; it is
+    /// not a value any parser here produces.
     fn to_csa<W: Write>(&self, sink: &mut W) -> Result;
 
+    /// Returns `self`'s string representation, or the error [`Self::to_csa`]
+    /// gave.
+    fn try_to_csa_owned(&self) -> std::result::Result<String, std::fmt::Error> {
+        let mut s = String::new();
+        self.to_csa(&mut s)?;
+        Ok(s)
+    }
+
     /// Returns `self`'s string representation.
+    ///
+    /// A record that cannot be spelled in CSA yields whatever was written
+    /// before the failure. Use [`Self::try_to_csa_owned`] to see the error
+    /// instead of a truncated file.
     fn to_csa_owned(&self) -> String {
         let mut s = String::new();
-        // guaranteed to be Ok(())
-        let result = self.to_csa(&mut s);
-        debug_assert_eq!(result, Ok(()));
+        let _ = self.to_csa(&mut s);
         s
     }
 }
@@ -24,7 +38,8 @@ impl ToCsa for JsonKifuFormat {
     fn to_csa<W: Write>(&self, sink: &mut W) -> Result {
         write_header(&self.header, sink)?;
         write_initial(&self.initial, sink)?;
-        write_moves(&self.moves[1..], sink)?;
+        // Index 0 holds the initial position's comments, not a ply.
+        write_moves(self.moves.get(1..).unwrap_or_default(), sink)?;
         Ok(())
     }
 }
@@ -131,26 +146,18 @@ fn write_initial_data<W: Write>(data: &StateFormat, sink: &mut W) -> Result {
 }
 
 fn write_initial_preset<W: Write>(preset: Preset, sink: &mut W) -> Result {
-    match preset {
-        Preset::PresetHirate => sink.write_str("PI")?,
-        Preset::PresetKY => sink.write_str("PI11KY")?,
-        Preset::PresetKYR => sink.write_str("PI91KY")?,
-        Preset::PresetKA => sink.write_str("PI22KA")?,
-        Preset::PresetHI => sink.write_str("PI82HI")?,
-        Preset::PresetHIKY => sink.write_str("PI82HI11KY")?,
-        Preset::Preset2 => sink.write_str("PI82HI22KA")?,
-        Preset::Preset4 => sink.write_str("PI82HI22KA91KY11KY")?,
-        Preset::Preset6 => sink.write_str("PI82HI22KA91KY11KY81KE21KE")?,
-        Preset::Preset8 => sink.write_str("PI82HI22KA91KY11KY81KE21KE71GI31GI")?,
-        Preset::Preset10 => sink.write_str("PI82HI22KA91KY11KY81KE21KE71GI31GI61KI41KI")?,
-        _ => unimplemented!(),
+    // `PI` is the even game; each removed piece follows as position + kind
+    // (R-CSA-006). `その他` never reaches here — it carries a board instead.
+    let Some(handicap) = crate::handicap::lookup(preset) else {
+        return Err(std::fmt::Error);
+    };
+    sink.write_str("PI")?;
+    for &(file, rank, kind) in handicap.removed {
+        sink.write_fmt(format_args!("{file}{rank}"))?;
+        write_kind(kind, sink)?;
     }
     sink.write_char('\n')?;
-    if preset == Preset::PresetHirate {
-        sink.write_char('+')?;
-    } else {
-        sink.write_char('-')?;
-    }
+    write_color(crate::handicap::side_to_move(preset), sink)?;
     Ok(())
 }
 
@@ -180,28 +187,15 @@ fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
                 mv.piece
             };
             write_kind(kind, sink)?;
+            sink.write_str("\n")?;
         } else if let Some(special) = &mf.special {
             sink.write_char('%')?;
-            match special {
-                MoveSpecial::SpecialToryo => sink.write_str("TORYO")?,
-                MoveSpecial::SpecialChudan => sink.write_str("CHUDAN")?,
-                MoveSpecial::SpecialSennichite => sink.write_str("SENNICHITE")?,
-                MoveSpecial::SpecialTimeUp => sink.write_str("TIME_UP")?,
-                MoveSpecial::SpecialIllegalMove => sink.write_str("ILLEGAL_MOVE")?,
-                MoveSpecial::SpecialIllegalActionBlack => sink.write_str("+ILLEGAL_ACTION")?,
-                MoveSpecial::SpecialIllegalActionWhite => sink.write_str("-ILLEGAL_ACTION")?,
-                MoveSpecial::SpecialJishogi => sink.write_str("JISHOGI")?,
-                MoveSpecial::SpecialKachi => sink.write_str("KACHI")?,
-                MoveSpecial::SpecialHikiwake => sink.write_str("HIKIWAKE")?,
-                MoveSpecial::SpecialMatta => sink.write_str("MATTA")?,
-                MoveSpecial::SpecialTsumi => sink.write_str("TSUMI")?,
-                MoveSpecial::SpecialFuzumi => sink.write_str("FUZUMI")?,
-                MoveSpecial::SpecialError => sink.write_str("ERROR")?,
-            }
-        } else {
-            unreachable!()
+            sink.write_str(special.csa_word())?;
+            sink.write_str("\n")?;
         }
-        sink.write_str("\n")?;
+        // A node with neither a move nor an outcome carries only comments,
+        // which JKF allows. Nothing goes on the move line, but the comments
+        // still do.
         if let Some(time) = &mf.time {
             let sec = time.now.h.unwrap_or_default() as u64 * 3600
                 + time.now.m as u64 * 60

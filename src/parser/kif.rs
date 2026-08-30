@@ -4,7 +4,7 @@ use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::character::complete::{digit1, line_ending, not_line_ending, space0};
 use nom::combinator::{map, map_res, opt, value};
-use nom::error::VerboseError;
+use nom::error::{ParseError, VerboseError};
 use nom::multi::{many0, many1};
 use nom::sequence::{delimited, pair, preceded, separated_pair, terminated, tuple};
 use nom::IResult;
@@ -25,23 +25,44 @@ fn move_from(input: &str) -> IResult<&str, Option<PlaceFormat>, VerboseError<&st
     ))(input)
 }
 
-fn move_special(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
-    map(
-        alt((
-            value(MoveSpecial::SpecialToryo, tag("投了")),
-            value(MoveSpecial::SpecialChudan, tag("中断")),
-            value(MoveSpecial::SpecialSennichite, tag("千日手")),
-            value(MoveSpecial::SpecialTimeUp, tag("切れ負け")),
-            value(MoveSpecial::SpecialIllegalMove, tag("反則負け")),
-            value(MoveSpecial::SpecialJishogi, tag("持将棋")),
-            value(MoveSpecial::SpecialKachi, tag("入玉勝ち")),
-            value(MoveSpecial::SpecialTsumi, tag("詰み")),
-        )),
-        |special| MoveFormat {
-            special: Some(special),
-            ..Default::default()
-        },
-    )(input)
+/// The KIF outcome words, longest first so that a word is never cut short by a
+/// prefix of itself. [`MoveSpecial::from_kif_word`] holds the mapping.
+const KIF_SPECIAL_WORDS: [&str; 10] = [
+    "切れ負け",
+    "入玉勝ち",
+    "反則負け",
+    "反則勝ち",
+    "千日手",
+    "持将棋",
+    "投了",
+    "中断",
+    "詰み",
+    "不詰",
+];
+
+/// Parses an outcome word. `side_to_move` decides the direction of 反則勝ち.
+fn move_special(
+    side_to_move: Color,
+) -> impl FnMut(&str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
+    move |input| {
+        for word in KIF_SPECIAL_WORDS {
+            if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>(word)(input) {
+                if let Some(special) = MoveSpecial::from_kif_word(word, side_to_move) {
+                    return Ok((
+                        rest,
+                        MoveFormat {
+                            special: Some(special),
+                            ..Default::default()
+                        },
+                    ));
+                }
+            }
+        }
+        Err(nom::Err::Error(VerboseError::from_error_kind(
+            input,
+            nom::error::ErrorKind::Alt,
+        )))
+    }
 }
 
 fn move_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
@@ -101,24 +122,18 @@ fn move_time(input: &str) -> IResult<&str, Time, VerboseError<&str>> {
 }
 
 fn move_line(input: &str) -> IResult<&str, (usize, MoveFormat), VerboseError<&str>> {
-    map(
-        delimited(
-            space0,
-            tuple((
-                preceded(space0, map_res(digit1, str::parse)),
-                preceded(space0, alt((move_special, move_move))),
-                preceded(space0, opt(move_time)),
-            )),
-            preceded(not_line_ending, line_ending),
-        ),
-        |(i, mut mf, time)| {
-            if let Some(mmf) = &mut mf.move_ {
-                mmf.color = [Color::White, Color::Black][i % 2];
-            }
-            mf.time = time;
-            (i, mf)
-        },
-    )(input)
+    // The ply number has to be read before the rest: it decides whose turn it
+    // is, and 反則勝ち means the *other* player committed the foul.
+    let (input, i) = preceded(space0, map_res(digit1, str::parse::<usize>))(input)?;
+    let side_to_move = [Color::White, Color::Black][i % 2];
+    let (input, mut mf) = preceded(space0, alt((move_special(side_to_move), move_move)))(input)?;
+    let (input, time) = preceded(space0, opt(move_time))(input)?;
+    let (input, _) = preceded(not_line_ending, line_ending)(input)?;
+    if let Some(mmf) = &mut mf.move_ {
+        mmf.color = side_to_move;
+    }
+    mf.time = time;
+    Ok((input, (i, mf)))
 }
 
 fn move_with_comments(input: &str) -> IResult<&str, (usize, MoveFormat), VerboseError<&str>> {
@@ -215,6 +230,72 @@ pub(crate) fn parse(input: &str) -> IResult<&str, JsonKifuFormat, VerboseError<&
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // R-KIF-007. Every word KIF defines for an outcome, and what it means here.
+    // 不戦勝 / 不戦敗 are the two the JKF vocabulary cannot express.
+    #[test]
+    fn kif_outcome_words() {
+        // Ply 2, so it is White to move and 反則勝ち accuses Black.
+        for (word, want) in [
+            ("投了", Some(MoveSpecial::SpecialToryo)),
+            ("中断", Some(MoveSpecial::SpecialChudan)),
+            ("千日手", Some(MoveSpecial::SpecialSennichite)),
+            ("切れ負け", Some(MoveSpecial::SpecialTimeUp)),
+            ("反則負け", Some(MoveSpecial::SpecialIllegalMove)),
+            ("反則勝ち", Some(MoveSpecial::SpecialIllegalActionBlack)),
+            ("持将棋", Some(MoveSpecial::SpecialJishogi)),
+            ("入玉勝ち", Some(MoveSpecial::SpecialKachi)),
+            ("詰み", Some(MoveSpecial::SpecialTsumi)),
+            ("不詰", Some(MoveSpecial::SpecialFuzumi)),
+            ("不戦勝", None),
+            ("不戦敗", None),
+        ] {
+            let line = format!("   2 {word}\n");
+            let got = move_line(&line).ok().and_then(|(_, (_, mf))| mf.special);
+            assert_eq!(want, got, "reading {word}");
+        }
+    }
+
+    // The other direction of the same table. 反則勝ち loses which side fouled;
+    // the reader recovers it from the ply number.
+    #[test]
+    fn kif_outcome_words_are_written_back() {
+        const ALL: [MoveSpecial; 14] = [
+            MoveSpecial::SpecialToryo,
+            MoveSpecial::SpecialChudan,
+            MoveSpecial::SpecialSennichite,
+            MoveSpecial::SpecialTimeUp,
+            MoveSpecial::SpecialIllegalMove,
+            MoveSpecial::SpecialIllegalActionBlack,
+            MoveSpecial::SpecialIllegalActionWhite,
+            MoveSpecial::SpecialJishogi,
+            MoveSpecial::SpecialKachi,
+            MoveSpecial::SpecialHikiwake,
+            MoveSpecial::SpecialMatta,
+            MoveSpecial::SpecialTsumi,
+            MoveSpecial::SpecialFuzumi,
+            MoveSpecial::SpecialError,
+        ];
+        for special in ALL {
+            let Some(word) = special.kif_word() else {
+                // 待った and エラー have no KIF word at all.
+                assert!(
+                    matches!(
+                        special,
+                        MoveSpecial::SpecialMatta | MoveSpecial::SpecialError
+                    ),
+                    "{special:?} has no KIF word"
+                );
+                continue;
+            };
+            let line = format!("   2 {word}\n");
+            let got = move_line(&line).ok().and_then(|(_, (_, mf))| mf.special);
+            assert!(
+                got.is_some(),
+                "{special:?} writes {word}, which cannot be read"
+            );
+        }
+    }
 
     #[test]
     fn parse_move_time_format() {
