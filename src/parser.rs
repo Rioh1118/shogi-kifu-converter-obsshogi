@@ -68,10 +68,17 @@ fn read_kifu<P: AsRef<Path>>(
     path: P,
     extensions: &[(&str, &'static Encoding)],
 ) -> Result<String, ParseError> {
-    let ext = path.as_ref().extension().ok_or(ParseError::FileExtension)?;
+    // Case-folded: a file saved on Windows arrives as `.KIF` just as often as
+    // `.kif`, and the extension is only a hint at the encoding to begin with.
+    let ext = path
+        .as_ref()
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .map(str::to_ascii_lowercase)
+        .ok_or(ParseError::FileExtension)?;
     let named = extensions
         .iter()
-        .find(|(name, _)| Some(*name) == ext.to_str())
+        .find(|(name, _)| *name == ext)
         .map(|(_, encoding)| *encoding)
         .ok_or(ParseError::FileExtension)?;
     let mut buf = Vec::new();
@@ -404,11 +411,17 @@ mod tests {
 
     // KI2 reads a whole line at a time, so a line it cannot spell out is the
     // same silent truncation in a different shape.
+    //
+    // A line with no move on it is a different matter: D10 skips those, the
+    // same way KIF always has. `ki2_skips_the_same_lines_kif_does_and_no_more`
+    // draws that boundary.
     #[test]
     fn a_ki2_record_the_reader_stops_in_the_middle_of_is_an_error() {
         for (src, word) in [
-            ("手合割：平手\n▲７六歩 ほげ △３四歩\n", "ほげ"),
-            ("手合割：平手\n▲７六歩 △３四歩\nほげほげ\n", "ほげほげ"),
+            // Mid-line: the rest of the line holds a move, so skipping the line
+            // would take that move with it.
+            ("手合割：平手\n▲７六歩 ほげ △三四歩\n", "ほげ"),
+            ("手合割：平手\n▲７六歩\nほげほげ △３四歩\n", "ほげほげ"),
             // A KIF move line in a KI2.
             ("手合割：平手\n▲７六歩\n   2 ３四歩(33)\n", "３四歩(33)"),
         ] {
@@ -459,6 +472,21 @@ mod tests {
             from_ki2,
             parse_ki2_file(scratch("sjis.ki2", &sjis(KI2))).expect("reads .ki2")
         );
+
+        // Windows writes `.KIF` as readily as `.kif`, and the extension is only
+        // a hint at the encoding to begin with — so it is matched case-folded.
+        for name in ["upper.KIF", "mixed.Kif"] {
+            assert!(
+                parse_kif_file(scratch(name, &sjis(KIF))).is_ok(),
+                "{name} was rejected"
+            );
+        }
+        for name in ["upper.KI2", "mixed.Ki2"] {
+            assert!(
+                parse_ki2_file(scratch(name, &sjis(KI2))).is_ok(),
+                "{name} was rejected"
+            );
+        }
 
         for path in [
             scratch("kifu.txt", KIF.as_bytes()),
