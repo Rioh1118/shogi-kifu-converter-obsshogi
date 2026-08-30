@@ -24,7 +24,8 @@ impl ToCsa for JsonKifuFormat {
     fn to_csa<W: Write>(&self, sink: &mut W) -> Result {
         write_header(&self.header, sink)?;
         write_initial(&self.initial, sink)?;
-        write_moves(&self.moves[1..], sink)?;
+        // Index 0 holds the initial position's comments, not a ply.
+        write_moves(self.moves.get(1..).unwrap_or_default(), sink)?;
         Ok(())
     }
 }
@@ -172,13 +173,15 @@ fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
                 mv.piece
             };
             write_kind(kind, sink)?;
+            sink.write_str("\n")?;
         } else if let Some(special) = &mf.special {
             sink.write_char('%')?;
             sink.write_str(special.csa_word())?;
-        } else {
-            unreachable!()
+            sink.write_str("\n")?;
         }
-        sink.write_str("\n")?;
+        // A node with neither a move nor an outcome carries only comments,
+        // which JKF allows. Nothing goes on the move line, but the comments
+        // still do.
         if let Some(time) = &mf.time {
             let sec = time.now.h.unwrap_or_default() as u64 * 3600
                 + time.now.m as u64 * 60

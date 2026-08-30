@@ -181,7 +181,7 @@ impl JsonKifuFormat {
                     .and_then(|mf| mf.move_.map(|mmf| mmf.color == Color::Black))
                     .unwrap_or_default()
             {
-                for mv in self.moves[1..].iter_mut() {
+                for mv in self.moves.iter_mut().skip(1) {
                     if let Some(mmf) = &mut mv.move_ {
                         mmf.color = match mmf.color {
                             Color::Black => Color::White,
@@ -197,8 +197,14 @@ impl JsonKifuFormat {
         } else {
             PartialPosition::startpos()
         };
+        let (_, rest) = match self.moves.split_first_mut() {
+            Some(split) => split,
+            // Index 0 is the initial position's comments, so an empty `moves`
+            // has no plies to normalize rather than being an error.
+            None => return Ok(()),
+        };
         normalize_moves(
-            &mut self.moves[1..],
+            rest,
             pos,
             [TimeFormat::default(); 2],
             correct_color,
@@ -275,7 +281,10 @@ impl JsonKifuFormat {
         } else {
             PartialPosition::startpos()
         };
-        populate_relative_moves(&mut self.moves[1..], pos)
+        match self.moves.split_first_mut() {
+            Some((_, rest)) => populate_relative_moves(rest, pos),
+            None => Ok(()),
+        }
     }
 }
 

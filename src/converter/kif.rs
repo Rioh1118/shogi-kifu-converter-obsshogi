@@ -62,7 +62,13 @@ fn write_move_kind<W: Write>(kind: Kind, sink: &mut W, offset: &mut usize) -> Re
 fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) -> Result {
     let mut forks_stack = Vec::new();
     for (i, mf) in (index..).zip(moves) {
-        sink.write_fmt(format_args!("{:4} ", i))?;
+        // A node with neither a move nor an outcome carries only comments,
+        // which JKF allows and KIF has no line for. Its comments still belong
+        // to the position, so they are written without a move line.
+        let has_line = mf.move_.is_some() || mf.special.is_some();
+        if has_line {
+            sink.write_fmt(format_args!("{:4} ", i))?;
+        }
         let mut offset = 0;
         if let Some(mv) = &mf.move_ {
             if mv.same.is_some() {
@@ -93,21 +99,21 @@ fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) 
             // The time column is measured in half-widths and every one of these
             // words is full-width.
             offset += word.chars().count() * 2;
-        } else {
-            unreachable!()
         }
-        if let Some(time) = mf.time {
-            (0..13 - offset).try_for_each(|_| sink.write_char(' '))?;
-            sink.write_fmt(format_args!(
-                "({:2}:{:02}/{:02}:{:02}:{:02})",
-                time.now.m,
-                time.now.s,
-                time.total.h.unwrap_or_default(),
-                time.total.m,
-                time.total.s
-            ))?;
+        if has_line {
+            if let Some(time) = mf.time {
+                (0..13usize.saturating_sub(offset)).try_for_each(|_| sink.write_char(' '))?;
+                sink.write_fmt(format_args!(
+                    "({:2}:{:02}/{:02}:{:02}:{:02})",
+                    time.now.m,
+                    time.now.s,
+                    time.total.h.unwrap_or_default(),
+                    time.total.m,
+                    time.total.s
+                ))?;
+            }
+            sink.write_char('\n')?;
         }
-        sink.write_char('\n')?;
         if let Some(comments) = &mf.comments {
             for comment in comments {
                 if !comment.starts_with('&') {
@@ -133,7 +139,10 @@ fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) 
 
 fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
     sink.write_str("手数----指手---------消費時間--\n")?;
-    if let Some(comments) = &moves[0].comments {
+    let Some((head, rest)) = moves.split_first() else {
+        return Ok(());
+    };
+    if let Some(comments) = &head.comments {
         for comment in comments {
             if !comment.starts_with('&') {
                 sink.write_char('*')?;
@@ -142,7 +151,7 @@ fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
             sink.write_char('\n')?;
         }
     }
-    write_move_lines(&moves[1..], 1, sink)
+    write_move_lines(rest, 1, sink)
 }
 
 #[cfg(test)]

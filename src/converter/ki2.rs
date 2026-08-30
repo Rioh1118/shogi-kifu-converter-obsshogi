@@ -55,7 +55,10 @@ fn write_moves<W: Write>(
     position: Option<shogi_core::PartialPosition>,
     sink: &mut W,
 ) -> Result {
-    if let Some(comments) = &moves[0].comments {
+    let Some((head, rest)) = moves.split_first() else {
+        return Ok(());
+    };
+    if let Some(comments) = &head.comments {
         for comment in comments {
             if !comment.starts_with('&') {
                 sink.write_char('*')?;
@@ -73,12 +76,12 @@ fn write_moves<W: Write>(
     // Taking blocks off the end gives that, and pushing each node's branches in
     // reverse keeps siblings in their original order.
     let mut stack = Vec::new();
-    write_line(&moves[1..], 1, position.clone(), &mut stack, sink)?;
+    write_line(rest, 1, position.clone(), &mut stack, sink)?;
     while let Some((start_ply, branch)) = stack.pop() {
         sink.write_fmt(format_args!("\n変化：{start_ply}手\n"))?;
         let at = position
             .clone()
-            .and_then(|pos| replay(&moves[1..], start_ply, pos));
+            .and_then(|pos| replay(rest, start_ply, pos));
         write_line(branch, start_ply, at, &mut stack, sink)?;
     }
     Ok(())
