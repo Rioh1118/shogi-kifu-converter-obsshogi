@@ -15,7 +15,9 @@ fn single_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
             alt((value(Color::Black, tag("▲")), value(Color::White, tag("△")))),
             move_to,
             piece_kind,
-            opt(alt((value(true, tag("成")), value(false, tag("不成"))))),
+            // R-NOT-001: the relative part comes before the promotion suffix
+            // (`５四角右成`). Reading promotion first leaves the suffix behind,
+            // which ends the move list and silently drops the rest of the file.
             opt(alt((
                 value(Relative::LU, tag("左上")),
                 value(Relative::LM, tag("左寄")),
@@ -31,12 +33,14 @@ fn single_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
                 value(Relative::D, tag("引")),
                 value(Relative::H, tag("打")),
             ))),
+            // `不成` has to be tried first: it also ends with `成`.
+            opt(alt((value(false, tag("不成")), value(true, tag("成"))))),
             preceded(
                 tuple((space0, opt(line_ending))),
                 opt(many1(move_comment_line)),
             ),
         )),
-        |(c, to, kind, promote, relative, comments)| {
+        |(c, to, kind, relative, promote, comments)| {
             // To disambiguate `Normal` move or `Drop` move, "打" will be parsed as `Some(PlaceFormat { x: 0, y: 0 })`
             let from = if relative == Some(Relative::H) {
                 Some(PlaceFormat { x: 0, y: 0 })
@@ -91,6 +95,27 @@ pub(crate) fn parse(input: &str) -> IResult<&str, JsonKifuFormat, VerboseError<&
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    // R-NOT-001: <到達地点><駒種><相対位置><動作><成/不成>. Reading the promotion
+    // suffix before the relative part leaves it unconsumed, which ends the move
+    // list and drops the rest of the file without an error.
+    #[test]
+    fn single_move_reads_relative_before_promotion() {
+        for (input, relative, promote) in [
+            ("▲５四角右成", Some(Relative::R), Some(true)),
+            ("▲５四角左不成", Some(Relative::L), Some(false)),
+            ("▲３三銀右上成", Some(Relative::RU), Some(true)),
+            ("▲５四角成", None, Some(true)),
+            ("▲５四角右", Some(Relative::R), None),
+            ("▲５四角", None, None),
+        ] {
+            let (rest, mf) = single_move(input).unwrap_or_else(|e| panic!("{input}: {e:?}"));
+            assert_eq!("", rest, "unconsumed input for {input}");
+            let mv = mf.move_.expect("a move");
+            assert_eq!(relative, mv.relative, "relative for {input}");
+            assert_eq!(promote, mv.promote, "promote for {input}");
+        }
+    }
 
     #[test]
     fn parse_empty() {
