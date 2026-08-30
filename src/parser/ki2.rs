@@ -44,11 +44,14 @@ fn single_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
             ),
         )),
         |(c, to, kind, relative, promote, comments)| {
-            // To disambiguate `Normal` move or `Drop` move, "打" will be parsed as `Some(PlaceFormat { x: 0, y: 0 })`
+            // KI2 carries no origin. 打 says the move is a drop, and JKF states
+            // that by leaving `from` out (R-JKF-003). Everything else needs the
+            // origin looked up against the position, which JKF has no way to
+            // ask for — hence the sentinel `crate::normalizer::ORIGIN_UNSTATED`.
             let from = if relative == Some(Relative::H) {
-                Some(PlaceFormat { x: 0, y: 0 })
-            } else {
                 None
+            } else {
+                Some(crate::normalizer::ORIGIN_UNSTATED)
             };
             MoveFormat {
                 move_: Some(MoveMoveFormat {
@@ -221,6 +224,7 @@ pub(crate) fn parse(input: &str) -> IResult<&str, JsonKifuFormat, VerboseError<&
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::normalizer::ORIGIN_UNSTATED;
     use std::collections::HashMap;
 
     // R-NOT-001: <到達地点><駒種><相対位置><動作><成/不成>. Reading the promotion
@@ -290,7 +294,7 @@ mod tests {
                 MoveFormat {
                     move_: Some(MoveMoveFormat {
                         color: Color::White,
-                        from: None,
+                        from: Some(ORIGIN_UNSTATED),
                         to: PlaceFormat { x: 0, y: 0 },
                         piece: Kind::FU,
                         same: Some(true),
@@ -309,7 +313,7 @@ mod tests {
                 MoveFormat {
                     move_: Some(MoveMoveFormat {
                         color: Color::White,
-                        from: None,
+                        from: Some(ORIGIN_UNSTATED),
                         to: PlaceFormat { x: 4, y: 7 },
                         piece: Kind::GI,
                         same: None,
@@ -328,7 +332,7 @@ mod tests {
                 MoveFormat {
                     move_: Some(MoveMoveFormat {
                         color: Color::White,
-                        from: None,
+                        from: Some(ORIGIN_UNSTATED),
                         to: PlaceFormat { x: 9, y: 9 },
                         piece: Kind::KA,
                         same: None,
@@ -347,7 +351,7 @@ mod tests {
                 MoveFormat {
                     move_: Some(MoveMoveFormat {
                         color: Color::Black,
-                        from: None,
+                        from: Some(ORIGIN_UNSTATED),
                         to: PlaceFormat { x: 8, y: 2 },
                         piece: Kind::KI,
                         same: None,
@@ -366,7 +370,7 @@ mod tests {
                 MoveFormat {
                     move_: Some(MoveMoveFormat {
                         color: Color::Black,
-                        from: None,
+                        from: Some(ORIGIN_UNSTATED),
                         to: PlaceFormat { x: 8, y: 2 },
                         piece: Kind::KI,
                         same: None,
@@ -385,7 +389,7 @@ mod tests {
                 MoveFormat {
                     move_: Some(MoveMoveFormat {
                         color: Color::Black,
-                        from: Some(PlaceFormat { x: 0, y: 0 }),
+                        from: None,
                         to: PlaceFormat { x: 8, y: 2 },
                         piece: Kind::KI,
                         same: None,
@@ -420,7 +424,7 @@ mod tests {
                     MoveFormat {
                         move_: Some(MoveMoveFormat {
                             color: Color::Black,
-                            from: None,
+                            from: Some(ORIGIN_UNSTATED),
                             to: PlaceFormat { x: 6, y: 8 },
                             piece: Kind::GI,
                             same: None,
@@ -433,7 +437,7 @@ mod tests {
                     MoveFormat {
                         move_: Some(MoveMoveFormat {
                             color: Color::White,
-                            from: None,
+                            from: Some(ORIGIN_UNSTATED),
                             to: PlaceFormat { x: 3, y: 4 },
                             piece: Kind::FU,
                             same: None,
@@ -446,7 +450,7 @@ mod tests {
                     MoveFormat {
                         move_: Some(MoveMoveFormat {
                             color: Color::Black,
-                            from: None,
+                            from: Some(ORIGIN_UNSTATED),
                             to: PlaceFormat { x: 5, y: 6 },
                             piece: Kind::FU,
                             same: None,
@@ -472,7 +476,7 @@ mod tests {
                     MoveFormat {
                         move_: Some(MoveMoveFormat {
                             color: Color::White,
-                            from: None,
+                            from: Some(ORIGIN_UNSTATED),
                             to: PlaceFormat { x: 7, y: 4 },
                             piece: Kind::FU,
                             same: None,
@@ -489,7 +493,7 @@ mod tests {
                     MoveFormat {
                         move_: Some(MoveMoveFormat {
                             color: Color::Black,
-                            from: None,
+                            from: Some(ORIGIN_UNSTATED),
                             to: PlaceFormat { x: 7, y: 6 },
                             piece: Kind::FU,
                             same: None,

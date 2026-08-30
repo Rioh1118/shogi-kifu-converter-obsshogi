@@ -132,6 +132,20 @@ impl Hand {
     }
 }
 
+/// The `from` of a move whose origin the notation does not carry.
+///
+/// JKF has no way to say "the origin is not stated": leaving `from` out means
+/// the move is a *drop* (R-JKF-003). KI2 needs to say it — the traditional
+/// notation gives a destination and a disambiguating suffix, never an origin
+/// (R-KI2-003) — so the KI2 reader writes this square, which is off the board,
+/// and [`normalize`](JsonKifuFormat::normalize) resolves it against the
+/// position.
+///
+/// Reading a plain absent `from` as "look it up" instead turns every drop into
+/// whichever board piece could have reached the square, which takes that piece
+/// off the board and leaves the hand untouched.
+pub(crate) const ORIGIN_UNSTATED: PlaceFormat = PlaceFormat { x: 0, y: 0 };
+
 fn add_timeformat(lhs: &TimeFormat, rhs: &TimeFormat) -> TimeFormat {
     // Widen before adding: two times that each fit in a `u8` need not.
     let total = (lhs.h.unwrap_or_default() as u64 + rhs.h.unwrap_or_default() as u64) * 3600
@@ -412,7 +426,7 @@ fn normalize_move(
         Ok(to) => to,
         Err(err) => return Err(NormalizeError::Convert(err.to_string())),
     };
-    if mmf.from.is_none() {
+    if mmf.from == Some(ORIGIN_UNSTATED) {
         mmf.from = calculate_from(mmf, pos, to)?;
     }
     if let Some(pf) = &mmf.from {
@@ -632,6 +646,77 @@ fn populate_relative_moves(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // JKF says a move is a drop by leaving `from` out (R-JKF-003). Reading that
+    // as "the origin is missing, look it up" turns the drop into whichever board
+    // piece could have reached the square: that piece comes off the board, the
+    // hand is never spent, and a few moves later the square it left is empty.
+    //
+    // Only KI2 has moves whose origin the notation does not carry, and its
+    // reader says so with `ORIGIN_UNSTATED`.
+    #[test]
+    fn a_drop_stays_a_drop_through_normalize() {
+        // Black has a gold on 4九 that reaches 3八, and a gold in hand. The
+        // record drops the one in hand; the one on the board must not move.
+        let mut state = StateFormat {
+            color: Color::Black,
+            board: [[Piece {
+                color: None,
+                kind: None,
+            }; 9]; 9],
+            hands: [Hand::default(); 2],
+        };
+        let put = |board: &mut [[Piece; 9]; 9], x: usize, y: usize, color, kind| {
+            board[x - 1][y - 1] = Piece {
+                color: Some(color),
+                kind: Some(kind),
+            };
+        };
+        put(&mut state.board, 5, 9, Color::Black, Kind::OU);
+        put(&mut state.board, 4, 9, Color::Black, Kind::KI);
+        put(&mut state.board, 5, 1, Color::White, Kind::OU);
+        state.hands[0].KI = 1;
+
+        let mut jkf = JsonKifuFormat {
+            initial: Some(Initial {
+                preset: Preset::PresetOther,
+                data: Some(state),
+            }),
+            moves: vec![
+                MoveFormat::default(),
+                MoveFormat {
+                    move_: Some(MoveMoveFormat {
+                        color: Color::Black,
+                        from: None,
+                        to: PlaceFormat { x: 3, y: 8 },
+                        piece: Kind::KI,
+                        same: None,
+                        promote: None,
+                        capture: None,
+                        relative: None,
+                    }),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        jkf.normalize().expect("normalizes");
+        assert_eq!(
+            None,
+            jkf.moves[1].move_.expect("a move").from,
+            "the drop was rewritten as a board move"
+        );
+        // And the board gold is still on 4九, not on 3八.
+        let pos = jkf.starting_position().expect("a position");
+        let mut pos = pos;
+        pos.make_move(shogi_core::Move::try_from(&jkf.moves[1].move_.unwrap()).expect("a move"))
+            .expect("the drop applies");
+        assert!(
+            pos.piece_at(shogi_core::Square::new(4, 9).expect("a square"))
+                .is_some(),
+            "the gold on 4九 must still be there"
+        );
+    }
 
     // Cumulative times are summed from values the file states, so they can pass
     // what a `u8` holds. Wrapping would put a small, ordinary-looking number

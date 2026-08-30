@@ -11,8 +11,9 @@ use nom::IResult;
 
 fn move_from(input: &str) -> IResult<&str, Option<PlaceFormat>, VerboseError<&str>> {
     alt((
-        // To disambiguate `Normal` move or `Drop` move, "打" will be parsed as `Some(PlaceFormat { x: 0, y: 0 })`
-        value(Some(PlaceFormat { x: 0, y: 0 }), tag("打")),
+        // A drop has no origin, and JKF says so by leaving `from` out
+        // (R-JKF-003). KIF marks it with 打 on every drop (R-KIF-006).
+        value(None, tag("打")),
         map(
             delimited(tag("("), map_res(digit1, str::parse), tag(")")),
             |d: u8| {

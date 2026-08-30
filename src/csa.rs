@@ -167,7 +167,10 @@ impl TryFrom<csa::MoveRecord> for MoveFormat {
             csa::Action::Move(c, from, to, pt) => Ok(MoveFormat {
                 move_: Some(MoveMoveFormat {
                     color: c.into(),
-                    from: Some(from.into()),
+                    // CSA spells a drop with `00` for the origin (R-CSA-007);
+                    // JKF says it by leaving `from` out (R-JKF-003).
+                    from: Some(PlaceFormat::from(from))
+                        .filter(|p| *p != crate::normalizer::ORIGIN_UNSTATED),
                     to: to.into(),
                     piece: pt.try_into()?,
                     same: None,
