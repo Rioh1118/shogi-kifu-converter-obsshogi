@@ -6,7 +6,7 @@ mod kif;
 
 use crate::error::ParseError;
 use crate::jkf::JsonKifuFormat;
-use encoding_rs::{SHIFT_JIS, UTF_8};
+use encoding_rs::{Encoding, SHIFT_JIS, UTF_8};
 use nom::error::convert_error;
 use nom::Finish;
 use std::fs::File;
@@ -46,38 +46,44 @@ pub fn parse_csa_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
 ///
 /// This function returns [`ParseError`] if it fails to parse the file.
 pub fn parse_kif_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseError> {
-    let mut file = File::open(&path)?;
+    let text = read_kifu(path, &[("kif", SHIFT_JIS), ("kifu", UTF_8)])?;
+    parse_kif_str(&text)
+}
+
+/// Reads `path` as text, picking the encoding from its extension and the bytes.
+///
+/// `extensions` maps each extension this reader claims to the encoding it names.
+///
+/// R-REQ-003: the extension names an encoding but does not guarantee one. A
+/// `.kif` holding UTF-8 and a `.ki2` holding Shift-JIS both turn up, so the
+/// bytes get the last word — a decode that reports errors is not the one the
+/// file was written in.
+///
+/// Deciding on the decode rather than on a failed parse is what makes this
+/// reachable at all. The full-width forms a kifu is written in (`７`, `：`) sit
+/// at U+FF00 and up, whose UTF-8 lead byte is `0xEF`; Shift-JIS has nothing
+/// there, so a UTF-8 file read as Shift-JIS fails at the decode and never gets
+/// as far as a parse error to retry on.
+fn read_kifu<P: AsRef<Path>>(
+    path: P,
+    extensions: &[(&str, &'static Encoding)],
+) -> Result<String, ParseError> {
     let ext = path.as_ref().extension().ok_or(ParseError::FileExtension)?;
-    let encoding = match ext.to_str() {
-        Some("kif") => SHIFT_JIS,
-        Some("kifu") => UTF_8,
-        _ => return Err(ParseError::FileExtension),
-    };
+    let named = extensions
+        .iter()
+        .find(|(name, _)| Some(*name) == ext.to_str())
+        .map(|(_, encoding)| *encoding)
+        .ok_or(ParseError::FileExtension)?;
     let mut buf = Vec::new();
-    file.read_to_end(&mut buf)?;
-    let (cow, _, had_errors) = encoding.decode(&buf);
-    if had_errors {
-        // Decoding failed outright, try UTF-8
-        let (cow_utf8, _, had_errors_utf8) = UTF_8.decode(&buf);
-        if had_errors_utf8 {
-            return Err(ParseError::Decode);
+    File::open(&path)?.read_to_end(&mut buf)?;
+    let other = if named == SHIFT_JIS { UTF_8 } else { SHIFT_JIS };
+    for encoding in [named, other] {
+        let (text, _, had_errors) = encoding.decode(&buf);
+        if !had_errors {
+            return Ok(text.into_owned());
         }
-        return parse_kif_str(&cow_utf8);
     }
-    // Decoding succeeded, but the content may be garbled (e.g. UTF-8 file decoded as Shift-JIS).
-    // Only retry on parse-grammar errors (ParseError::Kif) — for Normalize errors, retrying
-    // with another encoding produces the same error and doubles the cost of a 4 s parse.
-    match parse_kif_str(&cow) {
-        Ok(jkf) => Ok(jkf),
-        Err(err @ ParseError::Kif(_)) if encoding == SHIFT_JIS => {
-            let (cow_utf8, _, had_errors_utf8) = UTF_8.decode(&buf);
-            if had_errors_utf8 {
-                return Err(err);
-            }
-            parse_kif_str(&cow_utf8).or(Err(err))
-        }
-        Err(err) => Err(err),
-    }
+    Err(ParseError::Decode)
 }
 
 /// The error for input the reader stopped on, with `rest` located in `whole`.
@@ -132,20 +138,8 @@ pub fn parse_kif_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
 ///
 /// This function returns [`ParseError`] if it fails to parse the file.
 pub fn parse_ki2_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseError> {
-    let mut file = File::open(&path)?;
-    let ext = path.as_ref().extension().ok_or(ParseError::FileExtension)?;
-    let encoding = match ext.to_str() {
-        Some("ki2") => SHIFT_JIS,
-        Some("ki2u") => UTF_8,
-        _ => return Err(ParseError::FileExtension),
-    };
-    let mut buf = Vec::new();
-    file.read_to_end(&mut buf)?;
-    let (cow, _, had_errors) = encoding.decode(&buf);
-    if had_errors {
-        return Err(ParseError::Decode);
-    }
-    parse_ki2_str(&cow)
+    let text = read_kifu(path, &[("ki2", SHIFT_JIS), ("ki2u", UTF_8)])?;
+    parse_ki2_str(&text)
 }
 
 /// Parses a KI2 formatted string to [`jkf::JsonKifuFormat`](crate::jkf::JsonKifuFormat)
@@ -403,16 +397,42 @@ mod tests {
         }
     }
 
-    // A `.kif` holding UTF-8 is common enough that the reader falls back rather
-    // than failing. Which fallback carries it matters: the full-width forms a
-    // KIF is written in (`７`, `：`) sit at U+FF00 and up, whose UTF-8 lead byte
-    // is `0xEF`, and no Shift-JIS character starts there — so the *decode*
-    // reports an error and the UTF-8 retry happens before any parsing.
+    // R-REQ-003: the extension names an encoding but does not guarantee one, so
+    // every extension has to read both. All four combinations turn up — a `.kif`
+    // holding UTF-8 above all — and three of the four used to come back as
+    // `Decode Error`.
+    //
+    // The decision belongs at the decode, not at a failed parse. The full-width
+    // forms a kifu is written in (`７`, `：`) sit at U+FF00 and up, whose UTF-8
+    // lead byte is `0xEF`, and Shift-JIS has nothing there — so a UTF-8 file
+    // read as Shift-JIS fails while decoding and never reaches a parse error to
+    // retry on. A retry hung off `ParseError::Kif` is unreachable.
     #[test]
-    fn a_utf8_file_named_kif_is_still_read() {
+    fn either_encoding_is_read_whatever_the_extension_says() {
         const KIF: &str = "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n";
-        let mislabelled = parse_kif_file(scratch("utf8.kif", KIF.as_bytes())).expect("reads");
-        assert_eq!(1, mislabelled.moves.len() - 1);
+        const KI2: &str = "手合割：平手\n▲７六歩 △３四歩\n";
+        let sjis = |s: &str| SHIFT_JIS.encode(s).0.into_owned();
+
+        for (name, bytes) in [
+            ("both.kif", sjis(KIF)),
+            ("both_utf8.kif", KIF.as_bytes().to_vec()),
+            ("both.kifu", KIF.as_bytes().to_vec()),
+            ("both_sjis.kifu", sjis(KIF)),
+        ] {
+            let jkf = parse_kif_file(scratch(name, &bytes))
+                .unwrap_or_else(|e| panic!("{name} was not read: {e}"));
+            assert_eq!(1, jkf.moves.len() - 1, "{name}");
+        }
+        for (name, bytes) in [
+            ("both.ki2", sjis(KI2)),
+            ("both_utf8.ki2", KI2.as_bytes().to_vec()),
+            ("both.ki2u", KI2.as_bytes().to_vec()),
+            ("both_sjis.ki2u", sjis(KI2)),
+        ] {
+            let jkf = parse_ki2_file(scratch(name, &bytes))
+                .unwrap_or_else(|e| panic!("{name} was not read: {e}"));
+            assert_eq!(2, jkf.moves.len() - 1, "{name}");
+        }
     }
 
     #[test]
