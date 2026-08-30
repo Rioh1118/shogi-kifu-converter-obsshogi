@@ -122,35 +122,32 @@ fn move_time(input: &str) -> IResult<&str, Time, VerboseError<&str>> {
     )(input)
 }
 
+// The move parsers below take `(start, input)` and are applied directly rather
+// than handing back a parser value, because each needs `start` — whose turn ply
+// 1 is — and none of them is used inside a combinator. `move_special` is the
+// exception: `alt` needs a parser value, so it returns one.
+//
 /// Reads one `<ply> <move>` line. `start` is whose turn ply 1 is.
-fn move_line(
-    start: Color,
-) -> impl FnMut(&str) -> IResult<&str, (usize, MoveFormat), VerboseError<&str>> {
-    move |input| {
-        // The ply number has to be read before the rest: it decides whose turn
-        // it is, and 反則勝ち means the *other* player committed the foul.
-        let (input, i) = preceded(space0, map_res(digit1, str::parse::<usize>))(input)?;
-        let side_to_move = crate::handicap::side_to_move_at_ply(start, i);
-        let (input, mut mf) =
-            preceded(space0, alt((move_special(side_to_move), move_move)))(input)?;
-        let (input, time) = preceded(space0, opt(move_time))(input)?;
-        let (input, _) = preceded(not_line_ending, line_ending)(input)?;
-        if let Some(mmf) = &mut mf.move_ {
-            mmf.color = side_to_move;
-        }
-        mf.time = time;
-        Ok((input, (i, mf)))
+fn move_line(start: Color, input: &str) -> IResult<&str, (usize, MoveFormat), VerboseError<&str>> {
+    // The ply number has to be read before the rest: it decides whose turn it
+    // is, and 反則勝ち means the *other* player committed the foul.
+    let (input, i) = preceded(space0, map_res(digit1, str::parse::<usize>))(input)?;
+    let side_to_move = crate::handicap::side_to_move_at_ply(start, i);
+    let (input, mut mf) = preceded(space0, alt((move_special(side_to_move), move_move)))(input)?;
+    let (input, time) = preceded(space0, opt(move_time))(input)?;
+    let (input, _) = preceded(not_line_ending, line_ending)(input)?;
+    if let Some(mmf) = &mut mf.move_ {
+        mmf.color = side_to_move;
     }
+    mf.time = time;
+    Ok((input, (i, mf)))
 }
 
-// `start` has to be threaded down to `move_line` rather than closed over: a
-// parser built by a nom combinator is tied to one input lifetime, so these
-// cannot hand back a parser value and are applied to the input directly.
 fn move_with_comments(
     start: Color,
     input: &str,
 ) -> IResult<&str, (usize, MoveFormat), VerboseError<&str>> {
-    let (input, (i, mf)) = move_line(start)(input)?;
+    let (input, (i, mf)) = move_line(start, input)?;
     let (input, comments) = many0(move_comment_line)(input)?;
     Ok((
         input,
@@ -170,9 +167,18 @@ fn moves_with_index(
 ) -> IResult<&str, (usize, Vec<MoveFormat>), VerboseError<&str>> {
     let (mut input, (first_ply, first)) = move_with_comments(start, input)?;
     let mut out = vec![first];
-    while let Ok((rest, (_, mf))) = move_with_comments(start, input) {
-        out.push(mf);
-        input = rest;
+    loop {
+        // `many1` stops on `Error` and throws anything else back. Swallowing a
+        // `Failure` here would drop the rest of the record without a word,
+        // which is the failure this branch exists to remove.
+        match move_with_comments(start, input) {
+            Ok((rest, (_, mf))) => {
+                out.push(mf);
+                input = rest;
+            }
+            Err(nom::Err::Error(_)) => break,
+            Err(err) => return Err(err),
+        }
     }
     let (input, _) = opt(not_move_line)(input)?;
     Ok((input, (first_ply, out)))
@@ -236,14 +242,15 @@ fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Ver
     let (mut input, main) = main_moves(start, input)?;
     let mut forks = Vec::new();
     loop {
-        let Ok((rest, _)) = many0(not_move_line)(input) else {
-            break;
-        };
-        let Ok((rest, run)) = moves_with_index(start, rest) else {
-            break;
-        };
-        forks.push(run);
-        input = rest;
+        let (rest, _) = many0(not_move_line)(input)?;
+        match moves_with_index(start, rest) {
+            Ok((rest, run)) => {
+                forks.push(run);
+                input = rest;
+            }
+            Err(nom::Err::Error(_)) => break,
+            Err(err) => return Err(err),
+        }
     }
     Ok((input, merge_forks((main, forks))))
 }
@@ -282,7 +289,7 @@ mod tests {
             ("不戦敗", None),
         ] {
             let line = format!("   2 {word}\n");
-            let got = move_line(Color::Black)(&line)
+            let got = move_line(Color::Black, &line)
                 .ok()
                 .and_then(|(_, (_, mf))| mf.special);
             assert_eq!(want, got, "reading {word}");
@@ -322,7 +329,7 @@ mod tests {
                 continue;
             };
             let line = format!("   2 {word}\n");
-            let got = move_line(Color::Black)(&line)
+            let got = move_line(Color::Black, &line)
                 .ok()
                 .and_then(|(_, (_, mf))| mf.special);
             assert!(
@@ -404,7 +411,7 @@ mod tests {
 
     #[test]
     fn parse_move_line() {
-        assert!(move_line(Color::Black)("").is_err());
+        assert!(move_line(Color::Black, "").is_err());
         assert_eq!(
             Ok((
                 "",
@@ -439,7 +446,7 @@ mod tests {
                     }
                 )
             )),
-            move_line(Color::Black)("1 ７六歩(77) ( 0:16/00:00:16)\n")
+            move_line(Color::Black, "1 ７六歩(77) ( 0:16/00:00:16)\n")
         );
         assert_eq!(
             Ok((
@@ -466,7 +473,7 @@ mod tests {
                     }
                 )
             )),
-            move_line(Color::Black)("3 中断 ( 0:03/ 0:00:19)\n")
+            move_line(Color::Black, "3 中断 ( 0:03/ 0:00:19)\n")
         );
         assert_eq!(
             Ok((
@@ -500,7 +507,7 @@ mod tests {
                     }
                 )
             )),
-            move_line(Color::Black)("   1 ７八金(69)    (00:01 / 00:00:01)\n")
+            move_line(Color::Black, "   1 ７八金(69)    (00:01 / 00:00:01)\n")
         )
     }
 

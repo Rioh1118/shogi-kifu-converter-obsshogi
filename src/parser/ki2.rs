@@ -80,7 +80,11 @@ fn end_of_game_line(
     ply: usize,
 ) -> impl FnMut(&str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
     move |input| {
-        let (input, _) = preceded(many0(line_ending), tag("まで"))(input)?;
+        let (line, _) = many0(line_ending)(input)?;
+        // `line` still points at the start of the `まで…` line. `nom` reports a
+        // position, so an error built after the line is consumed points at the
+        // *next* one and shows a blank caret.
+        let (input, _) = tag("まで")(line)?;
         let (input, phrase): (&str, &str) = terminated(not_line_ending, opt(line_ending))(input)?;
         // `まで` may be followed by `<N>手で`; the ply is already known from the
         // moves that were read, so the number is not needed.
@@ -103,7 +107,7 @@ fn end_of_game_line(
             // blocks after it without a word (D1: a record we cannot read has
             // to say so). `Failure` is what `opt` does not swallow.
             None => Err(nom::Err::Failure(VerboseError::from_error_kind(
-                input,
+                line,
                 nom::error::ErrorKind::Tag,
             ))),
         }
@@ -328,6 +332,14 @@ mod tests {
             assert!(
                 matches!(err, crate::error::ParseError::Ki2(_)),
                 "{phrase} gave {err:?}"
+            );
+            // The one thing the reader cannot recover is the word it could not
+            // read, so the error has to carry it and point at its own line.
+            let text = err.to_string();
+            assert!(text.contains(phrase), "{phrase} is missing from {text:?}");
+            assert!(
+                text.contains("at line 2"),
+                "{phrase} should point at line 2: {text:?}"
             );
         }
     }
