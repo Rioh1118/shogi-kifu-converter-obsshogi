@@ -701,7 +701,14 @@ pub(crate) fn infer_relative_from_position(pos: &PartialPosition, mv: shogi_core
             let Some(piece) = pos.piece_at(from) else {
                 return Suffix::Nothing;
             };
-            suffix_for(pos, from, to, candidates_reaching(pos, to, piece))
+            // The piece that made the move is a candidate by definition. The
+            // scan cannot see that on its own: a kifu recording an illegal move
+            // is valid input (R-RULE-002), and an illegal move is exactly what
+            // `is_valid` leaves out — which would make the suffix name a
+            // different piece, or make the record unspellable altogether.
+            let mut candidates = candidates_reaching(pos, to, piece);
+            candidates |= from;
+            suffix_for(pos, from, to, candidates)
         }
     }
 }
@@ -736,11 +743,15 @@ fn normalize_moves(
                 }
             }
         }
-        // Calculate total time
-        if let Some(time) = &mut mf.time {
-            totals[pos.side_to_move().array_index()] =
-                add_timeformat(&totals[pos.side_to_move().array_index()], &time.now);
-            time.total = totals[pos.side_to_move().array_index()];
+        // The running total is per side, so it needs to know whose turn it is.
+        // Once the board is gone that is a guess, and a guessed total overwrites
+        // a stated one — every later move lands on the same side's clock.
+        if position_known {
+            if let Some(time) = &mut mf.time {
+                totals[pos.side_to_move().array_index()] =
+                    add_timeformat(&totals[pos.side_to_move().array_index()], &time.now);
+                time.total = totals[pos.side_to_move().array_index()];
+            }
         }
         // A node without a move holds a comment or an outcome. Neither ends the
         // record: `中断` appears mid-list in a game that was interrupted and
@@ -758,8 +769,17 @@ fn normalize_moves(
         if !position_known {
             continue;
         }
-        match normalize_move(mmf, &pos, correct_color, infer_relative) {
-            Ok(mv) if pos.make_move(mv).is_some() => {}
+        // `normalize_move` rewrites the move from the position before it knows
+        // whether the position holds it, so it runs on a copy. Otherwise a move
+        // the board turns out not to explain keeps the board's answer: a 銀
+        // saved as a 金 because a 金 was the piece on that square in the
+        // position *before* the interruption.
+        //
+        // `PartialPosition::make_move` leaves `pos` alone when it returns
+        // `None`, so the guard below is safe to run for its effect.
+        let mut candidate = *mmf;
+        match normalize_move(&mut candidate, &pos, correct_color, infer_relative) {
+            Ok(mv) if pos.make_move(mv).is_some() => *mmf = candidate,
             _ if after_outcome => position_known = false,
             Ok(mv) => return Err(NormalizeError::MakeMoveFailed(mv)),
             Err(err) => return Err(err),
@@ -1046,6 +1066,131 @@ mod tests {
         let forks = jkf.moves[2].forks.as_ref().expect("a branch at ply 2");
         assert_eq!(1, forks.len(), "the branch survives normalization");
         assert_eq!(3, forks[0].len(), "and keeps all three of its nodes");
+    }
+
+    // A move the board turns out not to explain keeps whatever it said. The
+    // normalization runs before anyone knows the board holds the move, so it has
+    // to run on a copy: otherwise a 銀 comes back as the 金 that stood on that
+    // square in the position *before* the interruption, and the running clock
+    // keeps adding to one side.
+    #[test]
+    fn a_move_the_board_cannot_explain_is_left_alone() {
+        // 6九 holds a gold at the start, so normalizing 6八銀(69) against the
+        // pre-中断 board would rewrite the piece.
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77) ( 0:10/00:00:10)
+   2 中断
+   3 ６八銀(69) ( 0:20/00:00:20)
+   4 ３四歩(33) ( 0:30/00:00:30)
+";
+        let jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        assert_eq!(
+            Kind::GI,
+            jkf.moves[3].move_.expect("a move").piece,
+            "the piece the file named"
+        );
+        for (i, want) in [(3, 20), (4, 30)] {
+            assert_eq!(
+                TimeFormat {
+                    h: Some(0),
+                    m: 0,
+                    s: want
+                },
+                jkf.moves[i].time.expect("a time").total,
+                "the total the file stated at ply {i}"
+            );
+        }
+    }
+
+    // The board is dropped at the *first* move an outcome's position cannot
+    // explain, and stays dropped. Without that, every later move is normalized
+    // against a board the game left behind.
+    #[test]
+    fn the_board_stays_dropped_after_an_outcome() {
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77)
+   2 中断
+   3 ９九角(88)
+   4 ６八銀(69)
+";
+        let jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        assert_eq!(
+            Kind::GI,
+            jkf.moves[4].move_.expect("a move").piece,
+            "the move after the one that lost the board is untouched too"
+        );
+    }
+
+    // A branch hanging off a node past the point the board was lost has no
+    // position to be normalized against either. Normalizing it anyway rewrites
+    // its moves — `correct_color` alone flips the side — against a board they
+    // never came from.
+    #[test]
+    fn a_branch_past_the_lost_board_is_left_alone() {
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77)
+   2 中断
+   3 ９九角(88)
+   4 ６八銀(69)
+
+変化：4手
+   4 ２六歩(27)
+";
+        let jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        let fork = &jkf.moves[4].forks.as_ref().expect("a branch")[0];
+        let mv = fork[0].move_.expect("a move");
+        assert_eq!(Color::White, mv.color, "the side the ply number gave it");
+        assert_eq!(Some(PlaceFormat { x: 2, y: 7 }), mv.from);
+    }
+
+    // R-RULE-002: a kifu recording an illegal move is valid input, and
+    // `is_valid` is exactly what leaves such a move out of the candidate scan.
+    // Left out, the suffix describes one of the *other* pieces, so the record
+    // comes back saying a piece moved that never did.
+    //
+    // KI2 carries no origin (R-KI2-003), so reading an illegal move back to its
+    // square is not possible either way — what the suffix must not do is name
+    // the wrong piece.
+    #[test]
+    fn an_illegal_move_is_spelled_for_the_piece_that_made_it() {
+        use crate::converter::ToKi2;
+        // 4九 cannot reach 5五; the record says it did. 5六 can, and would be
+        // spelled with no suffix at all if it were the only candidate.
+        let jkf = from_board(
+            &[
+                (4, 9, Color::Black, Kind::KI),
+                (5, 6, Color::Black, Kind::KI),
+            ],
+            "５五金(49)",
+        );
+        let ki2 = jkf
+            .try_to_ki2_owned()
+            .expect("an illegal move is still writable");
+        assert!(ki2.contains("▲５五金右"), "{ki2:?}");
+    }
+
+    // The other half: when no legal candidate shares the illegal move's motion,
+    // leaving it out of the set makes the notation unable to name anything — and
+    // since that is now an error, one illegal move would stop the whole record
+    // from being saved.
+    #[test]
+    fn an_illegal_move_does_not_stop_the_record_from_being_written() {
+        use crate::converter::ToKi2;
+        let jkf = from_board(
+            &[
+                (5, 9, Color::Black, Kind::KI),
+                (4, 5, Color::Black, Kind::KI),
+                (6, 5, Color::Black, Kind::KI),
+            ],
+            "５五金(59)",
+        );
+        assert!(
+            jkf.try_to_ki2_owned().is_ok(),
+            "one illegal move must not cost the whole record"
+        );
     }
 
     // Same shape on the main line: a game that resumed after `中断` and went on
