@@ -127,12 +127,23 @@ fn move_time(input: &str) -> IResult<&str, Time, VerboseError<&str>> {
 // 1 is — and none of them is used inside a combinator. `move_special` is the
 // exception: `alt` needs a parser value, so it returns one.
 //
-/// Reads one `<ply> <move>` line. `start` is whose turn ply 1 is.
-fn move_line(start: Color, input: &str) -> IResult<&str, (usize, MoveFormat), VerboseError<&str>> {
+/// Reads one `<ply> <move>` line.
+///
+/// `known_side` is whose turn this line is when the run has already been read
+/// far enough to know. KIF numbers an outcome line as a ply of its own, so a
+/// record that was interrupted and resumed has more plies than moves and the
+/// parity of the number stops matching the turn — which matters because
+/// 反則勝ち names its winner only through whose turn it is (R-KIF-007).
+/// `start` is the fallback for the first line of a run.
+fn move_line(
+    start: Color,
+    known_side: Option<Color>,
+    input: &str,
+) -> IResult<&str, (usize, MoveFormat), VerboseError<&str>> {
     // The ply number has to be read before the rest: it decides whose turn it
     // is, and 反則勝ち means the *other* player committed the foul.
     let (input, i) = preceded(space0, map_res(digit1, str::parse::<usize>))(input)?;
-    let side_to_move = crate::handicap::side_to_move_at_ply(start, i);
+    let side_to_move = known_side.unwrap_or_else(|| crate::handicap::side_to_move_at_ply(start, i));
     let (input, mut mf) = preceded(space0, alt((move_special(side_to_move), move_move)))(input)?;
     let (input, time) = preceded(space0, opt(move_time))(input)?;
     let (input, _) = preceded(not_line_ending, line_ending)(input)?;
@@ -145,9 +156,10 @@ fn move_line(start: Color, input: &str) -> IResult<&str, (usize, MoveFormat), Ve
 
 fn move_with_comments(
     start: Color,
+    known_side: Option<Color>,
     input: &str,
 ) -> IResult<&str, (usize, MoveFormat), VerboseError<&str>> {
-    let (input, (i, mf)) = move_line(start, input)?;
+    let (input, (i, mf)) = move_line(start, known_side, input)?;
     let (input, comments) = many0(move_comment_line)(input)?;
     Ok((
         input,
@@ -161,18 +173,37 @@ fn move_with_comments(
     ))
 }
 
+/// Whose turn follows `mf`, which `side` was the turn of.
+fn next_side(mf: &MoveFormat, side: Color) -> Color {
+    if mf.move_.is_none() {
+        return side;
+    }
+    match side {
+        Color::Black => Color::White,
+        Color::White => Color::Black,
+    }
+}
+
 fn moves_with_index(
     start: Color,
     input: &str,
 ) -> IResult<&str, (usize, Vec<MoveFormat>), VerboseError<&str>> {
-    let (mut input, (first_ply, first)) = move_with_comments(start, input)?;
+    let (mut input, (first_ply, first)) = move_with_comments(start, None, input)?;
+    // Whose turn the next line is. Only a move passes the turn; an outcome takes
+    // a ply number without taking a turn, which is why the parity of the number
+    // cannot be trusted past one.
+    let mut side = next_side(
+        &first,
+        crate::handicap::side_to_move_at_ply(start, first_ply),
+    );
     let mut out = vec![first];
     loop {
         // `many1` stops on `Error` and throws anything else back. Swallowing a
         // `Failure` here would drop the rest of the record without a word,
         // which is the failure this branch exists to remove.
-        match move_with_comments(start, input) {
+        match move_with_comments(start, Some(side), input) {
             Ok((rest, (_, mf))) => {
+                side = next_side(&mf, side);
                 out.push(mf);
                 input = rest;
             }
@@ -317,6 +348,35 @@ mod tests {
         }
     }
 
+    // KIF numbers an outcome line as a ply of its own, so a record that was
+    // interrupted and resumed has more plies than moves and the number stops
+    // matching the turn. 反則勝ち names its winner only through whose turn it is
+    // (R-KIF-007), so reading the turn off the parity records the wrong player
+    // as the one who fouled — and `to_csa` then writes the opposite `%±`.
+    #[test]
+    fn an_outcome_in_the_middle_does_not_shift_the_turn() {
+        // ７六歩 is Black's, so 3三→3四 at ply 3 is White's despite the odd ply.
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77)
+   2 中断
+   3 ３四歩(33)
+   4 反則勝ち
+";
+        let jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        assert_eq!(
+            Color::White,
+            jkf.moves[3].move_.expect("a move").color,
+            "the move after 中断 is White's"
+        );
+        // White moved last, so Black is to move and 反則勝ち is Black's win —
+        // which is a foul *by* White, `%-ILLEGAL_ACTION` (R-CSA-007).
+        assert_eq!(
+            Some(MoveSpecial::SpecialIllegalActionWhite),
+            jkf.moves.last().and_then(|mf| mf.special),
+        );
+    }
+
     // R-KIF-007. Every word KIF defines for an outcome, and what it means here.
     // 不戦勝 / 不戦敗 are the two the JKF vocabulary cannot express.
     #[test]
@@ -337,7 +397,7 @@ mod tests {
             ("不戦敗", None),
         ] {
             let line = format!("   2 {word}\n");
-            let got = move_line(Color::Black, &line)
+            let got = move_line(Color::Black, None, &line)
                 .ok()
                 .and_then(|(_, (_, mf))| mf.special);
             assert_eq!(want, got, "reading {word}");
@@ -377,7 +437,7 @@ mod tests {
                 continue;
             };
             let line = format!("   2 {word}\n");
-            let got = move_line(Color::Black, &line)
+            let got = move_line(Color::Black, None, &line)
                 .ok()
                 .and_then(|(_, (_, mf))| mf.special);
             assert!(
@@ -459,7 +519,7 @@ mod tests {
 
     #[test]
     fn parse_move_line() {
-        assert!(move_line(Color::Black, "").is_err());
+        assert!(move_line(Color::Black, None, "").is_err());
         assert_eq!(
             Ok((
                 "",
@@ -494,7 +554,7 @@ mod tests {
                     }
                 )
             )),
-            move_line(Color::Black, "1 ７六歩(77) ( 0:16/00:00:16)\n")
+            move_line(Color::Black, None, "1 ７六歩(77) ( 0:16/00:00:16)\n")
         );
         assert_eq!(
             Ok((
@@ -521,7 +581,7 @@ mod tests {
                     }
                 )
             )),
-            move_line(Color::Black, "3 中断 ( 0:03/ 0:00:19)\n")
+            move_line(Color::Black, None, "3 中断 ( 0:03/ 0:00:19)\n")
         );
         assert_eq!(
             Ok((
@@ -555,7 +615,11 @@ mod tests {
                     }
                 )
             )),
-            move_line(Color::Black, "   1 ７八金(69)    (00:01 / 00:00:01)\n")
+            move_line(
+                Color::Black,
+                None,
+                "   1 ７八金(69)    (00:01 / 00:00:01)\n"
+            )
         )
     }
 
