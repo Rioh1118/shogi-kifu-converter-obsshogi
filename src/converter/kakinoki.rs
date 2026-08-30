@@ -108,21 +108,13 @@ fn write_initial_data<W: Write>(data: &StateFormat, sink: &mut W) -> Result {
 }
 
 fn write_initial_preset<W: Write>(preset: Preset, sink: &mut W) -> Result {
+    // `その他` never reaches here — it carries a board instead.
+    let name = match crate::handicap::lookup(preset) {
+        Some(handicap) => handicap.kif_name,
+        None => return Err(std::fmt::Error),
+    };
     sink.write_str("手合割：")?;
-    match preset {
-        Preset::PresetHirate => sink.write_str("平手")?,
-        Preset::PresetKY => sink.write_str("香落ち")?,
-        Preset::PresetKYR => sink.write_str("右香落ち")?,
-        Preset::PresetKA => sink.write_str("角落ち")?,
-        Preset::PresetHI => sink.write_str("飛車落ち")?,
-        Preset::PresetHIKY => sink.write_str("飛香落ち")?,
-        Preset::Preset2 => sink.write_str("二枚落ち")?,
-        Preset::Preset4 => sink.write_str("四枚落ち")?,
-        Preset::Preset6 => sink.write_str("六枚落ち")?,
-        Preset::Preset8 => sink.write_str("八枚落ち")?,
-        Preset::Preset10 => sink.write_str("十枚落ち")?,
-        _ => unimplemented!(),
-    }
+    sink.write_str(name)?;
     sink.write_char('\n')?;
     Ok(())
 }

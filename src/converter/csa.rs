@@ -131,26 +131,18 @@ fn write_initial_data<W: Write>(data: &StateFormat, sink: &mut W) -> Result {
 }
 
 fn write_initial_preset<W: Write>(preset: Preset, sink: &mut W) -> Result {
-    match preset {
-        Preset::PresetHirate => sink.write_str("PI")?,
-        Preset::PresetKY => sink.write_str("PI11KY")?,
-        Preset::PresetKYR => sink.write_str("PI91KY")?,
-        Preset::PresetKA => sink.write_str("PI22KA")?,
-        Preset::PresetHI => sink.write_str("PI82HI")?,
-        Preset::PresetHIKY => sink.write_str("PI82HI11KY")?,
-        Preset::Preset2 => sink.write_str("PI82HI22KA")?,
-        Preset::Preset4 => sink.write_str("PI82HI22KA91KY11KY")?,
-        Preset::Preset6 => sink.write_str("PI82HI22KA91KY11KY81KE21KE")?,
-        Preset::Preset8 => sink.write_str("PI82HI22KA91KY11KY81KE21KE71GI31GI")?,
-        Preset::Preset10 => sink.write_str("PI82HI22KA91KY11KY81KE21KE71GI31GI61KI41KI")?,
-        _ => unimplemented!(),
+    // `PI` is the even game; each removed piece follows as position + kind
+    // (R-CSA-006). `その他` never reaches here — it carries a board instead.
+    let Some(handicap) = crate::handicap::lookup(preset) else {
+        return Err(std::fmt::Error);
+    };
+    sink.write_str("PI")?;
+    for &(file, rank, kind) in handicap.removed {
+        sink.write_fmt(format_args!("{file}{rank}"))?;
+        write_kind(kind, sink)?;
     }
     sink.write_char('\n')?;
-    if preset == Preset::PresetHirate {
-        sink.write_char('+')?;
-    } else {
-        sink.write_char('-')?;
-    }
+    write_color(crate::handicap::side_to_move(preset), sink)?;
     Ok(())
 }
 

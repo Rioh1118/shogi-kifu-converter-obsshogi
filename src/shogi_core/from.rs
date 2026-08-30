@@ -107,24 +107,13 @@ impl TryFrom<&jkf::Initial> for PartialPosition {
             }
             _ => {
                 let mut pos = PartialPosition::startpos();
-                pos.side_to_move_set(Color::White);
-                #[rustfmt::skip]
-                let drops = match initial.preset {
-                    PresetKY   => vec![Square::SQ_1A],
-                    PresetKYR  => vec![Square::SQ_9A],
-                    PresetKA   => vec![Square::SQ_2B],
-                    PresetHI   => vec![Square::SQ_8B],
-                    PresetHIKY => vec![Square::SQ_8B, Square::SQ_1A],
-                    Preset2    => vec![Square::SQ_8B, Square::SQ_2B],
-                    Preset4    => vec![Square::SQ_8B, Square::SQ_2B, Square::SQ_9A, Square::SQ_1A],
-                    Preset6    => vec![Square::SQ_8B, Square::SQ_2B, Square::SQ_9A, Square::SQ_1A, Square::SQ_8A, Square::SQ_2A],
-                    Preset8    => vec![Square::SQ_8B, Square::SQ_2B, Square::SQ_9A, Square::SQ_1A, Square::SQ_8A, Square::SQ_2A, Square::SQ_7A, Square::SQ_3A],
-                    Preset10   => vec![Square::SQ_8B, Square::SQ_2B, Square::SQ_9A, Square::SQ_1A, Square::SQ_8A, Square::SQ_2A, Square::SQ_7A, Square::SQ_3A, Square::SQ_6A, Square::SQ_4A],
-                    // Preset3, Preset5, Preset7...?
-                    _ => unimplemented!(),
-                };
-                for sq in drops {
-                    pos.piece_set(sq, None);
+                pos.side_to_move_set(crate::handicap::side_to_move(initial.preset).into());
+                let handicap = crate::handicap::lookup(initial.preset)
+                    .ok_or(ConvertError::InitialBoardNoDataWithPresetOTHER)?;
+                for &(file, rank, _) in handicap.removed {
+                    let square =
+                        Square::new(file, rank).ok_or(ConvertError::InvalidSquare((file, rank)))?;
+                    pos.piece_set(square, None);
                 }
                 Ok(pos)
             }

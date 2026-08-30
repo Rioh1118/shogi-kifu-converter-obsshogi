@@ -14,6 +14,7 @@
 pub mod converter;
 mod csa;
 pub mod error;
+mod handicap;
 pub mod jkf;
 mod normalizer;
 pub mod parser;

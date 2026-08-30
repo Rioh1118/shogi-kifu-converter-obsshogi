@@ -53,108 +53,6 @@ pub(crate) const HIRATE_BOARD: [[Piece; 9]; 9] = {
     ]
 };
 
-const STATE_HIRATE: StateFormat = StateFormat {
-    color: Color::Black,
-    board: HIRATE_BOARD,
-    hands: [Hand::empty(); 2],
-};
-
-const STATE_KY: StateFormat = {
-    let mut board = HIRATE_BOARD;
-    board[0][0] = Piece::empty();
-    StateFormat {
-        color: Color::White,
-        board,
-        hands: [Hand::empty(); 2],
-    }
-};
-
-const STATE_KA: StateFormat = {
-    let mut board = HIRATE_BOARD;
-    board[1][1] = Piece::empty();
-    StateFormat {
-        color: Color::White,
-        board,
-        hands: [Hand::empty(); 2],
-    }
-};
-
-const STATE_HI: StateFormat = {
-    let mut board = HIRATE_BOARD;
-    board[7][1] = Piece::empty();
-    StateFormat {
-        color: Color::White,
-        board,
-        hands: [Hand::empty(); 2],
-    }
-};
-
-const STATE_HIKY: StateFormat = {
-    let mut board = HIRATE_BOARD;
-    board[0][0] = Piece::empty();
-    board[7][1] = Piece::empty();
-    StateFormat {
-        color: Color::White,
-        board,
-        hands: [Hand::empty(); 2],
-    }
-};
-
-const STATE_2: StateFormat = {
-    let mut board = HIRATE_BOARD;
-    board[1][1] = Piece::empty();
-    board[7][1] = Piece::empty();
-    StateFormat {
-        color: Color::White,
-        board,
-        hands: [Hand::empty(); 2],
-    }
-};
-
-const STATE_4: StateFormat = {
-    let mut board = STATE_2.board;
-    board[0][0] = Piece::empty();
-    board[8][0] = Piece::empty();
-    StateFormat {
-        color: Color::White,
-        board,
-        hands: [Hand::empty(); 2],
-    }
-};
-
-const STATE_6: StateFormat = {
-    let mut board = STATE_4.board;
-    board[1][0] = Piece::empty();
-    board[7][0] = Piece::empty();
-    StateFormat {
-        color: Color::White,
-        board,
-        hands: [Hand::empty(); 2],
-    }
-};
-
-const STATE_8: StateFormat = {
-    let mut board = STATE_6.board;
-    board[2][0] = Piece::empty();
-    board[6][0] = Piece::empty();
-    StateFormat {
-        color: Color::White,
-        board,
-        hands: [Hand::empty(); 2],
-    }
-};
-
-const STATE_10: StateFormat = {
-    let mut board = STATE_8.board;
-    board[3][0] = Piece::empty();
-    board[5][0] = Piece::empty();
-    StateFormat {
-        color: Color::White,
-        board,
-        hands: [Hand::empty(); 2],
-    }
-};
-
 impl Piece {
     pub(crate) const fn empty() -> Self {
         Self {
@@ -381,51 +279,28 @@ impl JsonKifuFormat {
     }
 }
 
+/// Folds a board that matches a named handicap back into its preset.
+///
+/// The comparison walks the same table the writers use, so a handicap added
+/// there is folded here without a second list to keep in step.
 fn normalize_initial(jkf: &mut JsonKifuFormat) -> Result<(), NormalizeError> {
     if let Some(initial) = &mut jkf.initial {
-        *initial = match initial.data {
-            Some(STATE_HIRATE) => Initial {
-                preset: Preset::PresetHirate,
-                data: None,
-            },
-            Some(STATE_KY) => Initial {
-                preset: Preset::PresetKY,
-                data: None,
-            },
-            Some(STATE_KA) => Initial {
-                preset: Preset::PresetKA,
-                data: None,
-            },
-            Some(STATE_HI) => Initial {
-                preset: Preset::PresetHI,
-                data: None,
-            },
-            Some(STATE_HIKY) => Initial {
-                preset: Preset::PresetHIKY,
-                data: None,
-            },
-            Some(STATE_2) => Initial {
-                preset: Preset::Preset2,
-                data: None,
-            },
-            Some(STATE_4) => Initial {
-                preset: Preset::Preset4,
-                data: None,
-            },
-            Some(STATE_6) => Initial {
-                preset: Preset::Preset6,
-                data: None,
-            },
-            Some(STATE_8) => Initial {
-                preset: Preset::Preset8,
-                data: None,
-            },
-            Some(STATE_10) => Initial {
-                preset: Preset::Preset10,
-                data: None,
-            },
-            _ => *initial,
+        let Some(data) = initial.data else {
+            return Ok(());
         };
+        for handicap in crate::handicap::HANDICAPS {
+            let matches = crate::handicap::board(handicap.preset)
+                .is_some_and(|board| board == data.board)
+                && data.color == crate::handicap::side_to_move(handicap.preset)
+                && data.hands == [Hand::empty(); 2];
+            if matches {
+                *initial = Initial {
+                    preset: handicap.preset,
+                    data: None,
+                };
+                break;
+            }
+        }
     }
     Ok(())
 }

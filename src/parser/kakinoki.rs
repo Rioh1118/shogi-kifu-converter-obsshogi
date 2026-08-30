@@ -144,31 +144,26 @@ fn information_value_hand(input: &str) -> IResult<&str, Hand, VerboseError<&str>
 }
 
 fn information_value_preset(input: &str) -> IResult<&str, Information, VerboseError<&str>> {
-    terminated(
-        map(
-            alt((
-                value(Preset::PresetHirate, tag("平手")),
-                value(Preset::PresetKY, tag("香落ち")),
-                value(Preset::PresetKYR, tag("右香落ち")),
-                value(Preset::PresetKA, tag("角落ち")),
-                value(Preset::PresetHI, tag("飛車落ち")),
-                value(Preset::PresetHIKY, tag("飛香落ち")),
-                value(Preset::Preset2, tag("二枚落ち")),
-                value(Preset::Preset3, tag("三枚落ち")),
-                value(Preset::Preset4, tag("四枚落ち")),
-                value(Preset::Preset5, tag("五枚落ち")),
-                value(Preset::Preset5L, tag("左五枚落ち")),
-                value(Preset::Preset6, tag("六枚落ち")),
-                value(Preset::Preset7L, tag("左七枚落ち")),
-                value(Preset::Preset7R, tag("右七枚落ち")),
-                value(Preset::Preset8, tag("八枚落ち")),
-                value(Preset::Preset10, tag("十枚落ち")),
-                value(Preset::PresetOther, tag("その他")),
-            )),
-            Information::Preset,
-        ),
-        many0(one_of(" 　")),
-    )(input)
+    // Longest name first, or `香落ち` would swallow the tail of `右香落ち`.
+    let mut preset = None;
+    let mut rest = input;
+    for handicap in crate::handicap::names_longest_first() {
+        if let Ok((tail, _)) = tag::<_, _, VerboseError<&str>>(handicap.kif_name)(input) {
+            preset = Some(handicap.preset);
+            rest = tail;
+            break;
+        }
+    }
+    if preset.is_none() {
+        let (tail, _) = tag("その他")(input)?;
+        preset = Some(Preset::PresetOther);
+        rest = tail;
+    }
+    let (rest, _) = many0(one_of(" 　"))(rest)?;
+    Ok((
+        rest,
+        Information::Preset(preset.expect("set on both branches")),
+    ))
 }
 
 fn information_line_preset(input: &str) -> IResult<&str, Information, VerboseError<&str>> {
