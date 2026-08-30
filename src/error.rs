@@ -70,6 +70,12 @@ pub enum ParseError {
     #[error("File extension Error")]
     FileExtension,
     /// An error that occurred while normalizing [`JsonKifuFormat`](crate::jkf::JsonKifuFormat)
-    #[error("Faield to normalize: {0}")]
-    Normalize(String),
+    /// An error that occurred while normalizing the parsed record
+    ///
+    /// Kept as the error rather than its message: a caller has to be able to
+    /// tell "this record holds an illegal move" (valid input under R-RULE-002)
+    /// from "this file is not a kifu at all", and the consumer picks a text
+    /// encoding on that answer.
+    #[error("failed to normalize: {0}")]
+    Normalize(#[from] NormalizeError),
 }

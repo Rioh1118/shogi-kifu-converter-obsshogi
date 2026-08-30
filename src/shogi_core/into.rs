@@ -115,10 +115,10 @@ impl TryFrom<&Position> for jkf::JsonKifuFormat {
                         relative: None,
                     }
                 }
-                // To disambiguate `Normal` move or `Drop` move, `from` is converted to `Some(PlaceFormat { x: 0, y: 0 })`
+                // JKF says a move is a drop by leaving `from` out (R-JKF-003).
                 Move::Drop { piece, to } => jkf::MoveMoveFormat {
                     color: pp.side_to_move().into(),
-                    from: Some(jkf::PlaceFormat { x: 0, y: 0 }),
+                    from: None,
                     to: (&to).into(),
                     piece: piece.piece_kind().into(),
                     same: None,

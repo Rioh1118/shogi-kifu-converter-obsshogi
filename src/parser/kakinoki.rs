@@ -3,7 +3,7 @@ use nom::branch::alt;
 use nom::bytes::complete::{is_not, tag};
 use nom::character::complete::{line_ending, none_of, not_line_ending, one_of};
 use nom::combinator::{map, map_res, opt, value};
-use nom::error::VerboseError;
+use nom::error::{ErrorKind, ParseError, VerboseError};
 use nom::multi::{count, many0, many1};
 use nom::sequence::{delimited, pair, preceded, separated_pair, terminated, tuple};
 use nom::IResult;
@@ -178,27 +178,32 @@ fn information_line_preset(input: &str) -> IResult<&str, Information, VerboseErr
 }
 
 fn information_line_hands(input: &str) -> IResult<&str, Information, VerboseError<&str>> {
-    terminated(
-        map(
-            pair(
-                terminated(
-                    alt((
-                        value(Color::Black, tag("先手")),
-                        value(Color::White, tag("後手")),
-                        value(Color::Black, tag("下手")),
-                        value(Color::White, tag("上手")),
-                    )),
-                    tag("の持駒："),
-                ),
-                information_value_hand,
-            ),
-            |(c, h)| match c {
-                Color::Black => Information::HandBlack(h),
-                Color::White => Information::HandWhite(h),
-            },
-        ),
-        line_ending,
-    )(input)
+    let line = input;
+    let (rest, color) = terminated(
+        alt((
+            value(Color::Black, tag("先手")),
+            value(Color::White, tag("後手")),
+            value(Color::Black, tag("下手")),
+            value(Color::White, tag("上手")),
+        )),
+        tag("の持駒："),
+    )(input)?;
+    // Past the prefix this line states a hand, whatever follows. Reporting a
+    // recoverable error would send it to `information_line_keyvalue`, which
+    // files the whole line under `header` and leaves the hand empty — including
+    // the pieces written *before* the one that could not be read. A later drop
+    // from that hand then fails to normalize, and the message names the move
+    // rather than the line that actually broke.
+    let fail = |_| nom::Err::Failure(VerboseError::from_error_kind(line, ErrorKind::Tag));
+    let (rest, hand) = information_value_hand(rest).map_err(fail)?;
+    let (rest, _) = line_ending(rest).map_err(fail)?;
+    Ok((
+        rest,
+        match color {
+            Color::Black => Information::HandBlack(hand),
+            Color::White => Information::HandWhite(hand),
+        },
+    ))
 }
 
 fn information_line_keyvalue(input: &str) -> IResult<&str, Information, VerboseError<&str>> {
@@ -372,6 +377,64 @@ pub(super) fn parse_without_moves(
 mod tests {
     use super::*;
     use crate::normalizer::HIRATE_BOARD;
+
+    // A hand line whose count cannot be read must not fall through to the
+    // key-value rule: that files the whole line under `header` and leaves the
+    // hand empty — including the pieces written before the broken one. A drop
+    // from that hand then fails to normalize, and the message names the move
+    // rather than the line that actually broke.
+    #[test]
+    fn a_hand_line_that_cannot_be_read_is_an_error_not_an_empty_hand() {
+        const BOARD: &str = "手合割：その他
+後手の持駒：なし
+  ９ ８ ７ ６ ５ ４ ３ ２ １
++---------------------------+
+| ・ ・ ・ ・v玉 ・ ・ ・ ・|一
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|二
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|三
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|四
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|五
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|六
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|七
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|八
+| ・ ・ ・ ・ 玉 ・ ・ ・ ・|九
++---------------------------+
+";
+        for hand in ["歩十九 角二", "角二 歩十九", "歩零", "歩十八 と三"] {
+            let kif = format!("{BOARD}先手の持駒：{hand}\n手数----指手---------消費時間--\n");
+            let err = crate::parser::parse_kif_str(&kif)
+                .err()
+                .unwrap_or_else(|| panic!("{hand:?} was accepted"));
+            assert!(
+                matches!(err, crate::error::ParseError::Kif(_)),
+                "{hand:?} gave {err:?}"
+            );
+        }
+    }
+
+    // The counts come from the file, so they can add up past what a `u8` holds.
+    // Wrapping would turn a broken hand into a small plausible one and hand it
+    // to the rest of the crate as a fact.
+    #[test]
+    fn a_hand_that_overflows_a_u8_does_not_wrap() {
+        // 18 pawns fifteen times: 270, which is 14 once it wraps.
+        let overflowing = "歩十八 ".repeat(15);
+        assert!(
+            information_value_hand(overflowing.trim_end()).is_err(),
+            "a hand of 270 must not parse"
+        );
+
+        // Stated before *and* after the board. Each line is under the limit on
+        // its own, so the guard that matters here is the one merging them.
+        let (_, half) =
+            information_value_hand("歩十八 歩十八 歩十八 歩十八 歩十八 歩十八 歩十八 歩十八")
+                .expect("144 pawns parses");
+        assert_eq!(144, half.FU);
+        // 288 wraps to 32; saturating keeps it obviously wrong.
+        let merged =
+            InformationData::merged_hands([half, Hand::default()], [half, Hand::default()]);
+        assert_eq!(u8::MAX, merged[0].FU);
+    }
 
     #[test]
     fn parse_comment_line() {

@@ -1,0 +1,9 @@
+# `lib.rs` denies panic-producing constructs, but those lints only see this
+# crate. A default method on a trait from another crate carries its body — and
+# its `debug_assert!` — into every call site here, out of their reach. Naming
+# the method is the only way to stop it.
+disallowed-methods = [
+  { path = "shogi_core::ToUsi::to_usi_owned", reason = "debug_assert!s that the write succeeded: panics under debug_assertions, returns an empty string without them. Use JsonKifuFormat::try_to_usi_owned." },
+  { path = "shogi_official_kifu::display_single_move_kansuji", reason = "builds its candidate set from all_valid_moves — 14,256 legality tests per move — and returns a string this crate would have to read back. 81 microseconds a call; it was 96% of to_ki2. normalizer::infer_relative_from_position answers the same question from the board." },
+  { path = "shogi_core::LegalityChecker::normal_to_candidates", reason = "tests full legality before looking at the square, so it runs 162 legality tests to find the 1-4 pieces of a kind on the board. It also drops pinned pieces, which the writer keeps, so reading a suffix with it disagrees with the set that wrote it. normalizer::candidates_reaching is the one both sides use." },
+]

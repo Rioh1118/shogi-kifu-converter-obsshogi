@@ -6,22 +6,30 @@ use nom::character::complete::{digit1, line_ending, not_line_ending, space0};
 use nom::combinator::{map, map_res, opt, value};
 use nom::error::{ParseError, VerboseError};
 use nom::multi::{many0, many1};
-use nom::sequence::{delimited, pair, preceded, separated_pair, terminated, tuple};
+use nom::sequence::{delimited, preceded, separated_pair, terminated, tuple};
 use nom::IResult;
 
 fn move_from(input: &str) -> IResult<&str, Option<PlaceFormat>, VerboseError<&str>> {
     alt((
-        // To disambiguate `Normal` move or `Drop` move, "打" will be parsed as `Some(PlaceFormat { x: 0, y: 0 })`
-        value(Some(PlaceFormat { x: 0, y: 0 }), tag("打")),
-        map(
-            delimited(tag("("), map_res(digit1, str::parse), tag(")")),
-            |d: u8| {
-                Some(PlaceFormat {
-                    x: d / 10,
-                    y: d % 10,
-                })
-            },
-        ),
+        // A drop has no origin, and JKF says so by leaving `from` out
+        // (R-JKF-003). KIF marks it with 打 on every drop (R-KIF-006).
+        value(None, tag("打")),
+        move |input| {
+            let (rest, d): (&str, u8) =
+                delimited(tag("("), map_res(digit1, str::parse), tag(")"))(input)?;
+            let (x, y) = (d / 10, d % 10);
+            // R-KIF-005: an origin is `(11)` through `(99)`. `(00)` in
+            // particular is CSA's spelling for a drop and this crate's marker
+            // for an origin the notation does not state — reading it as either
+            // would turn "a square we could not read" into a different move.
+            if !(1..=9).contains(&x) || !(1..=9).contains(&y) {
+                return Err(nom::Err::Failure(VerboseError::from_error_kind(
+                    input,
+                    nom::error::ErrorKind::Verify,
+                )));
+            }
+            Ok((rest, Some(PlaceFormat { x, y })))
+        },
     ))(input)
 }
 
@@ -121,11 +129,28 @@ fn move_time(input: &str) -> IResult<&str, Time, VerboseError<&str>> {
     )(input)
 }
 
-fn move_line(input: &str) -> IResult<&str, (usize, MoveFormat), VerboseError<&str>> {
+// The move parsers below take `(start, input)` and are applied directly rather
+// than handing back a parser value, because each needs `start` — whose turn ply
+// 1 is — and none of them is used inside a combinator. `move_special` is the
+// exception: `alt` needs a parser value, so it returns one.
+//
+/// Reads one `<ply> <move>` line.
+///
+/// `known_side` is whose turn this line is when the run has already been read
+/// far enough to know. KIF numbers an outcome line as a ply of its own, so a
+/// record that was interrupted and resumed has more plies than moves and the
+/// parity of the number stops matching the turn — which matters because
+/// 反則勝ち names its winner only through whose turn it is (R-KIF-007).
+/// `start` is the fallback for the first line of a run.
+fn move_line(
+    start: Color,
+    known_side: Option<Color>,
+    input: &str,
+) -> IResult<&str, (usize, MoveFormat), VerboseError<&str>> {
     // The ply number has to be read before the rest: it decides whose turn it
     // is, and 反則勝ち means the *other* player committed the foul.
     let (input, i) = preceded(space0, map_res(digit1, str::parse::<usize>))(input)?;
-    let side_to_move = [Color::White, Color::Black][i % 2];
+    let side_to_move = known_side.unwrap_or_else(|| crate::handicap::side_to_move_at_ply(start, i));
     let (input, mut mf) = preceded(space0, alt((move_special(side_to_move), move_move)))(input)?;
     let (input, time) = preceded(space0, opt(move_time))(input)?;
     let (input, _) = preceded(not_line_ending, line_ending)(input)?;
@@ -136,45 +161,88 @@ fn move_line(input: &str) -> IResult<&str, (usize, MoveFormat), VerboseError<&st
     Ok((input, (i, mf)))
 }
 
-fn move_with_comments(input: &str) -> IResult<&str, (usize, MoveFormat), VerboseError<&str>> {
-    map(
-        pair(move_line, many0(move_comment_line)),
-        |((i, mf), comments)| {
-            (
-                i,
-                MoveFormat {
-                    comments: Some(comments).filter(|v| !v.is_empty()),
-                    ..mf
-                },
-            )
-        },
-    )(input)
+fn move_with_comments(
+    start: Color,
+    known_side: Option<Color>,
+    input: &str,
+) -> IResult<&str, (usize, MoveFormat), VerboseError<&str>> {
+    let (input, (i, mf)) = move_line(start, known_side, input)?;
+    let (input, comments) = many0(move_comment_line)(input)?;
+    Ok((
+        input,
+        (
+            i,
+            MoveFormat {
+                comments: Some(comments).filter(|v| !v.is_empty()),
+                ..mf
+            },
+        ),
+    ))
 }
 
-fn moves_with_index(input: &str) -> IResult<&str, (usize, Vec<MoveFormat>), VerboseError<&str>> {
-    map(
-        terminated(many1(move_with_comments), opt(not_move_line)),
-        |v| (v[0].0, v.into_iter().map(|(_, mf)| mf).collect()),
-    )(input)
+/// Whose turn follows `mf`, which `side` was the turn of.
+fn next_side(mf: &MoveFormat, side: Color) -> Color {
+    if mf.move_.is_none() {
+        return side;
+    }
+    match side {
+        Color::Black => Color::White,
+        Color::White => Color::Black,
+    }
 }
 
-fn main_moves(input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
-    map(
-        pair(opt(many1(move_comment_line)), opt(moves_with_index)),
-        |(comments, o)| {
-            [
-                vec![MoveFormat {
-                    comments,
-                    ..Default::default()
-                }],
-                o.map_or(Vec::new(), |(_, v)| v),
-            ]
-            .concat()
-        },
-    )(input)
+fn moves_with_index(
+    start: Color,
+    input: &str,
+) -> IResult<&str, (usize, Vec<MoveFormat>), VerboseError<&str>> {
+    let (mut input, (first_ply, first)) = move_with_comments(start, None, input)?;
+    // Whose turn the next line is. Only a move passes the turn; an outcome takes
+    // a ply number without taking a turn, which is why the parity of the number
+    // cannot be trusted past one.
+    let mut side = next_side(
+        &first,
+        crate::handicap::side_to_move_at_ply(start, first_ply),
+    );
+    let mut out = vec![first];
+    loop {
+        // `many1` stops on `Error` and throws anything else back. Swallowing a
+        // `Failure` here would drop the rest of the record without a word,
+        // which is the failure this branch exists to remove.
+        match move_with_comments(start, Some(side), input) {
+            Ok((rest, (_, mf))) => {
+                side = next_side(&mf, side);
+                out.push(mf);
+                input = rest;
+            }
+            Err(nom::Err::Error(_)) => break,
+            Err(err) => return Err(err),
+        }
+    }
+    let (input, _) = opt(not_move_line)(input)?;
+    Ok((input, (first_ply, out)))
 }
 
-fn entire_moves(input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
+fn main_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
+    let (input, comments) = opt(many1(move_comment_line))(input)?;
+    let (input, run) = match moves_with_index(start, input) {
+        Ok((rest, (_, v))) => (rest, v),
+        Err(nom::Err::Error(_)) => (input, Vec::new()),
+        Err(err) => return Err(err),
+    };
+    Ok((
+        input,
+        [
+            vec![MoveFormat {
+                comments,
+                ..Default::default()
+            }],
+            run,
+        ]
+        .concat(),
+    ))
+}
+
+fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
     fn merge_forks(
         (mut moves, mut forks): (Vec<MoveFormat>, Vec<(usize, Vec<MoveFormat>)>),
     ) -> Vec<MoveFormat> {
@@ -208,28 +276,113 @@ fn entire_moves(input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str
         moves
     }
 
-    map(
-        pair(
-            preceded(many0(not_move_line), main_moves),
-            many0(preceded(many0(not_move_line), moves_with_index)),
-        ),
-        merge_forks,
-    )(input)
+    let (input, _) = many0(not_move_line)(input)?;
+    let (mut input, main) = main_moves(start, input)?;
+    let mut forks = Vec::new();
+    loop {
+        let (rest, _) = many0(not_move_line)(input)?;
+        match moves_with_index(start, rest) {
+            Ok((rest, run)) => {
+                forks.push(run);
+                input = rest;
+            }
+            Err(nom::Err::Error(_)) => break,
+            Err(err) => return Err(err),
+        }
+    }
+    Ok((input, merge_forks((main, forks))))
 }
 
 pub(crate) fn parse(input: &str) -> IResult<&str, JsonKifuFormat, VerboseError<&str>> {
-    map(
-        pair(parse_without_moves, entire_moves),
-        |(mut jkf, moves)| {
-            jkf.moves.extend(moves);
-            jkf
-        },
-    )(input)
+    let (input, mut jkf) = parse_without_moves(input)?;
+    // The side has to come from the starting position, not the ply parity: a
+    // handicap record has White at every odd ply (R-HC-001).
+    let start = crate::handicap::starting_side(jkf.initial.as_ref());
+    let (input, moves) = entire_moves(start, input)?;
+    jkf.moves.extend(moves);
+    Ok((input, jkf))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // R-KIF-007: KIF's 反則勝ち says the move *before* it was the foul, so the
+    // word alone does not name the offender — whose turn it is does. The upper
+    // hand moves first in every handicap (R-HC-001), so reading the side off the
+    // ply parity records the wrong player as the one who fouled.
+    //
+    // This is the only thing the parser's own side-to-move decides: every move's
+    // colour is overwritten later from the position, so nothing else here fails
+    // when it is wrong.
+    #[test]
+    fn a_handicap_names_the_right_side_at_a_foul_win() {
+        use crate::converter::ToCsa;
+        for (handicap, first_move, want) in [
+            ("平手", "７六歩(77)", MoveSpecial::SpecialIllegalActionBlack),
+            (
+                "香落ち",
+                "３四歩(33)",
+                MoveSpecial::SpecialIllegalActionWhite,
+            ),
+            (
+                "四枚落ち",
+                "３四歩(33)",
+                MoveSpecial::SpecialIllegalActionWhite,
+            ),
+        ] {
+            let kif = format!(
+                "手合割：{handicap}\n手数----指手---------消費時間--\n   1 {first_move}\n   2 反則勝ち\n"
+            );
+            let jkf =
+                crate::parser::parse_kif_str(&kif).unwrap_or_else(|e| panic!("{handicap}: {e}"));
+            assert_eq!(
+                Some(want),
+                jkf.moves.last().and_then(|mf| mf.special),
+                "reading {handicap}"
+            );
+            // R-CSA-007 spells the offender out, so the direction is visible.
+            let csa = jkf.try_to_csa_owned().expect("writes CSA");
+            let sign = if want == MoveSpecial::SpecialIllegalActionBlack {
+                "+"
+            } else {
+                "-"
+            };
+            assert!(
+                csa.lines().any(|l| l == format!("%{sign}ILLEGAL_ACTION")),
+                "{handicap} wrote {csa:?}"
+            );
+        }
+    }
+
+    // KIF numbers an outcome line as a ply of its own, so a record that was
+    // interrupted and resumed has more plies than moves and the number stops
+    // matching the turn. 反則勝ち names its winner only through whose turn it is
+    // (R-KIF-007), so reading the turn off the parity records the wrong player
+    // as the one who fouled — and `to_csa` then writes the opposite `%±`.
+    #[test]
+    fn an_outcome_in_the_middle_does_not_shift_the_turn() {
+        // ７六歩 is Black's, so 3三→3四 at ply 3 is White's despite the odd ply.
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77)
+   2 中断
+   3 ３四歩(33)
+   4 反則勝ち
+";
+        let jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        assert_eq!(
+            Color::White,
+            jkf.moves[3].move_.expect("a move").color,
+            "the move after 中断 is White's"
+        );
+        // White moved last, so Black is to move and 反則勝ち is Black's win —
+        // which is a foul *by* White, `%-ILLEGAL_ACTION` (R-CSA-007).
+        assert_eq!(
+            Some(MoveSpecial::SpecialIllegalActionWhite),
+            jkf.moves.last().and_then(|mf| mf.special),
+        );
+    }
 
     // R-KIF-007. Every word KIF defines for an outcome, and what it means here.
     // 不戦勝 / 不戦敗 are the two the JKF vocabulary cannot express.
@@ -251,7 +404,9 @@ mod tests {
             ("不戦敗", None),
         ] {
             let line = format!("   2 {word}\n");
-            let got = move_line(&line).ok().and_then(|(_, (_, mf))| mf.special);
+            let got = move_line(Color::Black, None, &line)
+                .ok()
+                .and_then(|(_, (_, mf))| mf.special);
             assert_eq!(want, got, "reading {word}");
         }
     }
@@ -289,7 +444,9 @@ mod tests {
                 continue;
             };
             let line = format!("   2 {word}\n");
-            let got = move_line(&line).ok().and_then(|(_, (_, mf))| mf.special);
+            let got = move_line(Color::Black, None, &line)
+                .ok()
+                .and_then(|(_, (_, mf))| mf.special);
             assert!(
                 got.is_some(),
                 "{special:?} writes {word}, which cannot be read"
@@ -369,7 +526,7 @@ mod tests {
 
     #[test]
     fn parse_move_line() {
-        assert!(move_line("").is_err());
+        assert!(move_line(Color::Black, None, "").is_err());
         assert_eq!(
             Ok((
                 "",
@@ -404,7 +561,7 @@ mod tests {
                     }
                 )
             )),
-            move_line("1 ７六歩(77) ( 0:16/00:00:16)\n")
+            move_line(Color::Black, None, "1 ７六歩(77) ( 0:16/00:00:16)\n")
         );
         assert_eq!(
             Ok((
@@ -431,7 +588,7 @@ mod tests {
                     }
                 )
             )),
-            move_line("3 中断 ( 0:03/ 0:00:19)\n")
+            move_line(Color::Black, None, "3 中断 ( 0:03/ 0:00:19)\n")
         );
         assert_eq!(
             Ok((
@@ -465,7 +622,11 @@ mod tests {
                     }
                 )
             )),
-            move_line("   1 ７八金(69)    (00:01 / 00:00:01)\n")
+            move_line(
+                Color::Black,
+                None,
+                "   1 ７八金(69)    (00:01 / 00:00:01)\n"
+            )
         )
     }
 
@@ -551,6 +712,7 @@ mod tests {
                 ]
             )),
             main_moves(
+                Color::Black,
                 &r#"
 1 ７六歩(77) ( 0:16/00:00:16)
 2 ３四歩(33) ( 0:00/00:00:00)
@@ -593,6 +755,7 @@ mod tests {
                 ]
             )),
             main_moves(
+                Color::Black,
                 &r#"
 *開始局面のコメント
   1 ２六歩(27) ( 0:01/00:00:01)
@@ -644,7 +807,7 @@ mod tests {
   14 同　金(32)    (00:00 / 00:00:00)
   15 ７七銀(68)    (00:00 / 00:00:00)
 "#[1..];
-        let ret = entire_moves(input);
+        let ret = entire_moves(Color::Black, input);
         let (rest, moves) = ret.expect("failed to parse");
         assert!(rest.is_empty());
         assert_eq!(13, moves.len());
@@ -682,7 +845,7 @@ mod tests {
 変化：5
    5 投了 ( 0:00/ 0:00:00)
 "#[1..];
-        let ret = entire_moves(input);
+        let ret = entire_moves(Color::Black, input);
         let (_, moves) = ret.expect("entire_moves should not panic on malformed input");
         // 変化:2 attaches at index 2; 変化:5 is silently dropped.
         let forks = moves[2]

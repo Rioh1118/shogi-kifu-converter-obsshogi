@@ -4,16 +4,15 @@
 //! that set is the whole of the knowledge. The KIF name, the CSA `PI` spelling,
 //! the squares to clear and the board to compare against are all views of it.
 //!
-//! This used to be written out four times — in the KIF parser, the KIF writer,
-//! the CSA writer and the normalizer — and the four disagreed: five handicaps
-//! were accepted by the parser and reached `unimplemented!()` everywhere else.
-//! Keeping one table means a new entry is a compile error in each place that
-//! has to handle it, not a panic in production.
+//! One table, not one per direction. The KIF parser, the KIF writer, the CSA
+//! writer and the normalizer all need it, and four copies disagree: a name the
+//! parser accepts and a writer cannot spell is a panic in production. Here a
+//! new entry is a compile error in each place that has to handle it.
 //!
 //! Board layout and the pieces removed come from `research/40-handicap.md`
 //! (R-HC-003).
 
-use crate::jkf::{Color, Kind, Piece, Preset};
+use crate::jkf::{Color, Initial, Kind, Piece, Preset};
 use crate::normalizer::HIRATE_BOARD;
 
 /// A handicap: the name KIF gives it and what the upper hand takes off.
@@ -154,6 +153,37 @@ pub(crate) fn side_to_move(preset: Preset) -> Color {
     }
 }
 
+/// Whose turn it is at ply 1.
+///
+/// An explicit board states it; otherwise the handicap decides, and only the
+/// even game starts with Black (R-HC-001).
+pub(crate) fn starting_side(initial: Option<&Initial>) -> Color {
+    match initial {
+        None => Color::Black,
+        Some(initial) => match &initial.data {
+            Some(data) => data.color,
+            None => side_to_move(initial.preset),
+        },
+    }
+}
+
+/// Whose turn it is at `ply`, given that `start` plays ply 1.
+///
+/// The parity of the ply does not decide this on its own: the upper hand moves
+/// first in every handicap (R-HC-001), so a handicap record has White at every
+/// odd ply. Reading the side off the parity alone swaps 先手 and 後手 for the
+/// whole record.
+pub(crate) fn side_to_move_at_ply(start: Color, ply: usize) -> Color {
+    if ply % 2 == 1 {
+        start
+    } else {
+        match start {
+            Color::Black => Color::White,
+            Color::White => Color::Black,
+        }
+    }
+}
+
 /// The board `preset` starts from, or `None` for [`Preset::PresetOther`].
 pub(crate) fn board(preset: Preset) -> Option<[[Piece; 9]; 9]> {
     let handicap = lookup(preset)?;
@@ -168,10 +198,176 @@ pub(crate) fn board(preset: Preset) -> Option<[[Piece; 9]; 9]> {
 mod tests {
     use super::*;
     use crate::converter::{ToCsa, ToKi2, ToKif};
+    use crate::jkf::MoveSpecial;
     use crate::parser::parse_kif_str;
 
-    /// Every name the KIF parser accepts has to survive every write path.
-    /// Five of them used to reach `unimplemented!()` and take the process down.
+    /// One row of R-HC-003: the KIF name, the preset, and the squares cleared.
+    type SpecRow = (&'static str, Preset, &'static [(u8, u8, Kind)]);
+
+    /// `research/40-handicap.md` R-HC-003, transcribed by hand.
+    ///
+    /// The value of this is that it does not come from `HANDICAPS`. An
+    /// expectation derived from the table under test passes when a piece is
+    /// dropped from an entry, and passes when 五枚落ち and 左五枚落ち are
+    /// swapped — which is the one mistake R-HC-003 warns about by name, so it
+    /// is spelled out: `5` takes 8一桂 (the upper hand's right knight) and
+    /// `5_L` takes 2一桂 (its left).
+    ///
+    /// The order of the squares is deliberately not checked. R-HC-003 says the
+    /// order pieces are listed in is unspecified.
+    const R_HC_003: [SpecRow; 16] = [
+        ("平手", Preset::PresetHirate, &[]),
+        ("香落ち", Preset::PresetKY, &[(1, 1, Kind::KY)]),
+        ("右香落ち", Preset::PresetKYR, &[(9, 1, Kind::KY)]),
+        ("角落ち", Preset::PresetKA, &[(2, 2, Kind::KA)]),
+        ("飛車落ち", Preset::PresetHI, &[(8, 2, Kind::HI)]),
+        (
+            "飛香落ち",
+            Preset::PresetHIKY,
+            &[(8, 2, Kind::HI), (1, 1, Kind::KY)],
+        ),
+        (
+            "二枚落ち",
+            Preset::Preset2,
+            &[(8, 2, Kind::HI), (2, 2, Kind::KA)],
+        ),
+        (
+            "三枚落ち",
+            Preset::Preset3,
+            &[(8, 2, Kind::HI), (2, 2, Kind::KA), (1, 1, Kind::KY)],
+        ),
+        (
+            "四枚落ち",
+            Preset::Preset4,
+            &[
+                (8, 2, Kind::HI),
+                (2, 2, Kind::KA),
+                (9, 1, Kind::KY),
+                (1, 1, Kind::KY),
+            ],
+        ),
+        (
+            "五枚落ち",
+            Preset::Preset5,
+            &[
+                (8, 2, Kind::HI),
+                (2, 2, Kind::KA),
+                (9, 1, Kind::KY),
+                (1, 1, Kind::KY),
+                (8, 1, Kind::KE),
+            ],
+        ),
+        (
+            "左五枚落ち",
+            Preset::Preset5L,
+            &[
+                (8, 2, Kind::HI),
+                (2, 2, Kind::KA),
+                (9, 1, Kind::KY),
+                (1, 1, Kind::KY),
+                (2, 1, Kind::KE),
+            ],
+        ),
+        (
+            "六枚落ち",
+            Preset::Preset6,
+            &[
+                (8, 2, Kind::HI),
+                (2, 2, Kind::KA),
+                (9, 1, Kind::KY),
+                (1, 1, Kind::KY),
+                (8, 1, Kind::KE),
+                (2, 1, Kind::KE),
+            ],
+        ),
+        (
+            "右七枚落ち",
+            Preset::Preset7R,
+            &[
+                (8, 2, Kind::HI),
+                (2, 2, Kind::KA),
+                (9, 1, Kind::KY),
+                (1, 1, Kind::KY),
+                (8, 1, Kind::KE),
+                (2, 1, Kind::KE),
+                (7, 1, Kind::GI),
+            ],
+        ),
+        (
+            "左七枚落ち",
+            Preset::Preset7L,
+            &[
+                (8, 2, Kind::HI),
+                (2, 2, Kind::KA),
+                (9, 1, Kind::KY),
+                (1, 1, Kind::KY),
+                (8, 1, Kind::KE),
+                (2, 1, Kind::KE),
+                (3, 1, Kind::GI),
+            ],
+        ),
+        (
+            "八枚落ち",
+            Preset::Preset8,
+            &[
+                (8, 2, Kind::HI),
+                (2, 2, Kind::KA),
+                (9, 1, Kind::KY),
+                (1, 1, Kind::KY),
+                (8, 1, Kind::KE),
+                (2, 1, Kind::KE),
+                (7, 1, Kind::GI),
+                (3, 1, Kind::GI),
+            ],
+        ),
+        (
+            "十枚落ち",
+            Preset::Preset10,
+            &[
+                (8, 2, Kind::HI),
+                (2, 2, Kind::KA),
+                (9, 1, Kind::KY),
+                (1, 1, Kind::KY),
+                (8, 1, Kind::KE),
+                (2, 1, Kind::KE),
+                (7, 1, Kind::GI),
+                (3, 1, Kind::GI),
+                (6, 1, Kind::KI),
+                (4, 1, Kind::KI),
+            ],
+        ),
+    ];
+
+    #[test]
+    fn the_table_matches_the_specification() {
+        let mut seen = std::collections::BTreeSet::new();
+        for (kif_name, preset, removed) in R_HC_003 {
+            let entry = lookup(preset).unwrap_or_else(|| panic!("{kif_name} is missing"));
+            assert_eq!(kif_name, entry.kif_name, "the KIF name for {preset:?}");
+            let want: std::collections::BTreeSet<_> = removed
+                .iter()
+                .map(|&(f, r, k)| (f, r, format!("{k:?}")))
+                .collect();
+            let got: std::collections::BTreeSet<_> = entry
+                .removed
+                .iter()
+                .map(|&(f, r, k)| (f, r, format!("{k:?}")))
+                .collect();
+            assert_eq!(want.len(), removed.len(), "{kif_name} lists a square twice");
+            assert_eq!(want, got, "the pieces {kif_name} takes off");
+            seen.insert(kif_name);
+        }
+        assert_eq!(
+            seen.len(),
+            HANDICAPS.len(),
+            "R-HC-003 lists {} handicaps, the table holds {}",
+            seen.len(),
+            HANDICAPS.len()
+        );
+    }
+
+    /// Every name the KIF parser accepts has to survive every write path
+    /// (R-HC-005). A name a writer cannot spell is a panic in production.
     #[test]
     fn every_handicap_round_trips() {
         for handicap in HANDICAPS {
@@ -186,10 +382,25 @@ mod tests {
                 "reading {}",
                 handicap.kif_name
             );
-            // None of these may panic.
-            let kif = jkf.to_kif_owned();
-            let _ = jkf.to_ki2_owned();
-            let csa = jkf.to_csa_owned();
+            // R-HC-005: a name the parser accepts has to reach every writer.
+            // `let _ =` here would let KI2 start returning `Err` unnoticed, and
+            // the consumer's save path goes through KI2 (R-REQ-002).
+            let kif = jkf.try_to_kif_owned().expect("writes KIF");
+            let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
+            let csa = jkf.try_to_csa_owned().expect("writes CSA");
+            assert!(
+                handicap.preset == Preset::PresetHirate || ki2.contains(handicap.kif_name),
+                "{} missing from {ki2:?}",
+                handicap.kif_name
+            );
+            assert_eq!(
+                jkf.initial,
+                crate::parser::parse_ki2_str(&ki2)
+                    .unwrap_or_else(|e| panic!("{}: {e}", handicap.kif_name))
+                    .initial,
+                "KI2 round trip {}",
+                handicap.kif_name
+            );
 
             assert!(
                 kif.contains(handicap.kif_name),
@@ -216,6 +427,80 @@ mod tests {
                 handicap.kif_name
             );
         }
+    }
+
+    /// The `PI` block is followed by the side to move, and getting it wrong
+    /// makes every handicap start as Black's — the lower hand's first move
+    /// becomes the upper hand's, and the whole record replays as the wrong
+    /// colour. Nothing else in the suite reads this line.
+    #[test]
+    fn the_csa_preset_block_states_the_side_to_move() {
+        for handicap in HANDICAPS {
+            let src = format!(
+                "手合割：{}\n手数----指手---------消費時間--\n",
+                handicap.kif_name
+            );
+            let jkf = parse_kif_str(&src).unwrap_or_else(|e| panic!("{}: {e}", handicap.kif_name));
+            let csa = jkf.try_to_csa_owned().expect("writes CSA");
+            let want = if handicap.preset == Preset::PresetHirate {
+                "+"
+            } else {
+                "-"
+            };
+            assert!(
+                csa.lines().any(|l| l == want),
+                "{} expected a {want:?} line in {csa:?}",
+                handicap.kif_name
+            );
+        }
+    }
+
+    /// An explicit board states whose turn it is, and that beats the preset's
+    /// default. `PresetOther` falls to `side_to_move`'s `_ => White`, so a
+    /// Black-to-move tsume or study would otherwise start as White — and the one
+    /// word that reads off the side, 反則勝ち, comes back naming the wrong
+    /// player in both KIF and KI2.
+    #[test]
+    fn an_arbitrary_position_takes_its_side_to_move_from_the_board() {
+        const BOARD: &str = "後手の持駒：なし
+  ９ ８ ７ ６ ５ ４ ３ ２ １
++---------------------------+
+| ・ ・ ・ ・v玉 ・ ・ ・ ・|一
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|二
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|三
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|四
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|五
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|六
+| ・ ・ ・ 歩 ・ ・ ・ ・ ・|七
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|八
+| ・ ・ ・ ・ 玉 ・ ・ ・ ・|九
++---------------------------+
+先手の持駒：なし
+";
+        let kif = format!(
+            "手合割：その他\n{BOARD}先手番\n手数----指手---------消費時間--\n   1 ６六歩(67)\n   2 反則勝ち\n"
+        );
+        assert_eq!(
+            Some(MoveSpecial::SpecialIllegalActionBlack),
+            parse_kif_str(&kif)
+                .expect("parses KIF")
+                .moves
+                .last()
+                .and_then(|mf| mf.special),
+            "KIF"
+        );
+        // D5: only a phrase that does not name the winner falls back to the
+        // side to move, so this is the spelling that exercises it.
+        let ki2 = format!("手合割：その他\n{BOARD}先手番\n▲６六歩\nまで1手で反則勝ち\n");
+        assert_eq!(
+            Some(MoveSpecial::SpecialIllegalActionBlack),
+            crate::parser::parse_ki2_str(&ki2)
+                .expect("parses KI2")
+                .moves
+                .last()
+                .and_then(|mf| mf.special),
+            "KI2"
+        );
     }
 
     /// The upper hand moves first in every handicap (R-HC-001).

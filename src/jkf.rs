@@ -188,12 +188,13 @@ impl MoveSpecial {
     ///
     /// This and [`Self::from_kif_word`] are the only mapping between
     /// [`MoveSpecial`] and the KIF vocabulary. Every reader and writer goes
-    /// through them: a copy of this table in each direction is how the two
-    /// sides drifted apart.
+    /// through them, so that the two directions cannot disagree. The KIF
+    /// parser's `KIF_SPECIAL_WORDS` lists which of them it looks for, and a
+    /// word added here has to be added there too or it is never read.
     ///
-    /// `HIKIWAKE` maps to 持将棋 because KIF records a draw declared by
-    /// entering-king as 持将棋 (R-KIF-007). `MATTA` and `ERROR` have no KIF
-    /// word at all.
+    /// R-KIF-007 has no word for `HIKIWAKE`, `MATTA` or `ERROR`. Where they
+    /// land is D7's decision, not a rule: `HIKIWAKE` to 持将棋 so that the game
+    /// still reads as drawn, the other two to nothing.
     pub(crate) fn kif_word(self) -> Option<&'static str> {
         Some(match self {
             MoveSpecial::SpecialToryo => "投了",
@@ -242,10 +243,10 @@ impl MoveSpecial {
 
     /// The KI2 end-of-game phrase — the part after `まで<N>手で`.
     ///
-    /// KI2 has no published specification for how a game ends (R-KI2-006), so
-    /// this follows tsshogi. That is the library reading these same files on the
-    /// TypeScript side of the only consumer; spelling it differently would mean
-    /// the two disagree about a file this crate just wrote.
+    /// The spellings are D5's. R-KI2-006 is why there is a decision to make —
+    /// the published specification says nothing about how a KI2 game ends — and
+    /// D5 is where following tsshogi was chosen, because that is the library
+    /// reading these same files on the TypeScript side of the only consumer.
     ///
     /// `side_to_move` is whose turn it is at the ply the outcome occupies.
     pub(crate) fn ki2_phrase(self, side_to_move: Color) -> String {
@@ -258,9 +259,12 @@ impl MoveSpecial {
             MoveSpecial::SpecialToryo => format!("{opponent}の勝ち"),
             MoveSpecial::SpecialTimeUp => format!("時間切れにより{opponent}の勝ち"),
             MoveSpecial::SpecialKachi => format!("{mover}の入玉勝ち"),
-            MoveSpecial::SpecialIllegalActionBlack | MoveSpecial::SpecialIllegalActionWhite => {
-                format!("{mover}の反則勝ち")
-            }
+            // The phrase names the winner outright, and the variant already
+            // says who it is: `+ILLEGAL_ACTION` is a foul *by* Black, so White
+            // wins (R-CSA-007). Deriving it from the side to move instead makes
+            // the two sides swap places whenever that side is computed wrong.
+            MoveSpecial::SpecialIllegalActionBlack => "後手の反則勝ち".to_owned(),
+            MoveSpecial::SpecialIllegalActionWhite => "先手の反則勝ち".to_owned(),
             MoveSpecial::SpecialIllegalMove => format!("{mover}の反則負け"),
             _ => self.kif_word().unwrap_or("中断").to_owned(),
         }
@@ -268,14 +272,20 @@ impl MoveSpecial {
 
     /// Parses a KI2 end-of-game phrase, with `まで<N>手で` already removed.
     ///
-    /// The order of the tests matters: `時間切れにより…の勝ち` and `反則勝ち`
-    /// both end in `勝ち`, so the plain resignation case has to come last.
+    /// The order of the tests matters: `時間切れにより…の勝ち`, `反則勝ち` and
+    /// `入玉勝ち` all end in `勝ち`, so the plain resignation case comes last.
     pub(crate) fn from_ki2_phrase(phrase: &str, side_to_move: Color) -> Option<Self> {
         if phrase.starts_with("時間切れ") {
             return Some(MoveSpecial::SpecialTimeUp);
         }
         if phrase.ends_with("反則勝ち") {
-            return MoveSpecial::from_kif_word("反則勝ち", side_to_move);
+            // Unlike KIF, the KI2 phrase names the winner, so the side to move
+            // is only a fallback for a spelling that does not name one.
+            return match phrase.strip_suffix("の反則勝ち") {
+                Some("先手") => Some(MoveSpecial::SpecialIllegalActionWhite),
+                Some("後手") => Some(MoveSpecial::SpecialIllegalActionBlack),
+                _ => MoveSpecial::from_kif_word("反則勝ち", side_to_move),
+            };
         }
         if phrase.ends_with("反則負け") {
             return Some(MoveSpecial::SpecialIllegalMove);
@@ -404,6 +414,21 @@ pub struct MoveFormat {
     pub forks: Option<Vec<Vec<MoveFormat>>>,
 }
 
+impl MoveFormat {
+    /// Whether this node gets a ply number of its own.
+    ///
+    /// A move does, and so does an outcome — KIF numbers `投了` as a line like
+    /// any other, and KI2 counts it when it says `まで<N>手で`. A node carrying
+    /// only comments or only a time does not: there is nothing in the file for a
+    /// reader to number.
+    ///
+    /// Both writers and the KI2 reader have to agree on this, or a `変化：N手`
+    /// block attaches to the wrong move and the outcome names the wrong winner.
+    pub(crate) fn occupies_a_ply(&self) -> bool {
+        self.move_.is_some() || self.special.is_some()
+    }
+}
+
 /// The type translated from [`IMoveMoveFormat`](https://apps.81.la/json-kifu-format/docs/interfaces/Formats.IMoveMoveFormat.html)
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MoveMoveFormat {
@@ -453,11 +478,15 @@ pub struct Time {
 pub struct TimeFormat {
     /// 時間
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub h: Option<u8>,
+    pub h: Option<u16>,
     /// 分
-    pub m: u8,
+    ///
+    /// Wider than the 0..59 a clock shows, because a KIF states the time spent
+    /// on one move as 分:秒 with no limit on the minutes (R-KIF-008): a title
+    /// game with nine hours on the clock has moves of `256:00` and more.
+    pub m: u16,
     /// 秒
-    pub s: u8,
+    pub s: u16,
 }
 
 #[cfg(test)]

@@ -167,7 +167,10 @@ impl TryFrom<csa::MoveRecord> for MoveFormat {
             csa::Action::Move(c, from, to, pt) => Ok(MoveFormat {
                 move_: Some(MoveMoveFormat {
                     color: c.into(),
-                    from: Some(from.into()),
+                    // CSA spells a drop with `00` for the origin (R-CSA-007);
+                    // JKF says it by leaving `from` out (R-JKF-003).
+                    from: Some(PlaceFormat::from(from))
+                        .filter(|p| *p != crate::normalizer::ORIGIN_UNSTATED),
                     to: to.into(),
                     piece: pt.try_into()?,
                     same: None,
@@ -276,9 +279,12 @@ impl From<Duration> for TimeFormat {
         let m = (s / 60) % 60;
         let h = s / 3600;
         TimeFormat {
-            h: if h > 0 { Some(h as u8) } else { None },
-            m: m as u8,
-            s: (s % 60) as u8,
+            // Saturating, not wrapping. `normalizer::add_timeformat` made the
+            // same call for the running total; a time that long is broken input
+            // either way, and a wrapped one reads as a short, ordinary move.
+            h: (h > 0).then(|| h.min(u16::MAX as u64) as u16),
+            m: m as u16,
+            s: (s % 60) as u16,
         }
     }
 }

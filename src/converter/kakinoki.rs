@@ -121,7 +121,7 @@ fn write_initial_data<W: Write>(data: &StateFormat, sink: &mut W) -> Result {
     sink.write_char('\n')?;
     // Without this line a reader takes the position as Black to move, so a
     // tsume or a study starting from White fails on its very first move
-    // (R-KIF-009). Only `その他` needs it: a handicap's side to move follows
+    // (R-KIF-014). Only `その他` needs it: a handicap's side to move follows
     // from the preset (R-HC-001).
     if data.color == Color::White {
         sink.write_str("後手番\n")?;
@@ -145,7 +145,14 @@ pub(super) fn write_header<W: Write>(header: &HashMap<String, String>, sink: &mu
     for (k, v) in header {
         sink.write_str(k)?;
         sink.write_char('：')?;
-        sink.write_str(v)?;
+        // R-KIF-004: a header is one line. A value carrying a newline — JKF puts
+        // no limit on it, and the consumer builds its own headers — would end
+        // the header block early, and the reader skips what follows as a
+        // non-move line. Which header survives then depends on `HashMap`
+        // iteration order, so the same record loses a different one each save.
+        for line in v.lines() {
+            sink.write_str(line)?;
+        }
         sink.write_char('\n')?;
     }
     Ok(())
@@ -196,9 +203,96 @@ mod tests {
    1 ５三飛(52)   ( 0:00/00:00:00)
 ";
 
+    /// R-KIF-004: a header is one line. A value with a newline in it splits the
+    /// header block, and everything after the split is skipped as a non-move
+    /// line — a different header each time, because the order comes from a
+    /// `HashMap`.
+    #[test]
+    fn a_header_value_never_breaks_the_header_block() {
+        use crate::jkf::*;
+        let mut header = std::collections::HashMap::new();
+        header.insert("備考".to_owned(), "一行目\n二行目".to_owned());
+        header.insert("棋戦".to_owned(), "テスト".to_owned());
+        let jkf = JsonKifuFormat {
+            header,
+            initial: Some(Initial {
+                preset: Preset::PresetHirate,
+                data: None,
+            }),
+            moves: vec![MoveFormat::default()],
+        };
+        let kif = jkf.try_to_kif_owned().expect("writes KIF");
+        let back = parse_kif_str(&kif).expect("reads back");
+        assert_eq!(
+            Some(&"テスト".to_owned()),
+            back.header.get("棋戦"),
+            "the header after the multi-line one survives: {kif:?}"
+        );
+        assert_eq!(2, back.header.len(), "{kif:?}");
+    }
+
+    /// The other side of the same line: the counts that *are* spellable. The
+    /// rejection test alone leaves the writer free to stop writing counts
+    /// altogether — 18 pawns would be saved as `歩` and 17 of them would be gone
+    /// on the next read.
+    ///
+    /// 1 is written bare, 10 and 18 are the two-character spellings, and 2 is
+    /// the ordinary case.
+    #[test]
+    fn a_hand_is_written_with_its_count_and_reads_back() {
+        use crate::jkf::*;
+        let mut state = StateFormat {
+            color: Color::Black,
+            board: [[Piece {
+                color: None,
+                kind: None,
+            }; 9]; 9],
+            hands: [Hand::default(); 2],
+        };
+        state.board[4][8] = Piece {
+            color: Some(Color::Black),
+            kind: Some(Kind::OU),
+        };
+        state.board[4][0] = Piece {
+            color: Some(Color::White),
+            kind: Some(Kind::OU),
+        };
+        state.hands[0] = Hand {
+            FU: 18,
+            KY: 1,
+            KE: 10,
+            GI: 2,
+            KI: 0,
+            KA: 0,
+            HI: 0,
+        };
+        let jkf = JsonKifuFormat {
+            initial: Some(Initial {
+                preset: Preset::PresetOther,
+                data: Some(state),
+            }),
+            moves: vec![MoveFormat::default()],
+            ..Default::default()
+        };
+        let kif = jkf.try_to_kif_owned().expect("writes KIF");
+        let line = kif
+            .lines()
+            .find(|l| l.starts_with("先手の持駒："))
+            .unwrap_or_else(|| panic!("no hand line in {kif:?}"));
+        for want in ["歩十八", "香", "桂十", "銀二"] {
+            assert!(line.contains(want), "{want} missing from {line:?}");
+        }
+        assert!(!line.contains("香一"), "1 is written bare: {line:?}");
+        assert_eq!(
+            jkf.initial,
+            parse_kif_str(&kif).expect("reads back").initial,
+            "{kif:?}"
+        );
+    }
+
     /// Coordinates and hand counts come from the record, so they can be out of
-    /// range. Writing used to index a table with them and take the process
-    /// down; now it is an error the caller can see.
+    /// range. Spelling one is an error the caller can see, not an index into a
+    /// table that takes the process down.
     #[test]
     fn unspellable_records_are_errors() {
         use crate::jkf::*;
@@ -231,35 +325,74 @@ mod tests {
             }; 9]; 9],
             hands: [Hand::default(); 2],
         };
-        // 18 is every pawn on the board; 21 has no kanji spelling.
-        state.hands[0].FU = 21;
-        let too_many = JsonKifuFormat {
-            initial: Some(Initial {
-                preset: Preset::PresetOther,
-                data: Some(state),
-            }),
-            ..Default::default()
-        };
-        assert!(too_many.try_to_kif_owned().is_err());
+        // 18 is every pawn on the board. 19 and 20 are the values the `> 18`
+        // guard exists for: `十九` and `二十` do have kanji spellings, so
+        // dropping the guard writes `先手の持駒：歩十九`, which this crate's own
+        // parser reads back as no pieces in hand at all. 21 is caught either
+        // way, so a test that only tries 21 does not see the guard.
+        for count in [19u8, 20, 21] {
+            state.hands[0].FU = count;
+            let too_many = JsonKifuFormat {
+                initial: Some(Initial {
+                    preset: Preset::PresetOther,
+                    data: Some(state),
+                }),
+                ..Default::default()
+            };
+            assert!(
+                too_many.try_to_kif_owned().is_err(),
+                "{count} pieces in hand should not be spellable"
+            );
+        }
     }
 
     // A board without `後手番` reads back as Black to move, and the first move
-    // then fails to apply. The consumer used to patch the line in by hand after
-    // the fact, which is this crate's job (R-KIF-009).
+    // then fails to apply. Writing the line is this crate's job (D6): a
+    // consumer patching it in afterwards would write it twice.
     #[test]
     fn side_to_move_survives_a_round_trip() {
         let jkf = parse_kif_str(GOTE_TSUME).expect("parses");
         let color = jkf.initial.and_then(|i| i.data).expect("a board").color;
         assert_eq!(crate::jkf::Color::White, color);
 
-        let kif = jkf.to_kif_owned();
+        let kif = jkf.try_to_kif_owned().expect("writes KIF");
         assert!(kif.contains("後手番"), "no side to move in {kif:?}");
         let back = parse_kif_str(&kif).expect("reads back");
         assert_eq!(jkf.initial, back.initial);
 
-        let ki2 = jkf.to_ki2_owned();
+        let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
         assert!(ki2.contains("後手番"), "no side to move in {ki2:?}");
         let back = parse_ki2_str(&ki2).expect("reads back");
         assert_eq!(jkf.initial, back.initial);
+
+        // The other direction. Writing `後手番` unconditionally would pass every
+        // assertion above, and then a Black-to-move position would come back
+        // with the sides swapped — the same bug as a missing line, opened the
+        // other way round.
+        // The moves are dropped: they are White's, and they stop being legal
+        // once the board says Black. The board alone is what is under test.
+        let mut black_to_move = crate::jkf::JsonKifuFormat {
+            moves: vec![crate::jkf::MoveFormat::default()],
+            ..jkf.clone()
+        };
+        if let Some(data) = black_to_move.initial.as_mut().and_then(|i| i.data.as_mut()) {
+            data.color = crate::jkf::Color::Black;
+        }
+        let kif = black_to_move.try_to_kif_owned().expect("writes KIF");
+        let ki2 = black_to_move.try_to_ki2_owned().expect("writes KI2");
+        for text in [&kif, &ki2] {
+            assert!(
+                !text.contains("後手番"),
+                "a Black-to-move board must not say 後手番: {text:?}"
+            );
+        }
+        assert_eq!(
+            black_to_move.initial,
+            parse_kif_str(&kif).expect("reads back").initial
+        );
+        assert_eq!(
+            black_to_move.initial,
+            parse_ki2_str(&ki2).expect("reads back").initial
+        );
     }
 }

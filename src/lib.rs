@@ -16,6 +16,10 @@
 #![cfg_attr(not(test), deny(clippy::unimplemented, clippy::todo))]
 #![cfg_attr(not(test), deny(clippy::unreachable, clippy::panic))]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+// The lints above only see this crate. A default method on an external trait
+// brings its own body — and its `debug_assert!` — to every call site, where
+// they cannot reach it. `clippy.toml` names the ones that matter.
+#![deny(clippy::disallowed_methods)]
 
 pub mod converter;
 mod csa;
