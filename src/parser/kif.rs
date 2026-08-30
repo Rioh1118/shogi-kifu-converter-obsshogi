@@ -955,18 +955,29 @@ mod tests {
     }
 
     // The blank line before a `変化：` block is what ends the run, so tolerating
-    // blank lines inside a run must not swallow the block that follows one.
+    // blank lines inside a run must not swallow the block that follows one. The
+    // two readings of a blank line compete: the run skips it and carries on,
+    // and the branch reader needs it to have ended the run. What settles it is
+    // what comes after — a numbered move line continues the run, a `変化：`
+    // header does not.
     #[test]
     fn a_blank_line_still_lets_a_branch_start() {
         use crate::parser::parse_kif_str;
-        let jkf = parse_kif_str(
-            "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n   2 ３四歩(33)\n\n変化：2\n   2 ８四歩(83)\n",
-        )
-        .expect("parses");
-        assert_eq!(2, jkf.moves.len() - 1, "the main line is two moves");
-        let forks = jkf.moves[2].forks.as_ref().expect("a branch at ply 2");
-        assert_eq!(1, forks.len());
-        assert_eq!(1, forks[0].len(), "the branch holds its one move");
+        const HEAD: &str =
+            "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n   2 ３四歩(33)\n";
+        const BRANCH: &str = "\n変化：2\n   2 ８四歩(83)\n";
+
+        for (middle, main_line) in [("", 2), ("\n   3 ２六歩(27)\n", 3)] {
+            let jkf = parse_kif_str(&format!("{HEAD}{middle}{BRANCH}"))
+                .unwrap_or_else(|e| panic!("{middle:?} was rejected: {e}"));
+            assert_eq!(main_line, jkf.moves.len() - 1, "{middle:?}");
+            let forks = jkf.moves[2]
+                .forks
+                .as_ref()
+                .unwrap_or_else(|| panic!("no branch at ply 2 for {middle:?}"));
+            assert_eq!(1, forks.len(), "{middle:?}");
+            assert_eq!(1, forks[0].len(), "the branch holds its one move");
+        }
     }
 
     // A text file need not end with a newline, and kifu written by hand or by
