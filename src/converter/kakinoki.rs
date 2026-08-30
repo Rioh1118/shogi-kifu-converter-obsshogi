@@ -97,6 +97,13 @@ fn write_initial_data<W: Write>(data: &StateFormat, sink: &mut W) -> Result {
         sink.write_str("なし")?;
     }
     sink.write_char('\n')?;
+    // Without this line a reader takes the position as Black to move, so a
+    // tsume or a study starting from White fails on its very first move
+    // (R-KIF-009). Only `その他` needs it: a handicap's side to move follows
+    // from the preset (R-HC-001).
+    if data.color == Color::White {
+        sink.write_str("後手番\n")?;
+    }
     Ok(())
 }
 
@@ -146,4 +153,52 @@ pub(super) fn write_initial<W: Write>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::converter::{ToKi2, ToKif};
+    use crate::parser::{parse_ki2_str, parse_kif_str};
+
+    /// A tsume position with White to move: the lone Black king on 5i, a White
+    /// king on 5a and a White rook on 5b.
+    const GOTE_TSUME: &str = "手合割：その他
+後手の持駒：なし
+  ９ ８ ７ ６ ５ ４ ３ ２ １
++---------------------------+
+| ・ ・ ・ ・v玉 ・ ・ ・ ・|一
+| ・ ・ ・ ・v飛 ・ ・ ・ ・|二
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|三
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|四
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|五
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|六
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|七
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|八
+| ・ ・ ・ ・ 玉 ・ ・ ・ ・|九
++---------------------------+
+先手の持駒：なし
+後手番
+手数----指手---------消費時間--
+   1 ５三飛(52)   ( 0:00/00:00:00)
+";
+
+    // A board without `後手番` reads back as Black to move, and the first move
+    // then fails to apply. The consumer used to patch the line in by hand after
+    // the fact, which is this crate's job (R-KIF-009).
+    #[test]
+    fn side_to_move_survives_a_round_trip() {
+        let jkf = parse_kif_str(GOTE_TSUME).expect("parses");
+        let color = jkf.initial.and_then(|i| i.data).expect("a board").color;
+        assert_eq!(crate::jkf::Color::White, color);
+
+        let kif = jkf.to_kif_owned();
+        assert!(kif.contains("後手番"), "no side to move in {kif:?}");
+        let back = parse_kif_str(&kif).expect("reads back");
+        assert_eq!(jkf.initial, back.initial);
+
+        let ki2 = jkf.to_ki2_owned();
+        assert!(ki2.contains("後手番"), "no side to move in {ki2:?}");
+        let back = parse_ki2_str(&ki2).expect("reads back");
+        assert_eq!(jkf.initial, back.initial);
+    }
 }
