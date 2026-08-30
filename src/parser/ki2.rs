@@ -236,14 +236,21 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
     Ok((input, out))
 }
 
-pub(crate) fn parse(input: &str) -> IResult<&str, JsonKifuFormat, VerboseError<&str>> {
-    let (input, mut jkf) = parse_without_moves(input)?;
+/// Reads a record, and says whether the header block held anything.
+///
+/// A KIF whose whole content is `手合割：平手` and a file that is not a kifu at
+/// all come out as the same record: the preset defaults to 平手 and nothing
+/// else is set. Only the reader knows the difference — one consumed a line and
+/// the other did not — so it has to say so here (D1, `parse_kif_str`).
+pub(crate) fn parse(input: &str) -> IResult<&str, (JsonKifuFormat, bool), VerboseError<&str>> {
+    let (rest, mut jkf) = parse_without_moves(input)?;
+    let read_header = rest.len() < input.len();
     // The side has to come from the starting position, not the ply parity: a
     // handicap record has White at every odd ply (R-HC-001).
     let start = crate::handicap::starting_side(jkf.initial.as_ref());
-    let (input, moves) = moves(start, input)?;
+    let (input, moves) = moves(start, rest)?;
     jkf.moves.extend(moves);
-    Ok((input, jkf))
+    Ok((input, (jkf, read_header)))
 }
 
 #[cfg(test)]
@@ -418,14 +425,18 @@ mod tests {
         assert_eq!(
             Ok((
                 "",
-                JsonKifuFormat {
-                    header: HashMap::new(),
-                    initial: Some(Initial {
-                        preset: Preset::PresetHirate,
-                        data: None,
-                    }),
-                    moves: vec![MoveFormat::default()],
-                }
+                (
+                    JsonKifuFormat {
+                        header: HashMap::new(),
+                        initial: Some(Initial {
+                            preset: Preset::PresetHirate,
+                            data: None,
+                        }),
+                        moves: vec![MoveFormat::default()],
+                    },
+                    // Nothing was read, so no header line was consumed either.
+                    false
+                )
             )),
             parse("")
         );

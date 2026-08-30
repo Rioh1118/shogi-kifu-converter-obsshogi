@@ -108,16 +108,45 @@ fn stopped_at(whole: &str, rest: &str) -> String {
     )
 }
 
+/// Whether `jkf` holds nothing the reader actually recognised.
+///
+/// Leftover input is not enough on its own. A line the move list has no shape
+/// for is skipped whole, so an input made only of such lines — a CSA file
+/// renamed to `.kif`, a JSON, a mojibake decode with no newline in it — leaves
+/// nothing behind to report and comes back as an empty record.
+///
+/// That empty record is worse than an error, because the consumer picks a text
+/// encoding on this answer: obs-shogi tries encodings in turn and takes the
+/// first `Ok`, so `bug_big.kif` — which D1 means to reject at its unreadable
+/// line — instead came back as a UTF-16LE mojibake holding zero moves, and
+/// *that* won. The error D1 exists to raise never reached anyone.
+///
+/// A header-only kifu is not this: it fills in `header` or `initial`.
+fn recognised_nothing(jkf: &JsonKifuFormat, read_header: bool) -> bool {
+    !read_header
+        && jkf
+            .moves
+            .iter()
+            .all(|mf| mf.move_.is_none() && mf.special.is_none() && mf.comments.is_none())
+}
+
 /// Parses a KIF formatted string to [`jkf::JsonKifuFormat`](crate::jkf::JsonKifuFormat)
 ///
 /// # Errors
 ///
-/// This function returns [`ParseError`] if it fails to parse the string.
+/// Returns [`ParseError::Kif`] when the reader stops before the end of `s` —
+/// a numbered line whose word is not in the KIF vocabulary (R-KIF-007) is the
+/// usual cause — or when nothing in `s` was recognised as a kifu at all (D1).
+/// Returns [`ParseError::Normalize`] when a move cannot be played from the
+/// position before it.
 pub fn parse_kif_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
     match kif::parse(s).finish() {
-        Ok((rest, mut jkf)) => {
+        Ok((rest, (mut jkf, read_header))) => {
             if !rest.trim().is_empty() {
                 return Err(ParseError::Kif(stopped_at(s, rest)));
+            }
+            if !s.trim().is_empty() && recognised_nothing(&jkf, read_header) {
+                return Err(ParseError::Kif(stopped_at(s, s)));
             }
             // KIF moves carry an explicit `from`, so `relative` inference is dead work.
             // Downstream consumers (e.g. KI2 conversion) can opt-in via `populate_relative()`.
@@ -146,12 +175,18 @@ pub fn parse_ki2_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseEr
 ///
 /// # Errors
 ///
-/// This function returns [`ParseError`] if it fails to parse the string.
+/// Returns [`ParseError::Ki2`] when the reader stops before the end of `s`, or
+/// when nothing in `s` was recognised as a kifu at all (D1). Returns
+/// [`ParseError::Normalize`] when a move cannot be played from the position
+/// before it.
 pub fn parse_ki2_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
     match ki2::parse(s).finish() {
-        Ok((rest, mut jkf)) => {
+        Ok((rest, (mut jkf, read_header))) => {
             if !rest.trim().is_empty() {
                 return Err(ParseError::Ki2(stopped_at(s, rest)));
+            }
+            if !s.trim().is_empty() && recognised_nothing(&jkf, read_header) {
+                return Err(ParseError::Ki2(stopped_at(s, s)));
             }
             jkf.normalize_with_color_correction(true)?;
             Ok(jkf)
@@ -296,6 +331,49 @@ mod tests {
                 text.contains(&format!("at line {line}")),
                 "{word} should point at line {line}: {text:?}"
             );
+        }
+    }
+
+    // Leftover input is not enough on its own. A line the move list has no
+    // shape for is skipped whole, so an input made only of such lines leaves
+    // nothing behind to report and used to come back as an empty record.
+    //
+    // The consumer decides a text encoding on this answer: obs-shogi tries
+    // encodings in turn and takes the first `Ok`. `bug_big.kif` is meant to be
+    // rejected at its unreadable line (D1/D8) — instead the UTF-16LE attempt
+    // decoded it to one long line of mojibake, that came back `Ok` with zero
+    // moves, and *that* won. The error D1 exists to raise reached nobody.
+    #[test]
+    fn a_file_that_is_not_a_kifu_is_an_error_not_an_empty_record() {
+        for src in [
+            // No newline at all: one line the reader has no shape for.
+            "これは棋譜ではないただの塊",
+            "これは棋譜ではない\nただの文章だ\n",
+            // A `.kif` holding something else entirely.
+            "{\"header\":{},\"moves\":[{}]}\n",
+            "V2.2\nPI\n+\n+7776FU\n",
+        ] {
+            assert!(parse_kif_str(src).is_err(), "{src:?} came back as a record");
+            assert!(parse_ki2_str(src).is_err(), "{src:?} came back as a record");
+        }
+    }
+
+    // A record can legitimately hold no moves — a header the reader understood
+    // is enough to say the file is a kifu. `手合割：平手` and a file that is not
+    // a kifu produce the same `initial`, so only the reader can tell them
+    // apart, and it does that by whether it consumed a header line.
+    #[test]
+    fn a_kifu_with_nothing_but_a_header_is_still_a_kifu() {
+        for src in [
+            "手合割：平手\n",
+            "手合割：平手\n手数----指手---------消費時間--\n",
+            "先手：Aさん\n",
+            "*ひとこと\n",
+            "",
+            "  \n\n",
+        ] {
+            let jkf = parse_kif_str(src).unwrap_or_else(|e| panic!("{src:?}: {e}"));
+            assert_eq!(0, jkf.moves.len() - 1, "{src:?}");
         }
     }
 
