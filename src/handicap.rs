@@ -198,6 +198,7 @@ pub(crate) fn board(preset: Preset) -> Option<[[Piece; 9]; 9]> {
 mod tests {
     use super::*;
     use crate::converter::{ToCsa, ToKi2, ToKif};
+    use crate::jkf::MoveSpecial;
     use crate::parser::parse_kif_str;
 
     /// One row of R-HC-003: the KIF name, the preset, and the squares cleared.
@@ -437,6 +438,54 @@ mod tests {
                 handicap.kif_name
             );
         }
+    }
+
+    /// An explicit board states whose turn it is, and that beats the preset's
+    /// default. `PresetOther` falls to `side_to_move`'s `_ => White`, so a
+    /// Black-to-move tsume or study would otherwise start as White — and the one
+    /// word that reads off the side, 反則勝ち, comes back naming the wrong
+    /// player in both KIF and KI2.
+    #[test]
+    fn an_arbitrary_position_takes_its_side_to_move_from_the_board() {
+        const BOARD: &str = "後手の持駒：なし
+  ９ ８ ７ ６ ５ ４ ３ ２ １
++---------------------------+
+| ・ ・ ・ ・v玉 ・ ・ ・ ・|一
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|二
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|三
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|四
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|五
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|六
+| ・ ・ ・ 歩 ・ ・ ・ ・ ・|七
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|八
+| ・ ・ ・ ・ 玉 ・ ・ ・ ・|九
++---------------------------+
+先手の持駒：なし
+";
+        let kif = format!(
+            "手合割：その他\n{BOARD}先手番\n手数----指手---------消費時間--\n   1 ６六歩(67)\n   2 反則勝ち\n"
+        );
+        assert_eq!(
+            Some(MoveSpecial::SpecialIllegalActionBlack),
+            parse_kif_str(&kif)
+                .expect("parses KIF")
+                .moves
+                .last()
+                .and_then(|mf| mf.special),
+            "KIF"
+        );
+        // D5: only a phrase that does not name the winner falls back to the
+        // side to move, so this is the spelling that exercises it.
+        let ki2 = format!("手合割：その他\n{BOARD}先手番\n▲６六歩\nまで1手で反則勝ち\n");
+        assert_eq!(
+            Some(MoveSpecial::SpecialIllegalActionBlack),
+            crate::parser::parse_ki2_str(&ki2)
+                .expect("parses KI2")
+                .moves
+                .last()
+                .and_then(|mf| mf.special),
+            "KI2"
+        );
     }
 
     /// The upper hand moves first in every handicap (R-HC-001).

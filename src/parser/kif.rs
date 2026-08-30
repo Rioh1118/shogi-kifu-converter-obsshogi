@@ -269,6 +269,54 @@ pub(crate) fn parse(input: &str) -> IResult<&str, JsonKifuFormat, VerboseError<&
 mod tests {
     use super::*;
 
+    // R-KIF-007: KIF's 反則勝ち says the move *before* it was the foul, so the
+    // word alone does not name the offender — whose turn it is does. The upper
+    // hand moves first in every handicap (R-HC-001), so reading the side off the
+    // ply parity records the wrong player as the one who fouled.
+    //
+    // This is the only thing the parser's own side-to-move decides: every move's
+    // colour is overwritten later from the position, so nothing else here fails
+    // when it is wrong.
+    #[test]
+    fn a_handicap_names_the_right_side_at_a_foul_win() {
+        use crate::converter::ToCsa;
+        for (handicap, first_move, want) in [
+            ("平手", "７六歩(77)", MoveSpecial::SpecialIllegalActionBlack),
+            (
+                "香落ち",
+                "３四歩(33)",
+                MoveSpecial::SpecialIllegalActionWhite,
+            ),
+            (
+                "四枚落ち",
+                "３四歩(33)",
+                MoveSpecial::SpecialIllegalActionWhite,
+            ),
+        ] {
+            let kif = format!(
+                "手合割：{handicap}\n手数----指手---------消費時間--\n   1 {first_move}\n   2 反則勝ち\n"
+            );
+            let jkf =
+                crate::parser::parse_kif_str(&kif).unwrap_or_else(|e| panic!("{handicap}: {e}"));
+            assert_eq!(
+                Some(want),
+                jkf.moves.last().and_then(|mf| mf.special),
+                "reading {handicap}"
+            );
+            // R-CSA-007 spells the offender out, so the direction is visible.
+            let csa = jkf.try_to_csa_owned().expect("writes CSA");
+            let sign = if want == MoveSpecial::SpecialIllegalActionBlack {
+                "+"
+            } else {
+                "-"
+            };
+            assert!(
+                csa.lines().any(|l| l == format!("%{sign}ILLEGAL_ACTION")),
+                "{handicap} wrote {csa:?}"
+            );
+        }
+    }
+
     // R-KIF-007. Every word KIF defines for an outcome, and what it means here.
     // 不戦勝 / 不戦敗 are the two the JKF vocabulary cannot express.
     #[test]

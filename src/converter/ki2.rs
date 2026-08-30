@@ -540,6 +540,69 @@ mod tests {
         }
     }
 
+    // The KIF writer has the same rule and `a_comment_only_node_does_not_consume
+    // _a_ply` covers it there. KI2 needs its own: it carries no move numbers, so
+    // a `まで<N>手` that counted a comment node is a number nothing downstream
+    // can check, and every `変化：N手` after it attaches one move too late.
+    #[test]
+    fn a_comment_only_node_does_not_consume_a_ply() {
+        let jkf = JsonKifuFormat {
+            initial: Some(Initial {
+                preset: Preset::PresetHirate,
+                data: None,
+            }),
+            moves: vec![
+                MoveFormat::default(),
+                black_pawn_7g7f(),
+                MoveFormat {
+                    comments: Some(vec!["ここで長考".to_owned()]),
+                    ..Default::default()
+                },
+                MoveFormat {
+                    forks: Some(vec![vec![MoveFormat {
+                        move_: Some(MoveMoveFormat {
+                            color: Color::White,
+                            from: Some(PlaceFormat { x: 8, y: 3 }),
+                            to: PlaceFormat { x: 8, y: 4 },
+                            piece: Kind::FU,
+                            same: None,
+                            promote: None,
+                            capture: None,
+                            relative: None,
+                        }),
+                        ..Default::default()
+                    }]]),
+                    ..white_pawn_3c3d()
+                },
+                MoveFormat {
+                    special: Some(MoveSpecial::SpecialToryo),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
+        // Two moves precede the resignation, and White made the last of them.
+        assert!(ki2.contains("まで2手で後手の勝ち"), "{ki2:?}");
+        assert!(ki2.contains("変化：2手"), "{ki2:?}");
+        // KI2 has no node boundaries, so the comment comes back attached to the
+        // move before it rather than on a node of its own. What must survive is
+        // the text and where the branch hangs.
+        let back = crate::parser::parse_ki2_str(&ki2).expect("reads back");
+        assert_eq!(
+            "1:76 2:34[2:84] 3:Some(SpecialToryo)",
+            shape(&back.moves[1..], 1),
+            "{ki2:?}"
+        );
+        assert!(
+            back.moves
+                .iter()
+                .any(|mf| mf.comments.as_ref() == Some(&vec!["ここで長考".to_owned()])),
+            "the comment survives: {:?}",
+            back.moves
+        );
+    }
+
     // A branch inside a branch leaves a line the main line never visits, so the
     // position it departs from cannot be recovered by replaying the main line.
     // Spelling it against the main line drops the suffix the reader needs
