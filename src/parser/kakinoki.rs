@@ -1,7 +1,7 @@
 use crate::jkf::*;
 use nom::branch::alt;
 use nom::bytes::complete::{is_not, tag};
-use nom::character::complete::{line_ending, none_of, not_line_ending, one_of};
+use nom::character::complete::{line_ending, none_of, not_line_ending, one_of, space0};
 use nom::combinator::{eof, map, map_res, opt, value};
 use nom::error::{ErrorKind, ParseError, VerboseError};
 use nom::multi::{count, many0, many1};
@@ -66,6 +66,19 @@ pub(super) fn end_of_line(input: &str) -> IResult<&str, &str, VerboseError<&str>
     alt((line_ending, eof))(input)
 }
 
+/// A line with nothing on it but spaces.
+///
+/// KIF puts one before each `変化：` block, and R-KIF-002 lets one sit anywhere
+/// in the move list.
+pub(super) fn blank_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
+    terminated(space0, line_ending)(input)
+}
+
+/// A `#` line: a note from the program that wrote the file (R-KIF-002).
+pub(super) fn program_comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
+    comment_line(input)
+}
+
 fn comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
     map(
         delimited(tag("#"), not_line_ending, end_of_line),
@@ -73,8 +86,14 @@ fn comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
     )(input)
 }
 
+/// A line that is none of the shapes the move list is made of, skipped whole.
+///
+/// The excluded set has to include the line endings themselves. Without them
+/// the parser starts on the newline of a *blank* line, takes the line after it
+/// as this line's content, and swallows two lines where one was meant — so a
+/// blank line in the middle of a record destroys the move that follows it.
 pub(super) fn not_move_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
-    delimited(none_of(" 0123456789*▲△"), not_line_ending, end_of_line)(input)
+    delimited(none_of(" \r\n0123456789*▲△"), not_line_ending, end_of_line)(input)
 }
 
 pub(super) fn move_comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
@@ -445,6 +464,24 @@ mod tests {
         let merged =
             InformationData::merged_hands([half, Hand::default()], [half, Hand::default()]);
         assert_eq!(u8::MAX, merged[0].FU);
+    }
+
+    // A line the move list has no shape for is skipped whole — one line, not
+    // two. The parser is anchored on the line's first character, and a newline
+    // must not be allowed to be it: starting on the newline of a *blank* line
+    // takes the line after it as this line's content, so a blank line in the
+    // middle of a record destroys the move that follows it (R-KIF-002).
+    //
+    // `skippable_line` tries `blank_line` first, which hides this. The guard is
+    // what keeps the two orderings from meaning different things.
+    #[test]
+    fn a_skipped_line_never_swallows_the_line_after_it() {
+        assert_eq!(
+            Ok(("   2 ３四歩(33)\n", "化：2")),
+            not_move_line("変化：2\n   2 ３四歩(33)\n")
+        );
+        assert!(not_move_line("\n   2 ３四歩(33)\n").is_err());
+        assert!(not_move_line("\r\n   2 ３四歩(33)\n").is_err());
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use super::kakinoki::{
-    end_of_line, move_comment_line, move_to, not_move_line, parse_without_moves, piece_kind,
+    blank_line, end_of_line, move_comment_line, move_to, not_move_line, parse_without_moves,
+    piece_kind, program_comment_line,
 };
 use crate::jkf::*;
 use nom::branch::alt;
@@ -73,6 +74,12 @@ fn move_special(
             nom::error::ErrorKind::Alt,
         )))
     }
+}
+
+/// A line between the runs of moves: blank, or one the move list has no shape
+/// for — `変化：<N>手`, `まで<N>手で<結末>`, the `手数----指手---` rule.
+fn skippable_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
+    alt((blank_line, not_move_line))(input)
 }
 
 fn move_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
@@ -207,20 +214,34 @@ fn moves_with_index(
     );
     let mut out = vec![first];
     loop {
+        // R-KIF-002: a blank line and a `#` line may sit anywhere in the move
+        // list. Ending the run on one leaves every move after it to be read as
+        // a branch of a ply that does not exist, and dropped (GAP-008).
+        //
+        // Only these two. A line the format has no meaning for still ends the
+        // run, and the leftover-input check then reports it (D1) rather than
+        // guessing what it was.
+        let (skipped, _) = many0(alt((
+            blank_line,
+            nom::combinator::recognize(program_comment_line),
+        )))(input)?;
         // `many1` stops on `Error` and throws anything else back. Swallowing a
         // `Failure` here would drop the rest of the record without a word,
         // which is the failure this branch exists to remove.
-        match move_with_comments(start, Some(side), input) {
+        match move_with_comments(start, Some(side), skipped) {
             Ok((rest, (_, mf))) => {
                 side = next_side(&mf, side);
                 out.push(mf);
                 input = rest;
             }
+            // `input` stays before the skipped lines: what ends a run is
+            // usually the blank line before a `変化：` block, and the caller
+            // needs to see it.
             Err(nom::Err::Error(_)) => break,
             Err(err) => return Err(err),
         }
     }
-    let (input, _) = opt(not_move_line)(input)?;
+    let (input, _) = opt(skippable_line)(input)?;
     Ok((input, (first_ply, out)))
 }
 
@@ -278,11 +299,11 @@ fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Ver
         moves
     }
 
-    let (input, _) = many0(not_move_line)(input)?;
+    let (input, _) = many0(skippable_line)(input)?;
     let (mut input, main) = main_moves(start, input)?;
     let mut forks = Vec::new();
     loop {
-        let (rest, _) = many0(not_move_line)(input)?;
+        let (rest, _) = many0(skippable_line)(input)?;
         match moves_with_index(start, rest) {
             Ok((after_run, run)) => {
                 forks.push(run);
@@ -864,6 +885,41 @@ mod tests {
             .expect("変化:2 should attach at index 2");
         assert_eq!(1, forks.len());
         assert_eq!(1, forks[0].len(), "the inner 変化:5 must NOT be merged in");
+    }
+
+    // R-KIF-002: a blank line and a `#` line may sit anywhere in the move list.
+    // Ending the run of moves on one left every move after it to be read as a
+    // branch of a ply that is not there, and dropped — the record came back
+    // with one move and `Ok` (GAP-008). tsshogi reads all three.
+    //
+    // The blank line is the harder of the two: `not_move_line` used to start on
+    // the newline itself and take the line after it as its content, so the move
+    // following a blank line was eaten whole.
+    #[test]
+    fn a_blank_or_program_comment_line_does_not_end_the_move_list() {
+        use crate::parser::parse_kif_str;
+        const HEAD: &str = "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n";
+        const TAIL: &str = "   2 ３四歩(33)\n   3 ２六歩(27)\n";
+        for middle in ["", "\n", "# メモ\n", "\n# メモ\n\n", "   \n"] {
+            let jkf = parse_kif_str(&format!("{HEAD}{middle}{TAIL}"))
+                .unwrap_or_else(|e| panic!("{middle:?} was rejected: {e}"));
+            assert_eq!(3, jkf.moves.len() - 1, "{middle:?}");
+        }
+    }
+
+    // The blank line before a `変化：` block is what ends the run, so tolerating
+    // blank lines inside a run must not swallow the block that follows one.
+    #[test]
+    fn a_blank_line_still_lets_a_branch_start() {
+        use crate::parser::parse_kif_str;
+        let jkf = parse_kif_str(
+            "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n   2 ３四歩(33)\n\n変化：2\n   2 ８四歩(83)\n",
+        )
+        .expect("parses");
+        assert_eq!(2, jkf.moves.len() - 1, "the main line is two moves");
+        let forks = jkf.moves[2].forks.as_ref().expect("a branch at ply 2");
+        assert_eq!(1, forks.len());
+        assert_eq!(1, forks[0].len(), "the branch holds its one move");
     }
 
     // A text file need not end with a newline, and kifu written by hand or by
