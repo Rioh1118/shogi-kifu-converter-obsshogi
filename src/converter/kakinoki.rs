@@ -1,9 +1,7 @@
 use crate::jkf::*;
+use crate::notation::{board_word, KANSUJI, SANYOU_SUJI};
 use std::collections::HashMap;
 use std::fmt::{Result, Write};
-
-const SANYOU_SUJI: [char; 9] = ['１', '２', '３', '４', '５', '６', '７', '８', '９'];
-const KANSUJI: [char; 10] = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
 
 /// Writes a file as a full-width digit.
 ///
@@ -42,22 +40,7 @@ pub(super) fn write_kansuji<W: Write>(mut num: u8, sink: &mut W) -> Result {
 }
 
 fn write_board_kind<W: Write>(kind: Kind, sink: &mut W) -> Result {
-    match kind {
-        Kind::FU => sink.write_char('歩')?,
-        Kind::KY => sink.write_char('香')?,
-        Kind::KE => sink.write_char('桂')?,
-        Kind::GI => sink.write_char('銀')?,
-        Kind::KI => sink.write_char('金')?,
-        Kind::KA => sink.write_char('角')?,
-        Kind::HI => sink.write_char('飛')?,
-        Kind::OU => sink.write_char('玉')?,
-        Kind::TO => sink.write_char('と')?,
-        Kind::NY => sink.write_char('杏')?,
-        Kind::NK => sink.write_char('圭')?,
-        Kind::NG => sink.write_char('全')?,
-        Kind::UM => sink.write_char('馬')?,
-        Kind::RY => sink.write_char('龍')?,
-    }
+    sink.write_char(board_word(kind))?;
     Ok(())
 }
 

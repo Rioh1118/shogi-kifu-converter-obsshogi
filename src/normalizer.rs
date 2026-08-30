@@ -1,5 +1,6 @@
 use crate::error::{ConvertError, NormalizeError};
 use crate::jkf::*;
+use crate::notation::pk2k;
 use shogi_core::PartialPosition;
 use shogi_legality_lite::prelegality::is_valid;
 
@@ -156,25 +157,6 @@ fn add_timeformat(lhs: &TimeFormat, rhs: &TimeFormat) -> TimeFormat {
         h: Some((total / 3600).min(u16::MAX as u64) as u16),
         m: ((total / 60) % 60) as u16,
         s: (total % 60) as u16,
-    }
-}
-
-fn pk2k(pk: shogi_core::PieceKind) -> Kind {
-    match pk {
-        shogi_core::PieceKind::Pawn => Kind::FU,
-        shogi_core::PieceKind::Lance => Kind::KY,
-        shogi_core::PieceKind::Knight => Kind::KE,
-        shogi_core::PieceKind::Silver => Kind::GI,
-        shogi_core::PieceKind::Gold => Kind::KI,
-        shogi_core::PieceKind::Bishop => Kind::KA,
-        shogi_core::PieceKind::Rook => Kind::HI,
-        shogi_core::PieceKind::King => Kind::OU,
-        shogi_core::PieceKind::ProPawn => Kind::TO,
-        shogi_core::PieceKind::ProLance => Kind::NY,
-        shogi_core::PieceKind::ProKnight => Kind::NK,
-        shogi_core::PieceKind::ProSilver => Kind::NG,
-        shogi_core::PieceKind::ProBishop => Kind::UM,
-        shogi_core::PieceKind::ProRook => Kind::RY,
     }
 }
 
