@@ -244,11 +244,10 @@ mod tests {
         }
     }
 
-    // A `まで…` line whose phrase is not in the vocabulary used to be left
-    // unconsumed, which ended the move list and threw away every `変化：` block
-    // after it while still returning `Ok`. The outcome word is the one thing a
-    // reader cannot recover from the rest of the file, so a record that says
-    // something we do not understand has to be reported (D1).
+    // Leaving a `まで…` line unconsumed ends the move list and throws away
+    // every `変化：` block after it while still returning `Ok`. The outcome word
+    // is the one thing a reader cannot recover from the rest of the file, so a
+    // record that says something we do not understand has to be reported (D1).
     #[test]
     fn an_unreadable_outcome_line_is_an_error_not_a_silent_truncation() {
         for phrase in ["持将棋成立", "先手の不戦敗", "中座", "引き分け"] {

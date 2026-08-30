@@ -4,11 +4,10 @@
 //! that set is the whole of the knowledge. The KIF name, the CSA `PI` spelling,
 //! the squares to clear and the board to compare against are all views of it.
 //!
-//! This used to be written out four times — in the KIF parser, the KIF writer,
-//! the CSA writer and the normalizer — and the four disagreed: five handicaps
-//! were accepted by the parser and reached `unimplemented!()` everywhere else.
-//! Keeping one table means a new entry is a compile error in each place that
-//! has to handle it, not a panic in production.
+//! One table, not one per direction. The KIF parser, the KIF writer, the CSA
+//! writer and the normalizer all need it, and four copies disagree: a name the
+//! parser accepts and a writer cannot spell is a panic in production. Here a
+//! new entry is a compile error in each place that has to handle it.
 //!
 //! Board layout and the pieces removed come from `research/40-handicap.md`
 //! (R-HC-003).
@@ -366,8 +365,8 @@ mod tests {
         );
     }
 
-    /// Every name the KIF parser accepts has to survive every write path.
-    /// Five of them used to reach `unimplemented!()` and take the process down.
+    /// Every name the KIF parser accepts has to survive every write path
+    /// (R-HC-005). A name a writer cannot spell is a panic in production.
     #[test]
     fn every_handicap_round_trips() {
         for handicap in HANDICAPS {

@@ -180,6 +180,11 @@ fn write_initial<W: Write>(initial: &Option<Initial>, sink: &mut W) -> Result {
 
 fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
     for mf in moves {
+        // A node with neither a move nor an outcome carries only comments,
+        // which JKF allows. It gets no move line, and therefore no `T` line
+        // either: a reader takes `T` as the time spent on the move above it
+        // (R-CSA-007), so writing one here overwrites the previous move's time.
+        let has_line = mf.move_.is_some() || mf.special.is_some();
         if let Some(mv) = mf.move_ {
             write_color(mv.color, sink)?;
             write_place(&mv.from, sink)?;
@@ -196,10 +201,7 @@ fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
             sink.write_str(special.csa_word())?;
             sink.write_str("\n")?;
         }
-        // A node with neither a move nor an outcome carries only comments,
-        // which JKF allows. Nothing goes on the move line, but the comments
-        // still do.
-        if let Some(time) = &mf.time {
+        if let Some(time) = mf.time.filter(|_| has_line) {
             let sec = time.now.h.unwrap_or_default() as u64 * 3600
                 + time.now.m as u64 * 60
                 + time.now.s as u64;

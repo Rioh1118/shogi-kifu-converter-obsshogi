@@ -192,8 +192,8 @@ fn write_line<'a, W: Write>(
             at_line_start = false;
         } else if let Some(special) = &mf.special {
             // KI2 records the outcome as a `まで<N>手で…` line rather than as
-            // another move. Dropping it is how a saved game came back looking
-            // like it had been abandoned.
+            // another move. Dropping it makes a finished game look abandoned,
+            // and KI2 has no ply numbers, so nothing downstream can tell.
             if !at_line_start {
                 sink.write_char('\n')?;
             }
@@ -357,7 +357,7 @@ mod tests {
     // KI2 records the outcome as a `まで<N>手で…` line. Writing the moves and
     // dropping that line makes a finished game look abandoned, and KI2 carries
     // no ply numbers, so nothing downstream can tell that something went
-    // missing. The spellings follow tsshogi (R-KI2-006).
+    // missing. The spellings and the `まで<N>手で` wrapper are D5's.
     #[test]
     fn outcome_survives_a_ki2_round_trip() {
         for (word, want, phrase) in [
@@ -409,9 +409,9 @@ mod tests {
         }
     }
 
-    // Branches used to be dropped entirely: saving a study as `.ki2` kept the
-    // main line and threw the rest away, with no error. The block order matters
-    // as much as the blocks — a reader has only the ply number to work from.
+    // Every branch has to reach the file: saving a study as `.ki2` with only
+    // the main line loses the rest with no error. The block order matters as
+    // much as the blocks — a reader has only the ply number to work from.
     #[test]
     fn branches_survive_a_ki2_round_trip() {
         // Two branches leaving ply 2 and one leaving ply 3, so both the sibling
@@ -579,8 +579,7 @@ mod tests {
     }
 
     // A record with no header, no starting position and no moves writes
-    // nothing. It used to write a lone newline, which was the move run's line
-    // terminator being emitted for a run that never opened a line.
+    // nothing at all: a move run that never opened a line has none to end.
     #[test]
     fn to_ki2_default() {
         assert_eq!(

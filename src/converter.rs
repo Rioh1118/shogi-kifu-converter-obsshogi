@@ -94,6 +94,51 @@ mod tests {
         }
     }
 
+    /// CSA reads `T<sec>` as the time spent on the move above it (R-CSA-007),
+    /// so a node that writes no move line must not write one either — the time
+    /// would silently replace the previous move's.
+    #[test]
+    fn a_node_without_a_move_line_writes_no_time_line() {
+        use crate::jkf::{Color, Kind, MoveMoveFormat, PlaceFormat, Time, TimeFormat};
+        let ticks = |s: u8| Time {
+            now: TimeFormat { h: None, m: 0, s },
+            total: TimeFormat { h: None, m: 0, s },
+        };
+        let jkf = JsonKifuFormat {
+            moves: vec![
+                MoveFormat::default(),
+                MoveFormat {
+                    move_: Some(MoveMoveFormat {
+                        color: Color::Black,
+                        from: Some(PlaceFormat { x: 7, y: 7 }),
+                        to: PlaceFormat { x: 7, y: 6 },
+                        piece: Kind::FU,
+                        same: None,
+                        promote: None,
+                        capture: None,
+                        relative: None,
+                    }),
+                    time: Some(ticks(30)),
+                    ..Default::default()
+                },
+                MoveFormat {
+                    comments: Some(vec!["memo".to_owned()]),
+                    time: Some(ticks(99)),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let csa = jkf.try_to_csa_owned().expect("writes CSA");
+        assert_eq!(
+            vec!["T30"],
+            csa.lines()
+                .filter(|l| l.starts_with('T'))
+                .collect::<Vec<_>>(),
+            "only the move gets a time line: {csa:?}"
+        );
+    }
+
     /// One row of the outcome vocabulary. A struct rather than a tuple because
     /// six of the seven fields are the same two types and a swapped pair would
     /// still compile.
@@ -115,8 +160,8 @@ mod tests {
     /// here was read off a run of the code**; where the three formats lose
     /// information the row says so, because the difference between a known
     /// limit of a format and a writer quietly changing what a record says is
-    /// the whole point. Before this test existed, pinning `to_kif` to `中断` for
-    /// every outcome passed, and so did pinning `to_csa` to `%CHUDAN`.
+    /// the whole point. Pinning `to_kif` to `中断` for every outcome has to fail
+    /// here, and so does pinning `to_csa` to `%CHUDAN`.
     #[test]
     fn every_outcome_has_the_word_each_format_writes() {
         use crate::jkf::MoveSpecial::*;

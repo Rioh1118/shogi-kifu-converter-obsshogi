@@ -188,8 +188,9 @@ impl MoveSpecial {
     ///
     /// This and [`Self::from_kif_word`] are the only mapping between
     /// [`MoveSpecial`] and the KIF vocabulary. Every reader and writer goes
-    /// through them: a copy of this table in each direction is how the two
-    /// sides drifted apart.
+    /// through them, so that the two directions cannot disagree. The KIF
+    /// parser's `KIF_SPECIAL_WORDS` lists which of them it looks for, and a
+    /// word added here has to be added there too or it is never read.
     ///
     /// `HIKIWAKE` maps to 持将棋 because KIF records a draw declared by
     /// entering-king as 持将棋 (R-KIF-007). `MATTA` and `ERROR` have no KIF

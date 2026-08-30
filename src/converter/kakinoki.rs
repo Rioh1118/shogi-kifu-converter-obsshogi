@@ -121,7 +121,7 @@ fn write_initial_data<W: Write>(data: &StateFormat, sink: &mut W) -> Result {
     sink.write_char('\n')?;
     // Without this line a reader takes the position as Black to move, so a
     // tsume or a study starting from White fails on its very first move
-    // (R-KIF-009). Only `その他` needs it: a handicap's side to move follows
+    // (R-KIF-014). Only `その他` needs it: a handicap's side to move follows
     // from the preset (R-HC-001).
     if data.color == Color::White {
         sink.write_str("後手番\n")?;
@@ -197,8 +197,8 @@ mod tests {
 ";
 
     /// Coordinates and hand counts come from the record, so they can be out of
-    /// range. Writing used to index a table with them and take the process
-    /// down; now it is an error the caller can see.
+    /// range. Spelling one is an error the caller can see, not an index into a
+    /// table that takes the process down.
     #[test]
     fn unspellable_records_are_errors() {
         use crate::jkf::*;
@@ -253,8 +253,8 @@ mod tests {
     }
 
     // A board without `後手番` reads back as Black to move, and the first move
-    // then fails to apply. The consumer used to patch the line in by hand after
-    // the fact, which is this crate's job (R-KIF-009).
+    // then fails to apply. Writing the line is this crate's job (D6): a
+    // consumer patching it in afterwards would write it twice.
     #[test]
     fn side_to_move_survives_a_round_trip() {
         let jkf = parse_kif_str(GOTE_TSUME).expect("parses");

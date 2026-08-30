@@ -101,7 +101,9 @@ impl Hand {
     }
     /// The slot for `kind`, or `None` for a king or a promoted piece.
     ///
-    /// Neither can sit in hand (R-CSA-006), but a broken CSA can say they do,
+    /// A king never goes to the hand (R-CSA-006), and a promoted piece is
+    /// turned back over when captured, so neither can sit in one. A broken CSA
+    /// can still say they do,
     /// and that has to come back as an error rather than take the process down.
     fn slot(&mut self, kind: Kind) -> Option<&mut u8> {
         Some(match kind {
@@ -227,11 +229,6 @@ impl JsonKifuFormat {
     ///
     /// Returns [`NormalizeError`] if a move cannot be resolved against the
     /// position it is played from.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `moves` is empty. Index 0 is reserved for the initial
-    /// position's comments, so a well-formed value always has one element.
     pub fn normalize_with_color_correction(
         &mut self,
         correct_color: bool,
@@ -256,11 +253,6 @@ impl JsonKifuFormat {
     ///
     /// Returns [`NormalizeError`] if a move cannot be resolved against the
     /// position it is played from.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `moves` is empty. Index 0 is reserved for the initial
-    /// position's comments, so a well-formed value always has one element.
     pub fn normalize(&mut self) -> Result<(), NormalizeError> {
         self.normalize_with_options(false, true)
     }
