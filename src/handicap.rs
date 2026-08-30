@@ -432,7 +432,7 @@ mod tests {
     /// The `PI` block is followed by the side to move, and getting it wrong
     /// makes every handicap start as Black's — the lower hand's first move
     /// becomes the upper hand's, and the whole record replays as the wrong
-    /// colour. Writing `+` unconditionally passed every other test.
+    /// colour. Nothing else in the suite reads this line.
     #[test]
     fn the_csa_preset_block_states_the_side_to_move() {
         for handicap in HANDICAPS {

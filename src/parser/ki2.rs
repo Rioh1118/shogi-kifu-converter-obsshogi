@@ -135,9 +135,10 @@ fn move_run(
     move |mut input| {
         let mut out = Vec::new();
         loop {
-            // R-KI2-002: blank lines sit between runs of moves and a line can
-            // start with a space — the spelling in the specification's own
-            // example. Stopping at one drops the rest of the file.
+            // R-KI2-002: blank lines sit between runs of moves — the
+            // specification's own example is written that way. R-KI2-001: KI2 is
+            // "a game record people can read", pasted as-is, so a run can also
+            // arrive indented. Stopping at either drops the rest of the file.
             let (rest, _) = many0(alt((line_ending, tag(" "), tag("　"))))(input)?;
             // A comment before any move of a run belongs to a node of its own:
             // that is what `write_line` produces for a JKF node carrying only
@@ -151,7 +152,11 @@ fn move_run(
             let (rest, v) = many0(single_move)(rest)?;
             let read_moves = !v.is_empty();
             out.extend(v);
-            let (rest, end) = opt(end_of_game_line(start, first_ply + out.len()))(rest)?;
+            // The ply an outcome line names counts moves and outcomes, not
+            // nodes: a comment-only node writes no line for anyone to number.
+            // The writers count the same way (`MoveFormat::occupies_a_ply`).
+            let numbered = out.iter().filter(|mf| mf.occupies_a_ply()).count();
+            let (rest, end) = opt(end_of_game_line(start, first_ply + numbered))(rest)?;
             let read_end = end.is_some();
             out.extend(end);
             input = rest;
@@ -290,6 +295,20 @@ mod tests {
             .filter(|mf| mf.move_.is_some())
             .count();
         assert_eq!(12, moves, "read {moves} of 12: {:?}", jkf.moves);
+    }
+
+    // R-KI2-001: KI2 is "a game record people can read", and the specification
+    // says a run of moves pasted out of one is readable too. Pasted text arrives
+    // indented, and stopping at the indent drops every move after it.
+    #[test]
+    fn an_indented_run_of_moves_is_read() {
+        let ki2 = "▲７六歩 △３四歩\n  ▲２六歩 △８四歩\n";
+        let jkf = crate::parser::parse_ki2_str(ki2).expect("parses");
+        let moves = jkf.moves[1..]
+            .iter()
+            .filter(|mf| mf.move_.is_some())
+            .count();
+        assert_eq!(4, moves, "read {moves} of 4: {:?}", jkf.moves);
     }
 
     // A comment can open a `変化：` block — that is what this crate's own writer

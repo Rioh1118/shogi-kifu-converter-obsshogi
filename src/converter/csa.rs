@@ -75,8 +75,14 @@ fn write_kind<W: Write>(kind: Kind, sink: &mut W) -> Result {
     Ok(())
 }
 
+/// Writes a square, or `00` for the hand a drop comes from (R-CSA-007).
+///
+/// A `Some` that is not a square on the board would be spelled `00` by the same
+/// digits and read back as a drop, turning a move into one — so it is an error,
+/// not a coordinate.
 fn write_place<W: Write>(place: &Option<PlaceFormat>, sink: &mut W) -> Result {
     if let Some(p) = place {
+        shogi_core::Square::try_from(p).map_err(|_| std::fmt::Error)?;
         sink.write_fmt(format_args!("{}{}", p.x, p.y))?;
     } else {
         sink.write_str("00")?;
@@ -102,9 +108,6 @@ fn write_header<W: Write>(header: &HashMap<String, String>, sink: &mut W) -> Res
     if let Some(s) = header.get("場所") {
         sink.write_fmt(format_args!("$SITE:{}\n", s))?;
     }
-    // TODO: 開始日時
-    // TODO: 終了日時
-    // TODO: 持ち時間
     if let Some(s) = header.get("戦型") {
         sink.write_fmt(format_args!("$OPENING:{}\n", s))?;
     }
@@ -129,7 +132,9 @@ fn write_initial_data<W: Write>(data: &StateFormat, sink: &mut W) -> Result {
         if hand == &Hand::default() {
             continue;
         }
-        // TODO: AL?
+        // R-CSA-006: `AL` gives the rest of the pieces to one side in a single
+        // line. It is read but never written — spelling every piece out is
+        // always valid and does not depend on what "the rest" means here.
         if i == 0 {
             sink.write_str("P+")?;
         } else {

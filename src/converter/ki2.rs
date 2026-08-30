@@ -70,6 +70,7 @@ fn write_move_kind<W: Write>(kind: Kind, sink: &mut W) -> Result {
 fn write_moves<W: Write>(
     moves: &[MoveFormat],
     position: Option<shogi_core::PartialPosition>,
+    start: Color,
     sink: &mut W,
 ) -> Result {
     let Some((head, rest)) = moves.split_first() else {
@@ -92,9 +93,6 @@ fn write_moves<W: Write>(
     // ply 5, or the ply-6 block reads as a continuation of the ply-5 one.
     // Taking blocks off the end gives that, and pushing each node's branches in
     // reverse keeps siblings in their original order.
-    let start = position
-        .as_ref()
-        .map_or(Color::Black, |pos| pos.side_to_move().into());
     let mut stack = Vec::new();
     write_line(rest, 1, position, start, &mut stack, sink)?;
     while let Some((start_ply, branch, at)) = stack.pop() {
@@ -126,9 +124,11 @@ fn write_line<'a, W: Write>(
     // means an outcome line has no way to close itself, and the moves that
     // follow get swallowed as part of the `まで…` text.
     let mut at_line_start = true;
-    // The ply is the number the *reader* will give this node, not the position
-    // in the array. A node carrying only comments writes nothing a reader can
-    // count, so counting it here would put `変化：N手` one past its move.
+    // The ply a KI2 line names, not the position in the array. A node carrying
+    // only comments writes nothing to number, so counting it would put
+    // `変化：N手` one move past where it belongs and `まで<N>手` one too high.
+    // `MoveFormat::occupies_a_ply` is the shared rule; the KIF writer and the
+    // KI2 reader use the same one.
     let mut ply = first_ply;
     for mf in moves {
         // A branch is the alternative *to* this move (R-JKF-004), so it is
@@ -229,7 +229,7 @@ fn write_line<'a, W: Write>(
                 stack.push((ply, fork.as_slice(), departs_from.clone()));
             }
         }
-        if mf.move_.is_some() || mf.special.is_some() {
+        if mf.occupies_a_ply() {
             ply += 1;
         }
     }
@@ -243,7 +243,11 @@ impl ToKi2 for JsonKifuFormat {
     fn to_ki2<W: Write>(&self, sink: &mut W) -> Result {
         write_header(&self.header, sink)?;
         write_initial(&self.initial, true, sink)?;
-        write_moves(&self.moves, self.starting_position(), sink)?;
+        // R-HC-001: only the even game starts with Black. The board says so too
+        // when there is one, but a record this crate cannot turn into a position
+        // still has to name the right side at its outcome.
+        let start = crate::handicap::starting_side(self.initial.as_ref());
+        write_moves(&self.moves, self.starting_position(), start, sink)?;
         Ok(())
     }
 }

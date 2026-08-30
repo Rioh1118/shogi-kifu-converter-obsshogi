@@ -85,7 +85,7 @@ fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) 
     // lands on the wrong move — or on nothing, and is dropped.
     let mut i = index;
     for mf in moves {
-        let has_line = mf.move_.is_some() || mf.special.is_some();
+        let has_line = mf.occupies_a_ply();
         if has_line {
             sink.write_fmt(format_args!("{:4} ", i))?;
         }
@@ -104,6 +104,12 @@ fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) 
                 offset += 2;
             }
             if let Some(from) = mv.from {
+                // A `from` off the board is either an unresolved
+                // `normalizer::ORIGIN_UNSTATED` or a coordinate from a broken
+                // record. `(00)` is not a KIF origin (R-KIF-006) and this
+                // crate's own reader takes it straight back as the sentinel, so
+                // writing it produces a corruption that round-trips forever.
+                shogi_core::Square::try_from(&from).map_err(|_| std::fmt::Error)?;
                 sink.write_fmt(format_args!("({}{})", from.x, from.y))?;
                 offset += 4;
             } else {

@@ -588,8 +588,8 @@ fn normalize_moves(
     correct_color: bool,
     infer_relative: bool,
 ) -> Result<(), NormalizeError> {
-    // Whether an outcome has been passed, and whether the board is still known.
-    let (mut resumed, mut position_known) = (false, true);
+    // Whether an outcome has gone by, and whether the board is still known.
+    let (mut after_outcome, mut position_known) = (false, true);
     for mf in moves {
         // A branch that cannot be normalized is still a branch. A kifu recording
         // an illegal move is valid input (R-RULE-002), and dropping the branch
@@ -597,9 +597,18 @@ fn normalize_moves(
         // it back and the variation is gone from the file for good.
         //
         // `populate_relative_moves` keeps them for the same reason.
-        if let Some(forks) = &mut mf.forks {
-            for fork in forks.iter_mut() {
-                let _ = normalize_moves(fork, pos.clone(), totals, correct_color, infer_relative);
+        //
+        // A branch is the alternative *to* this node's move (R-JKF-004), so it
+        // starts from the position before it. Once that position is lost there
+        // is nothing to normalize a branch against, and going ahead rewrites its
+        // moves against a board they never came from — `correct_color` would
+        // give them the wrong side.
+        if position_known {
+            if let Some(forks) = &mut mf.forks {
+                for fork in forks.iter_mut() {
+                    let _ =
+                        normalize_moves(fork, pos.clone(), totals, correct_color, infer_relative);
+                }
             }
         }
         // Calculate total time
@@ -610,14 +619,15 @@ fn normalize_moves(
         }
         // A node without a move holds a comment or an outcome. Neither ends the
         // record: `中断` appears mid-list in a game that was interrupted and
-        // resumed, and a comment can sit between two moves. Stopping here left
-        // every later move with its parsed color, its `from` unresolved and its
-        // branches unnormalized.
+        // resumed, and a comment can sit between two moves. Stopping here would
+        // leave every later move with its parsed colour, its `from` unresolved
+        // and its branches unnormalized.
         let Some(mmf) = &mut mf.move_ else {
-            // What follows a resumption need not continue the position before
-            // it, so a move that will not apply there is not a broken record
-            // (R-RULE-002) — the board is just no longer ours to track.
-            resumed |= mf.special.is_some();
+            // What follows an outcome need not continue the position before it
+            // — a game that was interrupted and resumed picks up from wherever
+            // it left off — so a move that will not apply there is not a broken
+            // record (R-RULE-002). The board is just no longer ours to track.
+            after_outcome |= mf.special.is_some();
             continue;
         };
         if !position_known {
@@ -625,7 +635,7 @@ fn normalize_moves(
         }
         match normalize_move(mmf, &pos, correct_color, infer_relative) {
             Ok(mv) if pos.make_move(mv).is_some() => {}
-            _ if resumed => position_known = false,
+            _ if after_outcome => position_known = false,
             Ok(mv) => return Err(NormalizeError::MakeMoveFailed(mv)),
             Err(err) => return Err(err),
         }
@@ -640,7 +650,9 @@ fn populate_relative_moves(
     for mf in moves {
         if let Some(forks) = &mut mf.forks {
             for v in forks.iter_mut() {
-                // forks already passed normalization; ignore errors here for parity with retain_mut
+                // A branch that cannot be replayed is still a branch
+                // (R-RULE-002), the same as in `normalize_moves`. Dropping it
+                // here would lose a variation to fill in a derived field.
                 let _ = populate_relative_moves(v, pos.clone());
             }
         }

@@ -43,28 +43,40 @@ impl ToUsi for JsonKifuFormat {
         let pos = Position::try_from(self).map_err(|_| std::fmt::Error)?;
         write_usi(&pos, sink)
     }
+
+    /// Overrides the default method, which `debug_assert!`s that the write
+    /// succeeded and therefore panics on any record that cannot be replayed —
+    /// valid input under R-RULE-002. The panic is in `shogi_core`, out of reach
+    /// of this crate's lints, and a consumer that writes `use shogi_core::ToUsi`
+    /// gets it whatever `clippy.toml` says here.
+    ///
+    /// An empty string is still a poor answer. Use
+    /// [`JsonKifuFormat::try_to_usi_owned`], which says which move it was.
+    fn to_usi_owned(&self) -> String {
+        self.try_to_usi_owned().unwrap_or_default()
+    }
 }
 
 impl JsonKifuFormat {
-    /// Returns `self` in USI format, or the error [`ToUsi::to_usi`] gave.
+    /// Returns `self` in USI format.
     ///
     /// # Errors
     ///
-    /// Returns [`ConvertError`] naming the move that could not be replayed. A
-    /// kifu recording an illegal move is valid input (R-RULE-002), so this is a
-    /// value a file can produce, and the caller has to be able to say which move
-    /// it was.
+    /// Returns [`ConvertError`] when the record cannot be turned into a
+    /// position, which happens three ways: the starting position is a
+    /// [`Preset::PresetOther`](crate::jkf::Preset::PresetOther) with no board
+    /// (`InitialBoardNoDataWithPresetOTHER`), a coordinate is off the board
+    /// (`InvalidSquare`), or a move cannot be played from the position before it
+    /// (`Normalize`). A kifu recording an illegal move is valid input
+    /// (R-RULE-002), so the third is a value a file can produce and the caller
+    /// has to be able to say which move it was.
     ///
-    /// Use this rather than [`ToUsi::to_usi_owned`]. That one is a default
-    /// method in `shogi_core` which asserts the write succeeded: with
-    /// `debug_assertions` it panics, and without them it hands back an empty
-    /// string. The consumer is a Tauri command, so the first is a crash and the
-    /// second writes an empty `.usi` file over a real one.
+    /// Prefer this to [`ToUsi::to_usi_owned`], which can only say "" .
     pub fn try_to_usi_owned(&self) -> std::result::Result<String, ConvertError> {
         let pos = Position::try_from(self)?;
         let mut s = String::new();
-        // Writing into a `String` cannot fail.
-        write_usi(&pos, &mut s).map_err(|err| ConvertError::Normalize(err.to_string()))?;
+        // `write_usi` only fails when `sink` does, and a `String` never does.
+        write_usi(&pos, &mut s).map_err(|_| ConvertError::InvalidSquare((0, 0)))?;
         Ok(s)
     }
 }

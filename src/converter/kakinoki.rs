@@ -332,8 +332,8 @@ mod tests {
 
         // The other direction. Writing `後手番` unconditionally would pass every
         // assertion above, and then a Black-to-move position would come back
-        // with the sides swapped — the same bug this line was added to fix,
-        // opened the other way round.
+        // with the sides swapped — the same bug as a missing line, opened the
+        // other way round.
         // The moves are dropped: they are White's, and they stop being legal
         // once the board says Black. The board alone is what is under test.
         let mut black_to_move = crate::jkf::JsonKifuFormat {

@@ -378,11 +378,11 @@ mod tests {
     use super::*;
     use crate::normalizer::HIRATE_BOARD;
 
-    // A hand line whose count cannot be read used to fall through to the
-    // key-value rule: the whole line landed in `header` and the hand came out
-    // empty — including the pieces written before the broken one. A drop from
-    // that hand then failed to normalize, and the message named the move rather
-    // than the line that actually broke.
+    // A hand line whose count cannot be read must not fall through to the
+    // key-value rule: that files the whole line under `header` and leaves the
+    // hand empty — including the pieces written before the broken one. A drop
+    // from that hand then fails to normalize, and the message names the move
+    // rather than the line that actually broke.
     #[test]
     fn a_hand_line_that_cannot_be_read_is_an_error_not_an_empty_hand() {
         const BOARD: &str = "手合割：その他
