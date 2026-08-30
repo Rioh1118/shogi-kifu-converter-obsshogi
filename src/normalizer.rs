@@ -308,6 +308,19 @@ impl JsonKifuFormat {
         Ok(())
     }
 
+    /// Normalizes the JKF data, inferring `relative` for every move.
+    ///
+    /// Equivalent to [`Self::normalize_with_options`] with `infer_relative` set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NormalizeError`] if a move cannot be resolved against the
+    /// position it is played from.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `moves` is empty. Index 0 is reserved for the initial
+    /// position's comments, so a well-formed value always has one element.
     pub fn normalize_with_color_correction(
         &mut self,
         correct_color: bool,
@@ -315,6 +328,28 @@ impl JsonKifuFormat {
         self.normalize_with_options(correct_color, true)
     }
 
+    /// Normalizes the JKF data, requiring the move colors to already be right.
+    ///
+    /// Equivalent to [`Self::normalize_with_options`] with `correct_color`
+    /// cleared and `infer_relative` set: a color that disagrees with the
+    /// position's side to move is an error rather than something to overwrite.
+    /// Use this for sources where the color is recorded explicitly (CSA, JKF)
+    /// and [`Self::normalize_with_color_correction`] for those where it is
+    /// derived from the move number (KIF, KI2).
+    ///
+    /// The following fields are recomputed from the position and overwrite
+    /// whatever the input held: `piece`, `same`, `promote`, `capture` and
+    /// `time.total`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NormalizeError`] if a move cannot be resolved against the
+    /// position it is played from.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `moves` is empty. Index 0 is reserved for the initial
+    /// position's comments, so a well-formed value always has one element.
     pub fn normalize(&mut self) -> Result<(), NormalizeError> {
         self.normalize_with_options(false, true)
     }

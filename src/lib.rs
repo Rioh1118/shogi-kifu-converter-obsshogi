@@ -7,6 +7,10 @@
 //!
 //! See [https://github.com/na2hiro/json-kifu-format](https://github.com/na2hiro/json-kifu-format).
 
+// The only consumer pins this crate by git tag, so the public surface is the
+// contract. An undocumented `pub` is a contract nobody can read.
+#![warn(missing_docs)]
+
 pub mod converter;
 mod csa;
 pub mod error;
