@@ -86,9 +86,9 @@ mod tests {
                 ..Default::default()
             },
         ] {
-            let _ = jkf.to_kif_owned();
-            let _ = jkf.to_ki2_owned();
-            let _ = jkf.to_csa_owned();
+            let _ = jkf.try_to_kif_owned();
+            let _ = jkf.try_to_ki2_owned();
+            let _ = jkf.try_to_csa_owned();
             let mut usi = String::new();
             let _ = jkf.to_usi(&mut usi);
         }

@@ -27,6 +27,9 @@ pub trait ToKi2 {
     /// A record that cannot be spelled in KI2 yields whatever was written
     /// before the failure. Use [`Self::try_to_ki2_owned`] to see the error
     /// instead of a truncated file.
+    #[deprecated(
+        note = "returns a truncated string on failure, which the caller writes to disk as if it were the whole record. Use try_to_ki2_owned."
+    )]
     fn to_ki2_owned(&self) -> String {
         let mut s = String::new();
         let _ = self.to_ki2(&mut s);
@@ -337,13 +340,18 @@ mod tests {
             "the KIF path leaves `relative` empty; the point is that KI2 still works"
         );
         assert!(
-            jkf.to_ki2_owned().contains("▲５三角左成"),
+            jkf.try_to_ki2_owned()
+                .expect("writes KI2")
+                .contains("▲５三角左成"),
             "expected a disambiguated move, got {:?}",
-            jkf.to_ki2_owned()
+            jkf.try_to_ki2_owned().expect("writes KI2")
         );
         // The field being filled in must not change the answer.
         jkf.populate_relative().expect("populates");
-        assert!(jkf.to_ki2_owned().contains("▲５三角左成"));
+        assert!(jkf
+            .try_to_ki2_owned()
+            .expect("writes KI2")
+            .contains("▲５三角左成"));
     }
 
     // KI2 records the outcome as a `まで<N>手で…` line. Writing the moves and
@@ -389,7 +397,7 @@ mod tests {
                 jkf.moves.last().and_then(|mf| mf.special),
                 "reading {word}"
             );
-            let ki2 = jkf.to_ki2_owned();
+            let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
             assert!(ki2.contains(phrase), "{word} wrote {ki2:?}");
             let back = crate::parser::parse_ki2_str(&ki2)
                 .unwrap_or_else(|e| panic!("failed to read back {word}: {e}"));
@@ -427,7 +435,7 @@ mod tests {
    2 ４四歩(43)
 ";
         let jkf = crate::parser::parse_kif_str(kif).expect("parses");
-        let ki2 = jkf.to_ki2_owned();
+        let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
         assert_eq!(
             3,
             ki2.lines().filter(|l| l.starts_with("変化：")).count(),
@@ -451,7 +459,7 @@ mod tests {
    5 投了
 ";
         let jkf = crate::parser::parse_kif_str(kif).expect("parses");
-        let ki2 = jkf.to_ki2_owned();
+        let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
         let back = crate::parser::parse_ki2_str(&ki2).expect("reads back");
         assert_eq!(
             shape(&jkf.moves[1..], 1),
@@ -476,7 +484,7 @@ mod tests {
             );
             let jkf = crate::parser::parse_kif_str(&kif)
                 .unwrap_or_else(|e| panic!("failed to parse {handicap}: {e}"));
-            let ki2 = jkf.to_ki2_owned();
+            let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
             assert!(ki2.contains(want), "{handicap} wrote {ki2:?}");
             let back = crate::parser::parse_ki2_str(&ki2)
                 .unwrap_or_else(|e| panic!("failed to read back {handicap}: {e}"));
@@ -520,7 +528,7 @@ mod tests {
                 ],
                 ..Default::default()
             };
-            let ki2 = jkf.to_ki2_owned();
+            let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
             assert!(ki2.contains(phrase), "{special:?} wrote {ki2:?}");
             let back = crate::parser::parse_ki2_str(&ki2)
                 .unwrap_or_else(|e| panic!("failed to read back {special:?}: {e}"));
@@ -559,7 +567,7 @@ mod tests {
    5 ５八金(68)
 ";
         let jkf = crate::parser::parse_kif_str(kif).expect("parses");
-        let ki2 = jkf.to_ki2_owned();
+        let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
         // 4九 and 6八 differ in rank, so R-NOT-004 stage 1 settles it: 上 and 寄.
         // Replaying the main line instead sees only 4九 and writes neither.
         assert!(
@@ -575,7 +583,12 @@ mod tests {
     // terminator being emitted for a run that never opened a line.
     #[test]
     fn to_ki2_default() {
-        assert_eq!("", JsonKifuFormat::default().to_ki2_owned());
+        assert_eq!(
+            "",
+            JsonKifuFormat::default()
+                .try_to_ki2_owned()
+                .expect("writes KI2")
+        );
         assert!(crate::parser::parse_ki2_str("").is_ok());
     }
 
@@ -628,7 +641,8 @@ mod tests {
                 ],
                 ..Default::default()
             }
-            .to_ki2_owned()
+            .try_to_ki2_owned()
+            .expect("writes KI2")
         );
     }
 }

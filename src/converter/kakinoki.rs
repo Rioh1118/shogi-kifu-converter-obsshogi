@@ -231,16 +231,25 @@ mod tests {
             }; 9]; 9],
             hands: [Hand::default(); 2],
         };
-        // 18 is every pawn on the board; 21 has no kanji spelling.
-        state.hands[0].FU = 21;
-        let too_many = JsonKifuFormat {
-            initial: Some(Initial {
-                preset: Preset::PresetOther,
-                data: Some(state),
-            }),
-            ..Default::default()
-        };
-        assert!(too_many.try_to_kif_owned().is_err());
+        // 18 is every pawn on the board. 19 and 20 are the values the `> 18`
+        // guard exists for: `十九` and `二十` do have kanji spellings, so
+        // dropping the guard writes `先手の持駒：歩十九`, which this crate's own
+        // parser reads back as no pieces in hand at all. 21 is caught either
+        // way, so a test that only tries 21 does not see the guard.
+        for count in [19u8, 20, 21] {
+            state.hands[0].FU = count;
+            let too_many = JsonKifuFormat {
+                initial: Some(Initial {
+                    preset: Preset::PresetOther,
+                    data: Some(state),
+                }),
+                ..Default::default()
+            };
+            assert!(
+                too_many.try_to_kif_owned().is_err(),
+                "{count} pieces in hand should not be spellable"
+            );
+        }
     }
 
     // A board without `後手番` reads back as Black to move, and the first move
@@ -252,12 +261,12 @@ mod tests {
         let color = jkf.initial.and_then(|i| i.data).expect("a board").color;
         assert_eq!(crate::jkf::Color::White, color);
 
-        let kif = jkf.to_kif_owned();
+        let kif = jkf.try_to_kif_owned().expect("writes KIF");
         assert!(kif.contains("後手番"), "no side to move in {kif:?}");
         let back = parse_kif_str(&kif).expect("reads back");
         assert_eq!(jkf.initial, back.initial);
 
-        let ki2 = jkf.to_ki2_owned();
+        let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
         assert!(ki2.contains("後手番"), "no side to move in {ki2:?}");
         let back = parse_ki2_str(&ki2).expect("reads back");
         assert_eq!(jkf.initial, back.initial);

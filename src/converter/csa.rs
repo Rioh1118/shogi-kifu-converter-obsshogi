@@ -27,6 +27,9 @@ pub trait ToCsa {
     /// A record that cannot be spelled in CSA yields whatever was written
     /// before the failure. Use [`Self::try_to_csa_owned`] to see the error
     /// instead of a truncated file.
+    #[deprecated(
+        note = "returns a truncated string on failure, which the caller writes to disk as if it were the whole record. Use try_to_csa_owned."
+    )]
     fn to_csa_owned(&self) -> String {
         let mut s = String::new();
         let _ = self.to_csa(&mut s);
@@ -223,7 +226,9 @@ V2.2
 PI
 +
 "#[1..],
-            JsonKifuFormat::default().to_csa_owned()
+            JsonKifuFormat::default()
+                .try_to_csa_owned()
+                .expect("writes CSA")
         );
     }
 }

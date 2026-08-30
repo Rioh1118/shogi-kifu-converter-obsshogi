@@ -27,6 +27,9 @@ pub trait ToKif {
     /// A record that cannot be spelled in KIF yields whatever was written
     /// before the failure. Use [`Self::try_to_kif_owned`] to see the error
     /// instead of a truncated file.
+    #[deprecated(
+        note = "returns a truncated string on failure, which the caller writes to disk as if it were the whole record. Use try_to_kif_owned."
+    )]
     fn to_kif_owned(&self) -> String {
         let mut s = String::new();
         let _ = self.to_kif(&mut s);
@@ -205,7 +208,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let kif = jkf.to_kif_owned();
+        let kif = jkf.try_to_kif_owned().expect("writes KIF");
         assert!(
             kif.contains("   2 ３四歩(33)") && kif.contains("変化：2手"),
             "the comment must not push 3四歩 to ply 3: {kif:?}"
@@ -244,7 +247,9 @@ mod tests {
             r#"
 手数----指手---------消費時間--
 "#[1..],
-            JsonKifuFormat::default().to_kif_owned()
+            JsonKifuFormat::default()
+                .try_to_kif_owned()
+                .expect("writes KIF")
         );
     }
 
@@ -252,7 +257,7 @@ mod tests {
     fn fork_moves() {
         let path = Path::new("data/tests/kif/forks.json");
         let jkf = parse_jkf_file(path).expect("failed to parse kif");
-        let kif = jkf.to_kif_owned();
+        let kif = jkf.try_to_kif_owned().expect("writes KIF");
         assert_eq!(
             &r#"
 手数----指手---------消費時間--

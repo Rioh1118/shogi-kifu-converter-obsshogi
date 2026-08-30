@@ -218,9 +218,9 @@ mod tests {
                 handicap.kif_name
             );
             // None of these may panic.
-            let kif = jkf.to_kif_owned();
-            let _ = jkf.to_ki2_owned();
-            let csa = jkf.to_csa_owned();
+            let kif = jkf.try_to_kif_owned().expect("writes KIF");
+            let _ = jkf.try_to_ki2_owned();
+            let csa = jkf.try_to_csa_owned().expect("writes CSA");
 
             assert!(
                 kif.contains(handicap.kif_name),

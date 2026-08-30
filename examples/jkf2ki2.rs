@@ -10,6 +10,14 @@ fn main() -> Result<(), ParseError> {
         std::process::exit(1);
     }
     let jkf = parse_jkf_file(&argv[1])?;
-    print!("{}", jkf.to_ki2_owned());
+    // Not `to_ki2_owned`: that one hands back whatever was written before
+    // the failure, which looks like a complete record and is not one.
+    match jkf.try_to_ki2_owned() {
+        Ok(text) => print!("{text}"),
+        Err(_) => {
+            eprintln!("{}: the record cannot be spelled in KI2", argv[1]);
+            std::process::exit(1);
+        }
+    }
     Ok(())
 }

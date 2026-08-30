@@ -669,7 +669,7 @@ mod tests {
 ";
         use crate::converter::ToKi2;
         let jkf = crate::parser::parse_kif_str(kif).expect("parses");
-        let ki2 = jkf.to_ki2_owned();
+        let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
         assert!(ki2.contains("▲４四馬右"), "wrote {ki2:?}");
         let back = crate::parser::parse_ki2_str(&ki2).expect("reads back");
         assert_eq!(
