@@ -355,6 +355,15 @@ impl JsonKifuFormat {
         self.normalize_with_options(false, true)
     }
 
+    /// The position the moves start from, or `None` if `initial` cannot be
+    /// turned into one.
+    pub(crate) fn starting_position(&self) -> Option<PartialPosition> {
+        match &self.initial {
+            Some(initial) => PartialPosition::try_from(initial).ok(),
+            None => Some(PartialPosition::startpos()),
+        }
+    }
+
     /// Fills in `relative` (左/右/上/...) for every move whose `relative` is `None`,
     /// re-simulating the position from the initial state. Use this after parsing a KIF
     /// (which skips the inference for speed) when a downstream consumer needs `relative`
@@ -585,7 +594,10 @@ fn normalize_move(
 ///
 /// Rendering is skipped for moves that cannot carry a suffix; see
 /// [`needs_disambiguation`].
-fn infer_relative_from_position(pos: &PartialPosition, mv: shogi_core::Move) -> Option<Relative> {
+pub(crate) fn infer_relative_from_position(
+    pos: &PartialPosition,
+    mv: shogi_core::Move,
+) -> Option<Relative> {
     if !needs_disambiguation(pos, mv) {
         return None;
     }

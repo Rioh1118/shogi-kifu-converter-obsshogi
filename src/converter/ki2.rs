@@ -39,7 +39,22 @@ fn write_move_kind<W: Write>(kind: Kind, sink: &mut W) -> Result {
     }
 }
 
-fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
+/// Writes the KI2 notation for `moves`, deriving the disambiguating suffix from
+/// `position` rather than from [`MoveMoveFormat::relative`].
+///
+/// KI2 carries no move origin, so a move that needs `左`/`右`/… and does not get
+/// it cannot be read back. `relative` is derived data — a value the position
+/// already determines — and trusting the field means any caller that skipped
+/// [`JsonKifuFormat::populate_relative`] silently writes an unreadable file.
+///
+/// `position` becomes `None` once a move cannot be applied. Kifu recording an
+/// illegal move are valid input (R-RULE-002), so the remaining moves fall back
+/// to whatever `relative` holds instead of refusing to write.
+fn write_moves<W: Write>(
+    moves: &[MoveFormat],
+    mut position: Option<shogi_core::PartialPosition>,
+    sink: &mut W,
+) -> Result {
     if let Some(comments) = &moves[0].comments {
         for comment in comments {
             if !comment.starts_with('&') {
@@ -63,7 +78,14 @@ fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
                 write_kansuji(mv.to.y, sink)?;
             }
             write_move_kind(mv.piece, sink)?;
-            if let Some(relative) = mv.relative {
+            let core_move = shogi_core::Move::try_from(mv).ok();
+            let relative = match (&position, core_move) {
+                (Some(pos), Some(core_move)) => {
+                    crate::normalizer::infer_relative_from_position(pos, core_move)
+                }
+                _ => mv.relative,
+            };
+            if let Some(relative) = relative {
                 match relative {
                     Relative::L => sink.write_str("左")?,
                     Relative::C => sink.write_str("直")?,
@@ -87,6 +109,11 @@ fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
                     sink.write_str("不成")?;
                 }
             }
+            position = position.and_then(|mut pos| {
+                let core_move = core_move?;
+                pos.make_move(core_move)?;
+                Some(pos)
+            });
         }
         if let Some(comments) = &mf.comments {
             sink.write_char('\n')?;
@@ -109,7 +136,7 @@ impl ToKi2 for JsonKifuFormat {
     fn to_ki2<W: Write>(&self, sink: &mut W) -> Result {
         write_header(&self.header, sink)?;
         write_initial(&self.initial, true, sink)?;
-        write_moves(&self.moves, sink)?;
+        write_moves(&self.moves, self.starting_position(), sink)?;
         Ok(())
     }
 }
@@ -117,6 +144,47 @@ impl ToKi2 for JsonKifuFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The disambiguating suffix comes from the position, not from `relative`,
+    // so a value that never went through `populate_relative` still produces KI2
+    // that can be read back. Two black bishops on 7a and 3a both reach 5c.
+    #[test]
+    fn disambiguation_does_not_depend_on_relative_field() {
+        let src = "\
+手合割：その他
+後手の持駒：なし
+  ９ ８ ７ ６ ５ ４ ３ ２ １
++---------------------------+
+| ・ ・ 角 ・v玉 ・ 角 ・ ・|一
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|二
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|三
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|四
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|五
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|六
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|七
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|八
+| ・ ・ ・ ・ 玉 ・ ・ ・ ・|九
++---------------------------+
+先手の持駒：なし
+先手番
+手数----指手---------消費時間--
+   1 ５三角成(71)   ( 0:00/00:00:00)
+";
+        let mut jkf = crate::parser::parse_kif_str(src).expect("parses");
+        assert_eq!(
+            None,
+            jkf.moves[1].move_.expect("a move").relative,
+            "the KIF path leaves `relative` empty; the point is that KI2 still works"
+        );
+        assert!(
+            jkf.to_ki2_owned().contains("▲５三角左成"),
+            "expected a disambiguated move, got {:?}",
+            jkf.to_ki2_owned()
+        );
+        // The field being filled in must not change the answer.
+        jkf.populate_relative().expect("populates");
+        assert!(jkf.to_ki2_owned().contains("▲５三角左成"));
+    }
 
     #[test]
     fn to_ki2_default() {
