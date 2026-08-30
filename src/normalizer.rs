@@ -1,9 +1,7 @@
 use crate::error::NormalizeError;
 use crate::jkf::*;
-use shogi_core::{LegalityChecker, PartialPosition};
+use shogi_core::PartialPosition;
 use shogi_legality_lite::prelegality::is_valid;
-use shogi_legality_lite::LiteLegalityChecker;
-use shogi_official_kifu::display_single_move_kansuji;
 
 pub(crate) const HIRATE_BOARD: [[Piece; 9]; 9] = {
     #[rustfmt::skip]
@@ -333,7 +331,12 @@ fn calculate_from(
     to: shogi_core::Square,
 ) -> Result<Option<PlaceFormat>, NormalizeError> {
     let color = pos.side_to_move();
-    let bb = LiteLegalityChecker.normal_to_candidates(
+    // The same candidate set the writer uses (`infer_relative_from_position`).
+    // `LiteLegalityChecker::normal_to_candidates` is not that set: it tests full
+    // legality, so a pinned piece drops out, while the writer follows
+    // `shogi_official_kifu` and counts it. Reading a suffix with a different
+    // set than the one that wrote it is how a move comes back ambiguous.
+    let bb = candidates_reaching(
         pos,
         to,
         shogi_core::Piece::new(shogi_core::PieceKind::from(mmf.piece), color),
@@ -482,101 +485,206 @@ fn normalize_move(
     Ok(mv)
 }
 
+/// The squares a piece of the same kind could have moved to `to` from.
+///
+/// This is the candidate set R-NOT-004 talks about: everything that could have
+/// made the move, which is what decides whether a suffix is needed and which
+/// one. `shogi_official_kifu` builds the same set by enumerating every move on
+/// the board (`all_valid_moves`, 14,256 legality tests per move) and filtering;
+/// asking the board directly costs one scan of the 81 squares.
+fn candidates_reaching(
+    pos: &PartialPosition,
+    to: shogi_core::Square,
+    piece: shogi_core::Piece,
+) -> shogi_core::Bitboard {
+    let mut candidates = shogi_core::Bitboard::empty();
+    for from in shogi_core::Square::all() {
+        if pos.piece_at(from) != Some(piece) {
+            continue;
+        }
+        if [false, true]
+            .into_iter()
+            .any(|promote| is_valid(pos, shogi_core::Move::Normal { from, to, promote }))
+        {
+            candidates |= from;
+        }
+    }
+    candidates
+}
+
+/// R-NOT-004 stage 1: 上 / 引 / 寄, and the candidates that share it.
+fn by_motion(
+    pos: &PartialPosition,
+    from: shogi_core::Square,
+    to: shogi_core::Square,
+    candidates: shogi_core::Bitboard,
+) -> Option<(shogi_core::Bitboard, Motion)> {
+    let side = pos.side_to_move();
+    let rank_of = |sq: shogi_core::Square| sq.relative_rank(side) as i8;
+    let delta = (rank_of(from) - rank_of(to)).signum();
+    let mut same = shogi_core::Bitboard::empty();
+    for candidate in candidates {
+        if (rank_of(candidate) - rank_of(to)).signum() == delta {
+            same |= candidate;
+        }
+    }
+    if same.is_empty() {
+        return None;
+    }
+    Some((
+        same,
+        match delta.cmp(&0) {
+            std::cmp::Ordering::Greater => Motion::Up,
+            std::cmp::Ordering::Less => Motion::Down,
+            std::cmp::Ordering::Equal => Motion::Across,
+        },
+    ))
+}
+
+/// R-NOT-004 stage 2: 左 / 直 / 右, and the candidates that share it.
+///
+/// The two piece groups compare different things. 金 and 銀 and the promoted
+/// pieces move one square, so their candidates sit beside the destination and
+/// the file offset names them — and only they can be 直. 桂 角 馬 飛 龍 come
+/// from anywhere, so the two candidates are ranked against *each other*: 馬 and
+/// 龍 reach a square from its own file, and comparing the origin with the
+/// destination would leave no candidate at all there.
+fn by_file(
+    pos: &PartialPosition,
+    from: shogi_core::Square,
+    to: shogi_core::Square,
+    candidates: shogi_core::Bitboard,
+) -> Option<(shogi_core::Bitboard, Option<Side>)> {
+    use shogi_core::PieceKind::*;
+    let side = pos.side_to_move();
+    let kind = pos.piece_at(from)?.piece_kind();
+    let sign = if side == shogi_core::Color::Black {
+        1
+    } else {
+        -1
+    };
+
+    if matches!(kind, Knight | Bishop | Rook | ProBishop | ProRook) {
+        // The traditional notation gives these two names, so it can only tell
+        // two apart; a third would need a spelling that does not exist.
+        if candidates.count() != 2 {
+            return Some((candidates, None));
+        }
+        let mut rest = candidates;
+        let (Some(one), Some(other)) = (rest.pop(), rest.pop()) else {
+            return Some((candidates, None));
+        };
+        if one.file() == other.file() {
+            return Some((candidates, None));
+        }
+        let (right, left) = if one.file() as i8 * sign < other.file() as i8 * sign {
+            (one, other)
+        } else {
+            (other, one)
+        };
+        let named = if from == left {
+            Side::Left
+        } else if from == right {
+            Side::Right
+        } else {
+            return Some((shogi_core::Bitboard::empty(), None));
+        };
+        return Some((shogi_core::Bitboard::single(from), Some(named)));
+    }
+
+    let file_offset = from.file() as i8 - to.file() as i8;
+    if file_offset == 0 && from.relative_rank(side) as i8 - to.relative_rank(side) as i8 > 0 {
+        return Some((shogi_core::Bitboard::single(from), Some(Side::Straight)));
+    }
+    let named = match (file_offset * sign).cmp(&0) {
+        std::cmp::Ordering::Less => Some(Side::Right),
+        std::cmp::Ordering::Greater => Some(Side::Left),
+        // Same file, and not moving up: 直 does not apply and there is no other
+        // word for it. Stage 1 has to settle this one.
+        std::cmp::Ordering::Equal => None,
+    };
+    let mut same = shogi_core::Bitboard::empty();
+    for candidate in candidates {
+        if candidate.file() as i8 - to.file() as i8 == file_offset {
+            same |= candidate;
+        }
+    }
+    Some((same, named))
+}
+
+/// 上 / 引 / 寄.
+#[derive(Clone, Copy)]
+enum Motion {
+    Up,
+    Down,
+    Across,
+}
+
+/// 左 / 直 / 右.
+#[derive(Clone, Copy, PartialEq)]
+enum Side {
+    Left,
+    Straight,
+    Right,
+}
+
 /// Infers the disambiguating suffix (左/右/直/上/寄/引/打) for `mv` in `pos`.
 ///
-/// The traditional notation orders a move as
-/// `<destination><piece><relative><motion><promotion>` (R-NOT-001), so the
-/// promotion suffix has to come off before the relative part is reachable.
-/// Reading the tail without stripping it makes every promoting move look like
-/// it has no disambiguator, which produces KI2 that cannot be read back
-/// (R-NOT-004 / R-NOT-005).
+/// R-NOT-004: a suffix is written only when more than one piece of that kind
+/// could have made the move, and then the shortest one that names it — the
+/// motion alone, else the file alone, else both. R-NOT-003 does the same for a
+/// drop: 打 only when a piece already on the board could have gone there.
 ///
-/// This is the only place that maps a rendered move back to [`Relative`].
-/// Keeping a second copy is what let the promotion bug live in one caller and
-/// not the other.
-///
-/// Rendering is skipped for moves that cannot carry a suffix; see
-/// [`needs_disambiguation`].
+/// This is the only place that decides a suffix. Two copies is what let the
+/// promotion bug live in one caller and not the other.
 pub(crate) fn infer_relative_from_position(
     pos: &PartialPosition,
     mv: shogi_core::Move,
 ) -> Option<Relative> {
-    if !needs_disambiguation(pos, mv) {
-        return None;
-    }
-    let mut display = display_single_move_kansuji(pos, mv)?;
-    // `不成` has to be tested first: it also ends with `成`.
-    let cut = if let Some(rest) = display.strip_suffix("不成") {
-        rest.len()
-    } else if let Some(rest) = display.strip_suffix('成') {
-        rest.len()
-    } else {
-        display.len()
-    };
-    display.truncate(cut);
-    match (display.pop(), display.pop()) {
-        (Some('左'), _) => Some(Relative::L),
-        (Some('直'), _) => Some(Relative::C),
-        (Some('右'), _) => Some(Relative::R),
-        (Some('上'), Some('左')) => Some(Relative::LU),
-        (Some('上'), Some('右')) => Some(Relative::RU),
-        (Some('上'), _) => Some(Relative::U),
-        (Some('引'), Some('左')) => Some(Relative::LD),
-        (Some('引'), Some('右')) => Some(Relative::RD),
-        (Some('引'), _) => Some(Relative::D),
-        (Some('寄'), Some('左')) => Some(Relative::LM),
-        (Some('寄'), Some('右')) => Some(Relative::RM),
-        (Some('寄'), _) => Some(Relative::M),
-        (Some('打'), _) => Some(Relative::H),
-        _ => None,
-    }
-}
-
-/// Whether the traditional notation for `mv` can carry a disambiguating suffix
-/// at all.
-///
-/// `shogi_official_kifu` decides this from the set of squares holding the same
-/// piece that could reach the destination: a normal move gets no suffix unless
-/// that set has two or more members, and a drop gets `打` only when a board
-/// piece could have gone there instead. Answering the question here first is
-/// worth the duplication because that crate reaches the answer by enumerating
-/// every legal move in the position — about 15,000 candidates — for each single
-/// move, while this scan only touches squares that already hold the right piece.
-///
-/// Uses the same prelegality check the renderer uses. A legality check that
-/// also rejects pinned pieces would disagree on a small number of positions and
-/// silently change the notation.
-fn needs_disambiguation(pos: &PartialPosition, mv: shogi_core::Move) -> bool {
-    use shogi_core::{Move, Square};
-
-    let can_reach = |from: Square, to: Square| {
-        [false, true]
-            .into_iter()
-            .any(|promote| is_valid(pos, Move::Normal { from, to, promote }))
-    };
     match mv {
-        Move::Normal { from, to, .. } => {
-            let piece = match pos.piece_at(from) {
-                Some(piece) => piece,
-                None => return false,
-            };
-            let mut found = 0;
-            for square in Square::all() {
-                if pos.piece_at(square) == Some(piece) && can_reach(square, to) {
-                    found += 1;
-                    if found >= 2 {
-                        return true;
-                    }
-                }
-            }
-            false
-        }
-        // A drop is written `打` exactly when the same piece could have been
-        // moved to that square instead.
-        Move::Drop { to, piece } => {
+        // R-NOT-003.
+        shogi_core::Move::Drop { to, piece } => {
             let on_board = shogi_core::Piece::new(piece.piece_kind(), pos.side_to_move());
-            Square::all()
-                .any(|square| pos.piece_at(square) == Some(on_board) && can_reach(square, to))
+            (!candidates_reaching(pos, to, on_board).is_empty()).then_some(Relative::H)
+        }
+        shogi_core::Move::Normal { from, to, .. } => {
+            let piece = pos.piece_at(from)?;
+            let candidates = candidates_reaching(pos, to, piece);
+            if candidates.count() < 2 {
+                return None;
+            }
+            let (by_motion, motion) = by_motion(pos, from, to, candidates)?;
+            let (by_file, side) = by_file(pos, from, to, candidates)?;
+            // Shortest first (R-NOT-004): stage 1, then stage 2, then both.
+            if by_motion.count() == 1 {
+                return Some(match motion {
+                    Motion::Up => Relative::U,
+                    Motion::Down => Relative::D,
+                    Motion::Across => Relative::M,
+                });
+            }
+            if by_file.count() == 1 {
+                return match side? {
+                    Side::Left => Some(Relative::L),
+                    Side::Straight => Some(Relative::C),
+                    Side::Right => Some(Relative::R),
+                };
+            }
+            if (by_file & by_motion).count() == 1 {
+                return match (side?, motion) {
+                    (Side::Left, Motion::Up) => Some(Relative::LU),
+                    (Side::Left, Motion::Down) => Some(Relative::LD),
+                    (Side::Left, Motion::Across) => Some(Relative::LM),
+                    (Side::Right, Motion::Up) => Some(Relative::RU),
+                    (Side::Right, Motion::Down) => Some(Relative::RD),
+                    (Side::Right, Motion::Across) => Some(Relative::RM),
+                    // 直 settles a move on its own or not at all.
+                    (Side::Straight, _) => None,
+                };
+            }
+            // R-NOT-004 stage 3 found nothing: the traditional notation cannot
+            // spell this move.
+            None
         }
     }
 }
