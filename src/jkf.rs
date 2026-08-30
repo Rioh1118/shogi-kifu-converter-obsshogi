@@ -258,9 +258,12 @@ impl MoveSpecial {
             MoveSpecial::SpecialToryo => format!("{opponent}の勝ち"),
             MoveSpecial::SpecialTimeUp => format!("時間切れにより{opponent}の勝ち"),
             MoveSpecial::SpecialKachi => format!("{mover}の入玉勝ち"),
-            MoveSpecial::SpecialIllegalActionBlack | MoveSpecial::SpecialIllegalActionWhite => {
-                format!("{mover}の反則勝ち")
-            }
+            // The phrase names the winner outright, and the variant already
+            // says who it is: `+ILLEGAL_ACTION` is a foul *by* Black, so White
+            // wins (R-CSA-007). Deriving it from the side to move instead makes
+            // the two sides swap places whenever that side is computed wrong.
+            MoveSpecial::SpecialIllegalActionBlack => "後手の反則勝ち".to_owned(),
+            MoveSpecial::SpecialIllegalActionWhite => "先手の反則勝ち".to_owned(),
             MoveSpecial::SpecialIllegalMove => format!("{mover}の反則負け"),
             _ => self.kif_word().unwrap_or("中断").to_owned(),
         }
@@ -275,7 +278,13 @@ impl MoveSpecial {
             return Some(MoveSpecial::SpecialTimeUp);
         }
         if phrase.ends_with("反則勝ち") {
-            return MoveSpecial::from_kif_word("反則勝ち", side_to_move);
+            // Unlike KIF, the KI2 phrase names the winner, so the side to move
+            // is only a fallback for a spelling that does not name one.
+            return match phrase.strip_suffix("の反則勝ち") {
+                Some("先手") => Some(MoveSpecial::SpecialIllegalActionWhite),
+                Some("後手") => Some(MoveSpecial::SpecialIllegalActionBlack),
+                _ => MoveSpecial::from_kif_word("反則勝ち", side_to_move),
+            };
         }
         if phrase.ends_with("反則負け") {
             return Some(MoveSpecial::SpecialIllegalMove);

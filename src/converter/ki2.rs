@@ -227,6 +227,38 @@ impl ToKi2 for JsonKifuFormat {
 mod tests {
     use super::*;
 
+    fn black_pawn_7g7f() -> MoveFormat {
+        MoveFormat {
+            move_: Some(MoveMoveFormat {
+                color: Color::Black,
+                from: Some(PlaceFormat { x: 7, y: 7 }),
+                to: PlaceFormat { x: 7, y: 6 },
+                piece: Kind::FU,
+                same: None,
+                promote: None,
+                capture: None,
+                relative: None,
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn white_pawn_3c3d() -> MoveFormat {
+        MoveFormat {
+            move_: Some(MoveMoveFormat {
+                color: Color::White,
+                from: Some(PlaceFormat { x: 3, y: 3 }),
+                to: PlaceFormat { x: 3, y: 4 },
+                piece: Kind::FU,
+                same: None,
+                promote: None,
+                capture: None,
+                relative: None,
+            }),
+            ..Default::default()
+        }
+    }
+
     /// Spells the move tree as `<ply>:<destination>` with branches in brackets,
     /// so a round trip can be compared as a whole rather than field by field.
     fn shape(moves: &[MoveFormat], first_ply: usize) -> String {
@@ -381,6 +413,50 @@ mod tests {
         );
         let back = crate::parser::parse_ki2_str(&ki2).expect("reads back");
         assert_eq!(shape(&jkf.moves[1..], 1), shape(&back.moves[1..], 1));
+    }
+
+    // `%+ILLEGAL_ACTION` is a foul *by* Black, so White wins (R-CSA-007). The
+    // KI2 phrase names the winner, so both directions have to survive; deriving
+    // the winner from whose turn it is collapses them onto one spelling and the
+    // side that committed the foul comes back swapped.
+    #[test]
+    fn both_directions_of_a_foul_win_survive_a_ki2_round_trip() {
+        for (special, phrase) in [
+            (
+                MoveSpecial::SpecialIllegalActionBlack,
+                "まで2手で後手の反則勝ち",
+            ),
+            (
+                MoveSpecial::SpecialIllegalActionWhite,
+                "まで2手で先手の反則勝ち",
+            ),
+        ] {
+            let jkf = JsonKifuFormat {
+                initial: Some(Initial {
+                    preset: Preset::PresetHirate,
+                    data: None,
+                }),
+                moves: vec![
+                    MoveFormat::default(),
+                    black_pawn_7g7f(),
+                    white_pawn_3c3d(),
+                    MoveFormat {
+                        special: Some(special),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            };
+            let ki2 = jkf.to_ki2_owned();
+            assert!(ki2.contains(phrase), "{special:?} wrote {ki2:?}");
+            let back = crate::parser::parse_ki2_str(&ki2)
+                .unwrap_or_else(|e| panic!("failed to read back {special:?}: {e}"));
+            assert_eq!(
+                Some(special),
+                back.moves.last().and_then(|mf| mf.special),
+                "round trip for {special:?}"
+            );
+        }
     }
 
     // A branch inside a branch leaves a line the main line never visits, so the
