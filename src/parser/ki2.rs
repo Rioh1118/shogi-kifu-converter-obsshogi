@@ -131,14 +131,27 @@ fn move_run(
     move |mut input| {
         let mut out = Vec::new();
         loop {
-            let (rest, v) = many0(single_move)(input)?;
+            // R-KI2-002: blank lines sit between runs of moves and a line can
+            // start with a space — the spelling in the specification's own
+            // example. Stopping at one drops the rest of the file.
+            let (rest, _) = many0(alt((line_ending, tag(" "), tag("　"))))(input)?;
+            // A comment before any move of a run belongs to a node of its own:
+            // that is what `write_line` produces for a JKF node carrying only
+            // comments, and a `変化：` block can open with one.
+            let (rest, leading) = opt(many1(move_comment_line))(rest)?;
+            let read_comments = leading.is_some();
+            out.extend(leading.map(|comments| MoveFormat {
+                comments: Some(comments),
+                ..Default::default()
+            }));
+            let (rest, v) = many0(single_move)(rest)?;
             let read_moves = !v.is_empty();
             out.extend(v);
             let (rest, end) = opt(end_of_game_line(start, first_ply + out.len()))(rest)?;
             let read_end = end.is_some();
             out.extend(end);
             input = rest;
-            if !read_moves && !read_end {
+            if !read_comments && !read_moves && !read_end {
                 break;
             }
         }
@@ -246,6 +259,57 @@ mod tests {
             assert_eq!(relative, mv.relative, "relative for {input}");
             assert_eq!(promote, mv.promote, "promote for {input}");
         }
+    }
+
+    // The example printed in the KI2 specification itself (R-KI2-002), copied
+    // verbatim. It has blank lines between runs of moves, which is exactly what
+    // the specification points out about the format. Stopping at the first one
+    // reads 6 of the 12 moves and returns `Ok`.
+    #[test]
+    fn the_specification_example_reads_every_move() {
+        let ki2 = "開始日時：1999/04/08
+終了日時：1999/04/09
+棋戦：第５７期名人戦７番勝負 第１局
+戦型：横歩取り
+先手：谷川浩司 九段
+後手：佐藤康光 名人
+
+▲７六歩 △３四歩 ▲２六歩 △８四歩 ▲２五歩
+△８五歩
+
+▲７八金 △３二金 ▲２四歩 △同　歩 ▲同　飛
+△８六歩
+";
+        let jkf = crate::parser::parse_ki2_str(ki2).expect("parses");
+        let moves = jkf.moves[1..]
+            .iter()
+            .filter(|mf| mf.move_.is_some())
+            .count();
+        assert_eq!(12, moves, "read {moves} of 12: {:?}", jkf.moves);
+    }
+
+    // A comment can open a `変化：` block — that is what this crate's own writer
+    // produces for a JKF branch whose first node carries only comments. Failing
+    // to read it ends the move list and throws away every block after it.
+    #[test]
+    fn a_branch_may_open_with_a_comment() {
+        let ki2 = "▲７六歩 △３四歩
+
+変化：2手
+*この分岐の狙い
+△８四歩
+
+変化：2手
+△４四歩
+";
+        let jkf = crate::parser::parse_ki2_str(ki2).expect("parses");
+        let forks = jkf.moves[2].forks.as_ref().expect("branches at ply 2");
+        assert_eq!(2, forks.len(), "both blocks survive: {:?}", jkf.moves);
+        assert_eq!(
+            Some(&vec!["この分岐の狙い".to_owned()]),
+            forks[0][0].comments.as_ref(),
+            "the comment is kept"
+        );
     }
 
     // Leaving a `まで…` line unconsumed ends the move list and throws away
