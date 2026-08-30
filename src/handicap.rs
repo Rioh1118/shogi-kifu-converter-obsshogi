@@ -201,6 +201,171 @@ mod tests {
     use crate::converter::{ToCsa, ToKi2, ToKif};
     use crate::parser::parse_kif_str;
 
+    /// One row of R-HC-003: the KIF name, the preset, and the squares cleared.
+    type SpecRow = (&'static str, Preset, &'static [(u8, u8, Kind)]);
+
+    /// `research/40-handicap.md` R-HC-003, transcribed by hand.
+    ///
+    /// The value of this is that it does not come from `HANDICAPS`. An
+    /// expectation derived from the table under test passes when a piece is
+    /// dropped from an entry, and passes when 五枚落ち and 左五枚落ち are
+    /// swapped — which is the one mistake R-HC-003 warns about by name, so it
+    /// is spelled out: `5` takes 8一桂 (the upper hand's right knight) and
+    /// `5_L` takes 2一桂 (its left).
+    ///
+    /// The order of the squares is deliberately not checked. R-HC-003 says the
+    /// order pieces are listed in is unspecified.
+    const R_HC_003: [SpecRow; 16] = [
+        ("平手", Preset::PresetHirate, &[]),
+        ("香落ち", Preset::PresetKY, &[(1, 1, Kind::KY)]),
+        ("右香落ち", Preset::PresetKYR, &[(9, 1, Kind::KY)]),
+        ("角落ち", Preset::PresetKA, &[(2, 2, Kind::KA)]),
+        ("飛車落ち", Preset::PresetHI, &[(8, 2, Kind::HI)]),
+        (
+            "飛香落ち",
+            Preset::PresetHIKY,
+            &[(8, 2, Kind::HI), (1, 1, Kind::KY)],
+        ),
+        (
+            "二枚落ち",
+            Preset::Preset2,
+            &[(8, 2, Kind::HI), (2, 2, Kind::KA)],
+        ),
+        (
+            "三枚落ち",
+            Preset::Preset3,
+            &[(8, 2, Kind::HI), (2, 2, Kind::KA), (1, 1, Kind::KY)],
+        ),
+        (
+            "四枚落ち",
+            Preset::Preset4,
+            &[
+                (8, 2, Kind::HI),
+                (2, 2, Kind::KA),
+                (9, 1, Kind::KY),
+                (1, 1, Kind::KY),
+            ],
+        ),
+        (
+            "五枚落ち",
+            Preset::Preset5,
+            &[
+                (8, 2, Kind::HI),
+                (2, 2, Kind::KA),
+                (9, 1, Kind::KY),
+                (1, 1, Kind::KY),
+                (8, 1, Kind::KE),
+            ],
+        ),
+        (
+            "左五枚落ち",
+            Preset::Preset5L,
+            &[
+                (8, 2, Kind::HI),
+                (2, 2, Kind::KA),
+                (9, 1, Kind::KY),
+                (1, 1, Kind::KY),
+                (2, 1, Kind::KE),
+            ],
+        ),
+        (
+            "六枚落ち",
+            Preset::Preset6,
+            &[
+                (8, 2, Kind::HI),
+                (2, 2, Kind::KA),
+                (9, 1, Kind::KY),
+                (1, 1, Kind::KY),
+                (8, 1, Kind::KE),
+                (2, 1, Kind::KE),
+            ],
+        ),
+        (
+            "右七枚落ち",
+            Preset::Preset7R,
+            &[
+                (8, 2, Kind::HI),
+                (2, 2, Kind::KA),
+                (9, 1, Kind::KY),
+                (1, 1, Kind::KY),
+                (8, 1, Kind::KE),
+                (2, 1, Kind::KE),
+                (7, 1, Kind::GI),
+            ],
+        ),
+        (
+            "左七枚落ち",
+            Preset::Preset7L,
+            &[
+                (8, 2, Kind::HI),
+                (2, 2, Kind::KA),
+                (9, 1, Kind::KY),
+                (1, 1, Kind::KY),
+                (8, 1, Kind::KE),
+                (2, 1, Kind::KE),
+                (3, 1, Kind::GI),
+            ],
+        ),
+        (
+            "八枚落ち",
+            Preset::Preset8,
+            &[
+                (8, 2, Kind::HI),
+                (2, 2, Kind::KA),
+                (9, 1, Kind::KY),
+                (1, 1, Kind::KY),
+                (8, 1, Kind::KE),
+                (2, 1, Kind::KE),
+                (7, 1, Kind::GI),
+                (3, 1, Kind::GI),
+            ],
+        ),
+        (
+            "十枚落ち",
+            Preset::Preset10,
+            &[
+                (8, 2, Kind::HI),
+                (2, 2, Kind::KA),
+                (9, 1, Kind::KY),
+                (1, 1, Kind::KY),
+                (8, 1, Kind::KE),
+                (2, 1, Kind::KE),
+                (7, 1, Kind::GI),
+                (3, 1, Kind::GI),
+                (6, 1, Kind::KI),
+                (4, 1, Kind::KI),
+            ],
+        ),
+    ];
+
+    #[test]
+    fn the_table_matches_the_specification() {
+        let mut seen = std::collections::BTreeSet::new();
+        for (kif_name, preset, removed) in R_HC_003 {
+            let entry = lookup(preset).unwrap_or_else(|| panic!("{kif_name} is missing"));
+            assert_eq!(kif_name, entry.kif_name, "the KIF name for {preset:?}");
+            let want: std::collections::BTreeSet<_> = removed
+                .iter()
+                .map(|&(f, r, k)| (f, r, format!("{k:?}")))
+                .collect();
+            let got: std::collections::BTreeSet<_> = entry
+                .removed
+                .iter()
+                .map(|&(f, r, k)| (f, r, format!("{k:?}")))
+                .collect();
+            assert_eq!(want.len(), removed.len(), "{kif_name} lists a square twice");
+            assert_eq!(want, got, "the pieces {kif_name} takes off");
+            seen.insert(kif_name);
+        }
+        assert_eq!(
+            seen.len(),
+            HANDICAPS.len(),
+            "R-HC-003 lists {} handicaps, the table holds {}",
+            seen.len(),
+            HANDICAPS.len()
+        );
+    }
+
     /// Every name the KIF parser accepts has to survive every write path.
     /// Five of them used to reach `unimplemented!()` and take the process down.
     #[test]
