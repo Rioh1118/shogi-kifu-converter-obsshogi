@@ -10,31 +10,38 @@ mod kif;
 pub use self::csa::ToCsa;
 pub use self::ki2::ToKi2;
 pub use self::kif::ToKif;
+use crate::error::ConvertError;
 use crate::jkf::JsonKifuFormat;
 use shogi_core::{PartialPosition, Position, ToUsi};
+
+/// Spells `pos` as USI: the starting position, then the moves played from it.
+fn write_usi<W: std::fmt::Write>(pos: &Position, sink: &mut W) -> std::fmt::Result {
+    if pos.initial_position() == &PartialPosition::startpos() {
+        sink.write_str("startpos")?;
+    } else {
+        sink.write_str("sfen ")?;
+        pos.initial_position().to_sfen(sink)?;
+    }
+    if !pos.moves().is_empty() {
+        sink.write_str(" moves")?;
+        for mv in pos.moves() {
+            sink.write_str(" ")?;
+            mv.to_usi(sink)?;
+        }
+    }
+    Ok(())
+}
 
 impl ToUsi for JsonKifuFormat {
     /// # Errors
     ///
     /// Returns `Err` if `sink` fails, or if the record cannot be replayed into
     /// a position — a kifu that records an illegal move is valid input
-    /// (R-RULE-002), and this trait has no way to say more than "failed".
+    /// (R-RULE-002). `fmt::Result` cannot say which, so use
+    /// [`JsonKifuFormat::try_to_usi_owned`] when the reason matters.
     fn to_usi<W: std::fmt::Write>(&self, sink: &mut W) -> std::fmt::Result {
         let pos = Position::try_from(self).map_err(|_| std::fmt::Error)?;
-        if pos.initial_position() == &PartialPosition::startpos() {
-            sink.write_str("startpos")?;
-        } else {
-            sink.write_str("sfen ")?;
-            pos.initial_position().to_sfen(sink)?;
-        }
-        if !pos.moves().is_empty() {
-            sink.write_str(" moves")?;
-            for mv in pos.moves() {
-                sink.write_str(" ")?;
-                mv.to_usi(sink)?;
-            }
-        }
-        Ok(())
+        write_usi(&pos, sink)
     }
 }
 
@@ -43,18 +50,21 @@ impl JsonKifuFormat {
     ///
     /// # Errors
     ///
-    /// Returns `Err` if the record cannot be replayed into a position. A kifu
-    /// recording an illegal move is valid input (R-RULE-002), so this is a
-    /// value a file can produce.
+    /// Returns [`ConvertError`] naming the move that could not be replayed. A
+    /// kifu recording an illegal move is valid input (R-RULE-002), so this is a
+    /// value a file can produce, and the caller has to be able to say which move
+    /// it was.
     ///
     /// Use this rather than [`ToUsi::to_usi_owned`]. That one is a default
     /// method in `shogi_core` which asserts the write succeeded: with
     /// `debug_assertions` it panics, and without them it hands back an empty
     /// string. The consumer is a Tauri command, so the first is a crash and the
     /// second writes an empty `.usi` file over a real one.
-    pub fn try_to_usi_owned(&self) -> std::result::Result<String, std::fmt::Error> {
+    pub fn try_to_usi_owned(&self) -> std::result::Result<String, ConvertError> {
+        let pos = Position::try_from(self)?;
         let mut s = String::new();
-        self.to_usi(&mut s)?;
+        // Writing into a `String` cannot fail.
+        write_usi(&pos, &mut s).map_err(|err| ConvertError::Normalize(err.to_string()))?;
         Ok(s)
     }
 }
@@ -155,13 +165,15 @@ mod tests {
     /// Every `MoveSpecial` against the word each format writes for it and what
     /// survives a round trip through that format.
     ///
-    /// Transcribed from `research/tables/40-vocabulary.md` 表2 — KIF words from
-    /// R-KIF-007, CSA keywords from R-CSA-007, KI2 phrases from D5. **Nothing
-    /// here was read off a run of the code**; where the three formats lose
-    /// information the row says so, because the difference between a known
-    /// limit of a format and a writer quietly changing what a record says is
-    /// the whole point. Pinning `to_kif` to `中断` for every outcome has to fail
-    /// here, and so does pinning `to_csa` to `%CHUDAN`.
+    /// Eleven rows are transcribed: KIF words from R-KIF-007, CSA keywords from
+    /// R-CSA-007, KI2 phrases from D5. The other three — `HIKIWAKE`, `MATTA`,
+    /// `ERROR` — have no KIF word at all, so where they land is a decision, and
+    /// D7 is where it was made. **Nothing here was read off a run of the code.**
+    ///
+    /// Where a format loses information the row says so, because the difference
+    /// between a known limit of a format and a writer quietly changing what a
+    /// record says is the whole point. Pinning `to_kif` to `中断` for every
+    /// outcome has to fail here, and so does pinning `to_csa` to `%CHUDAN`.
     #[test]
     fn every_outcome_has_the_word_each_format_writes() {
         use crate::jkf::MoveSpecial::*;
@@ -256,9 +268,9 @@ mod tests {
                 after_ki2: SpecialKachi,
                 after_csa: Some(SpecialKachi),
             },
-            // R-KIF-007 has no word for a declared draw, and 持将棋 is the
-            // closest thing KIF can say, so `%HIKIWAKE` comes back as
-            // `%JISHOGI`. 中断 would lose that the game was drawn at all.
+            // D7: R-KIF-007 has no word for a declared draw, and 持将棋 is the
+            // closest KIF can say, so `%HIKIWAKE` comes back as `%JISHOGI`.
+            // 中断 would lose that the game was drawn at all.
             Row {
                 special: SpecialHikiwake,
                 kif_word: "持将棋",
@@ -268,8 +280,8 @@ mod tests {
                 after_ki2: SpecialJishogi,
                 after_csa: Some(SpecialHikiwake),
             },
-            // 待った and エラー have no KIF word at all (R-KIF-007), so they
-            // collapse onto 中断: the game stopped here, and why is lost.
+            // D7: 待った and エラー have no KIF word at all and nothing worth
+            // keeping, so they collapse onto 中断 — the game stopped here.
             Row {
                 special: SpecialMatta,
                 kif_word: "中断",
@@ -324,11 +336,18 @@ mod tests {
             }
         }
 
-        fn last<E>(
+        // The record, not just its last `special`. Collapsing "the outcome was
+        // dropped" into the same `None` as "the parse failed" or "every move
+        // vanished" would let exactly the failure this table exists to catch —
+        // `Ok` with less in it — pass unnoticed.
+        fn read_back<E: std::fmt::Debug>(
             text: &str,
             read: fn(&str) -> Result<JsonKifuFormat, E>,
-        ) -> Option<crate::jkf::MoveSpecial> {
-            read(text).ok()?.moves.last()?.special
+            what: &str,
+        ) -> (usize, Option<crate::jkf::MoveSpecial>) {
+            let jkf = read(text).unwrap_or_else(|e| panic!("{what} does not read back: {e:?}"));
+            let moves = jkf.moves.iter().filter(|mf| mf.move_.is_some()).count();
+            (moves, jkf.moves.last().and_then(|mf| mf.special))
         }
 
         for row in TABLE {
@@ -367,18 +386,19 @@ mod tests {
             );
 
             assert_eq!(
-                Some(row.after_kif),
-                last(&kif, crate::parser::parse_kif_str),
+                (2, Some(row.after_kif)),
+                read_back(&kif, crate::parser::parse_kif_str, "KIF"),
                 "{special:?} through KIF"
             );
             assert_eq!(
-                Some(row.after_ki2),
-                last(&ki2, crate::parser::parse_ki2_str),
+                (2, Some(row.after_ki2)),
+                read_back(&ki2, crate::parser::parse_ki2_str, "KI2"),
                 "{special:?} through KI2"
             );
+            // Both moves have to survive even where the outcome does not.
             assert_eq!(
-                row.after_csa,
-                last(&csa, crate::parser::parse_csa_str),
+                (2, row.after_csa),
+                read_back(&csa, crate::parser::parse_csa_str, "CSA"),
                 "{special:?} through CSA"
             );
         }
@@ -417,6 +437,62 @@ mod tests {
             ],
             ..Default::default()
         };
-        assert_eq!(Err(std::fmt::Error), jkf.try_to_usi_owned());
+        // The error has to name the move, not just say "failed": the caller is a
+        // Tauri command and the user needs to know which move it choked on.
+        let err = jkf.try_to_usi_owned().expect_err("the move cannot be made");
+        assert!(
+            err.to_string().contains("5e5d") || err.to_string().contains("Square"),
+            "the error should name the move: {err}"
+        );
+    }
+
+    /// The other half of the same API: what it writes when it succeeds. Without
+    /// this, `to_usi` can stop writing the moves — or spell the even game as
+    /// `sfen …` — and every test still passes.
+    #[test]
+    fn usi_names_the_starting_position_and_the_moves() {
+        use crate::jkf::{Color, Initial, Kind, MoveMoveFormat, PlaceFormat, Preset};
+        let pawn = |color, fx, fy, tx, ty| MoveFormat {
+            move_: Some(MoveMoveFormat {
+                color,
+                from: Some(PlaceFormat { x: fx, y: fy }),
+                to: PlaceFormat { x: tx, y: ty },
+                piece: Kind::FU,
+                same: None,
+                promote: None,
+                capture: None,
+                relative: None,
+            }),
+            ..Default::default()
+        };
+        let jkf = JsonKifuFormat {
+            initial: Some(Initial {
+                preset: Preset::PresetHirate,
+                data: None,
+            }),
+            moves: vec![
+                MoveFormat::default(),
+                pawn(Color::Black, 7, 7, 7, 6),
+                pawn(Color::White, 3, 3, 3, 4),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            "startpos moves 7g7f 3c3d",
+            jkf.try_to_usi_owned().expect("writes USI")
+        );
+
+        // A handicap is not the even game, so it is spelled out as SFEN.
+        let handicap = JsonKifuFormat {
+            initial: Some(Initial {
+                preset: Preset::PresetKY,
+                data: None,
+            }),
+            moves: vec![MoveFormat::default()],
+            ..Default::default()
+        };
+        let usi = handicap.try_to_usi_owned().expect("writes USI");
+        assert!(usi.starts_with("sfen "), "{usi:?}");
+        assert!(!usi.contains("moves"), "no moves were played: {usi:?}");
     }
 }

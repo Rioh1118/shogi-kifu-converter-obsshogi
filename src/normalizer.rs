@@ -664,6 +664,67 @@ fn populate_relative_moves(
 mod tests {
     use super::*;
 
+    // `同` carries no destination of its own — it means the square the previous
+    // move went to (R-NOT-002) — and only normalization can fill it in. Stopping
+    // at the outcome node leaves `to` at (0,0), which no writer can spell, so
+    // saving a game that was interrupted and resumed fails outright.
+    #[test]
+    fn a_move_after_an_interruption_is_still_normalized() {
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77)
+   2 ３四歩(33)
+   3 ２二角成(88)
+   4 中断
+   5 同　銀(31)
+";
+        let jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        let mv = jkf.moves[5].move_.expect("a move");
+        assert_eq!(PlaceFormat { x: 2, y: 2 }, mv.to, "`同` resolves to 2二");
+        assert_eq!(Color::White, mv.color);
+        assert_eq!(Some(Kind::UM), mv.capture, "it takes the horse");
+        // And the record can be written back out.
+        use crate::converter::{ToKi2, ToKif};
+        assert!(jkf.try_to_kif_owned().is_ok());
+        assert!(jkf.try_to_ki2_owned().is_ok());
+    }
+
+    // `直` is the only way to read `▲５八金直` when more than one gold reaches
+    // the square, and it is the one arm of `calculate_from`'s match that the
+    // 左/右 rewrite did not touch. Left unfiltered, the move comes back ambiguous
+    // and the branch holding it is dropped.
+    #[test]
+    fn a_gold_moving_straight_up_is_read_from_直() {
+        let kif = "手合割：その他
+後手の持駒：なし
+  ９ ８ ７ ６ ５ ４ ３ ２ １
++---------------------------+
+| ・ ・ ・ ・v玉 ・ ・ ・ ・|一
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|二
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|三
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|四
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|五
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|六
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|七
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|八
+| 玉 ・ ・ 金 金 金 ・ ・ ・|九
++---------------------------+
+先手の持駒：なし
+先手番
+手数----指手---------消費時間--
+   1 ５八金(59)
+";
+        use crate::converter::ToKi2;
+        let jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
+        assert!(ki2.contains("▲５八金直"), "{ki2:?}");
+        let back = crate::parser::parse_ki2_str(&ki2).expect("reads back");
+        assert_eq!(
+            Some(PlaceFormat { x: 5, y: 9 }),
+            back.moves[1].move_.expect("a move").from,
+        );
+    }
+
     // A branch whose moves cannot be replayed is still a branch. Dropping it
     // returns `Ok` with the record one variation shorter, and the next save
     // writes the shortened record over the original — the loss is permanent and

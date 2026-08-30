@@ -196,6 +196,65 @@ mod tests {
    1 ５三飛(52)   ( 0:00/00:00:00)
 ";
 
+    /// The other side of the same line: the counts that *are* spellable. The
+    /// rejection test alone leaves the writer free to stop writing counts
+    /// altogether — 18 pawns would be saved as `歩` and 17 of them would be gone
+    /// on the next read.
+    ///
+    /// 1 is written bare, 10 and 18 are the two-character spellings, and 2 is
+    /// the ordinary case.
+    #[test]
+    fn a_hand_is_written_with_its_count_and_reads_back() {
+        use crate::jkf::*;
+        let mut state = StateFormat {
+            color: Color::Black,
+            board: [[Piece {
+                color: None,
+                kind: None,
+            }; 9]; 9],
+            hands: [Hand::default(); 2],
+        };
+        state.board[4][8] = Piece {
+            color: Some(Color::Black),
+            kind: Some(Kind::OU),
+        };
+        state.board[4][0] = Piece {
+            color: Some(Color::White),
+            kind: Some(Kind::OU),
+        };
+        state.hands[0] = Hand {
+            FU: 18,
+            KY: 1,
+            KE: 10,
+            GI: 2,
+            KI: 0,
+            KA: 0,
+            HI: 0,
+        };
+        let jkf = JsonKifuFormat {
+            initial: Some(Initial {
+                preset: Preset::PresetOther,
+                data: Some(state),
+            }),
+            moves: vec![MoveFormat::default()],
+            ..Default::default()
+        };
+        let kif = jkf.try_to_kif_owned().expect("writes KIF");
+        let line = kif
+            .lines()
+            .find(|l| l.starts_with("先手の持駒："))
+            .unwrap_or_else(|| panic!("no hand line in {kif:?}"));
+        for want in ["歩十八", "香", "桂十", "銀二"] {
+            assert!(line.contains(want), "{want} missing from {line:?}");
+        }
+        assert!(!line.contains("香一"), "1 is written bare: {line:?}");
+        assert_eq!(
+            jkf.initial,
+            parse_kif_str(&kif).expect("reads back").initial,
+            "{kif:?}"
+        );
+    }
+
     /// Coordinates and hand counts come from the record, so they can be out of
     /// range. Spelling one is an error the caller can see, not an index into a
     /// table that takes the process down.

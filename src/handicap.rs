@@ -382,10 +382,25 @@ mod tests {
                 "reading {}",
                 handicap.kif_name
             );
-            // None of these may panic.
+            // R-HC-005: a name the parser accepts has to reach every writer.
+            // `let _ =` here would let KI2 start returning `Err` unnoticed, and
+            // the consumer's save path goes through KI2 (R-REQ-002).
             let kif = jkf.try_to_kif_owned().expect("writes KIF");
-            let _ = jkf.try_to_ki2_owned();
+            let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
             let csa = jkf.try_to_csa_owned().expect("writes CSA");
+            assert!(
+                handicap.preset == Preset::PresetHirate || ki2.contains(handicap.kif_name),
+                "{} missing from {ki2:?}",
+                handicap.kif_name
+            );
+            assert_eq!(
+                jkf.initial,
+                crate::parser::parse_ki2_str(&ki2)
+                    .unwrap_or_else(|e| panic!("{}: {e}", handicap.kif_name))
+                    .initial,
+                "KI2 round trip {}",
+                handicap.kif_name
+            );
 
             assert!(
                 kif.contains(handicap.kif_name),
