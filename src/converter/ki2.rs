@@ -64,8 +64,14 @@ fn write_moves<W: Write>(
             sink.write_char('\n')?;
         }
     }
-    let mut it = moves[1..].iter().peekable();
-    while let Some(mf) = it.next() {
+    // Tracks whether the next write starts a line, so the end-of-game line does
+    // not get appended to the run of moves.
+    let mut at_line_start = true;
+    let mut it = moves[1..].iter().enumerate().peekable();
+    while let Some((index, mf)) = it.next() {
+        // `moves[0]` holds the initial comments, so the move at `moves[i]` is
+        // ply `i`.
+        let ply = index + 1;
         if let Some(mv) = &mf.move_ {
             match mv.color {
                 Color::Black => sink.write_char('▲')?,
@@ -114,6 +120,21 @@ fn write_moves<W: Write>(
                 pos.make_move(core_move)?;
                 Some(pos)
             });
+            at_line_start = false;
+        } else if let Some(special) = &mf.special {
+            // KI2 records the outcome as a `まで<N>手で…` line rather than as
+            // another move. Dropping it is how a saved game came back looking
+            // like it had been abandoned.
+            if !at_line_start {
+                sink.write_char('\n')?;
+            }
+            let side_to_move = [Color::White, Color::Black][ply % 2];
+            sink.write_fmt(format_args!(
+                "まで{}手で{}",
+                ply - 1,
+                special.ki2_phrase(side_to_move)
+            ))?;
+            at_line_start = false;
         }
         if let Some(comments) = &mf.comments {
             sink.write_char('\n')?;
@@ -124,6 +145,7 @@ fn write_moves<W: Write>(
                 sink.write_str(comment)?;
                 sink.write_char('\n')?;
             }
+            at_line_start = true;
         } else if it.peek().is_some() {
             sink.write_char(' ')?;
         }
@@ -184,6 +206,61 @@ mod tests {
         // The field being filled in must not change the answer.
         jkf.populate_relative().expect("populates");
         assert!(jkf.to_ki2_owned().contains("▲５三角左成"));
+    }
+
+    // KI2 records the outcome as a `まで<N>手で…` line. Writing the moves and
+    // dropping that line makes a finished game look abandoned, and KI2 carries
+    // no ply numbers, so nothing downstream can tell that something went
+    // missing. The spellings follow tsshogi (R-KI2-006).
+    #[test]
+    fn outcome_survives_a_ki2_round_trip() {
+        for (word, want, phrase) in [
+            ("投了", MoveSpecial::SpecialToryo, "まで2手で後手の勝ち"),
+            ("千日手", MoveSpecial::SpecialSennichite, "まで2手で千日手"),
+            (
+                "切れ負け",
+                MoveSpecial::SpecialTimeUp,
+                "まで2手で時間切れにより後手の勝ち",
+            ),
+            (
+                "反則負け",
+                MoveSpecial::SpecialIllegalMove,
+                "まで2手で先手の反則負け",
+            ),
+            (
+                "反則勝ち",
+                MoveSpecial::SpecialIllegalActionWhite,
+                "まで2手で先手の反則勝ち",
+            ),
+            ("持将棋", MoveSpecial::SpecialJishogi, "まで2手で持将棋"),
+            (
+                "入玉勝ち",
+                MoveSpecial::SpecialKachi,
+                "まで2手で先手の入玉勝ち",
+            ),
+            ("詰み", MoveSpecial::SpecialTsumi, "まで2手で詰み"),
+            ("不詰", MoveSpecial::SpecialFuzumi, "まで2手で不詰"),
+        ] {
+            let kif = format!(
+                "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n   2 ３四歩(33)\n   3 {word}\n"
+            );
+            let jkf = crate::parser::parse_kif_str(&kif)
+                .unwrap_or_else(|e| panic!("failed to parse {word}: {e}"));
+            assert_eq!(
+                Some(want),
+                jkf.moves.last().and_then(|mf| mf.special),
+                "reading {word}"
+            );
+            let ki2 = jkf.to_ki2_owned();
+            assert!(ki2.contains(phrase), "{word} wrote {ki2:?}");
+            let back = crate::parser::parse_ki2_str(&ki2)
+                .unwrap_or_else(|e| panic!("failed to read back {word}: {e}"));
+            assert_eq!(
+                Some(want),
+                back.moves.last().and_then(|mf| mf.special),
+                "round trip for {word}"
+            );
+        }
     }
 
     #[test]

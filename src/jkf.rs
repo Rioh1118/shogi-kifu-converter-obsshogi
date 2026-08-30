@@ -240,6 +240,55 @@ impl MoveSpecial {
         })
     }
 
+    /// The KI2 end-of-game phrase — the part after `まで<N>手で`.
+    ///
+    /// KI2 has no published specification for how a game ends (R-KI2-006), so
+    /// this follows tsshogi. That is the library reading these same files on the
+    /// TypeScript side of the only consumer; spelling it differently would mean
+    /// the two disagree about a file this crate just wrote.
+    ///
+    /// `side_to_move` is whose turn it is at the ply the outcome occupies.
+    pub(crate) fn ki2_phrase(self, side_to_move: Color) -> String {
+        // `mover` is the side to move; `opponent` is the one who just moved.
+        let (mover, opponent) = match side_to_move {
+            Color::Black => ("先手", "後手"),
+            Color::White => ("後手", "先手"),
+        };
+        match self {
+            MoveSpecial::SpecialToryo => format!("{opponent}の勝ち"),
+            MoveSpecial::SpecialTimeUp => format!("時間切れにより{opponent}の勝ち"),
+            MoveSpecial::SpecialKachi => format!("{mover}の入玉勝ち"),
+            MoveSpecial::SpecialIllegalActionBlack | MoveSpecial::SpecialIllegalActionWhite => {
+                format!("{mover}の反則勝ち")
+            }
+            MoveSpecial::SpecialIllegalMove => format!("{mover}の反則負け"),
+            _ => self.kif_word().unwrap_or("中断").to_owned(),
+        }
+    }
+
+    /// Parses a KI2 end-of-game phrase, with `まで<N>手で` already removed.
+    ///
+    /// The order of the tests matters: `時間切れにより…の勝ち` and `反則勝ち`
+    /// both end in `勝ち`, so the plain resignation case has to come last.
+    pub(crate) fn from_ki2_phrase(phrase: &str, side_to_move: Color) -> Option<Self> {
+        if phrase.starts_with("時間切れ") {
+            return Some(MoveSpecial::SpecialTimeUp);
+        }
+        if phrase.ends_with("反則勝ち") {
+            return MoveSpecial::from_kif_word("反則勝ち", side_to_move);
+        }
+        if phrase.ends_with("反則負け") {
+            return Some(MoveSpecial::SpecialIllegalMove);
+        }
+        if phrase.ends_with("入玉勝ち") {
+            return Some(MoveSpecial::SpecialKachi);
+        }
+        if phrase.ends_with("勝ち") {
+            return Some(MoveSpecial::SpecialToryo);
+        }
+        MoveSpecial::from_kif_word(phrase, side_to_move)
+    }
+
     /// The CSA `%` keyword for this outcome, without the leading `%`.
     pub(crate) fn csa_word(self) -> &'static str {
         match self {

@@ -2,11 +2,11 @@ use super::kakinoki::{move_comment_line, move_to, parse_without_moves, piece_kin
 use crate::jkf::*;
 use nom::branch::alt;
 use nom::bytes::complete::tag;
-use nom::character::complete::{line_ending, space0};
+use nom::character::complete::{line_ending, not_line_ending, space0};
 use nom::combinator::{map, opt, value};
-use nom::error::VerboseError;
+use nom::error::{ParseError, VerboseError};
 use nom::multi::{many0, many1};
-use nom::sequence::{pair, preceded, tuple};
+use nom::sequence::{pair, preceded, terminated, tuple};
 use nom::IResult;
 
 fn single_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
@@ -65,23 +65,50 @@ fn single_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
     )(input)
 }
 
-fn moves(input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
-    map(
-        pair(
-            preceded(many0(line_ending), opt(many1(move_comment_line))),
-            many0(single_move),
-        ),
-        |(comments, v)| {
-            [
-                vec![MoveFormat {
-                    comments,
+/// Reads the `まで<N>手で…` line that KI2 uses instead of an outcome move.
+///
+/// `ply` is the ply the outcome occupies, which decides whose turn it is and
+/// therefore which side 反則勝ち accuses.
+fn end_of_game_line(
+    ply: usize,
+) -> impl FnMut(&str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
+    move |input| {
+        let (input, _) = preceded(many0(line_ending), tag("まで"))(input)?;
+        let (input, phrase): (&str, &str) = terminated(not_line_ending, opt(line_ending))(input)?;
+        // `まで` may be followed by `<N>手で`; the ply is already known from the
+        // moves that were read, so the number is not needed.
+        let phrase = phrase
+            .split_once("手で")
+            .map_or(phrase, |(_, rest)| rest)
+            .trim();
+        let side_to_move = [Color::White, Color::Black][ply % 2];
+        match MoveSpecial::from_ki2_phrase(phrase, side_to_move) {
+            Some(special) => Ok((
+                input,
+                MoveFormat {
+                    special: Some(special),
                     ..Default::default()
-                }],
-                v,
-            ]
-            .concat()
-        },
-    )(input)
+                },
+            )),
+            None => Err(nom::Err::Error(VerboseError::from_error_kind(
+                input,
+                nom::error::ErrorKind::Tag,
+            ))),
+        }
+    }
+}
+
+fn moves(input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
+    let (input, comments) = preceded(many0(line_ending), opt(many1(move_comment_line)))(input)?;
+    let (input, v) = many0(single_move)(input)?;
+    let (input, end) = opt(end_of_game_line(v.len() + 1))(input)?;
+    let mut out = vec![MoveFormat {
+        comments,
+        ..Default::default()
+    }];
+    out.extend(v);
+    out.extend(end);
+    Ok((input, out))
 }
 
 pub(crate) fn parse(input: &str) -> IResult<&str, JsonKifuFormat, VerboseError<&str>> {
