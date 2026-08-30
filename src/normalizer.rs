@@ -529,26 +529,50 @@ fn normalize_move(
     };
     // Set relative?
     if infer_relative && mmf.relative.is_none() {
-        if let Some(mut display) = display_single_move_kansuji(pos, mv) {
-            mmf.relative = match (display.pop(), display.pop()) {
-                (Some('左'), _) => Some(Relative::L),
-                (Some('直'), _) => Some(Relative::C),
-                (Some('右'), _) => Some(Relative::R),
-                (Some('上'), Some('左')) => Some(Relative::LU),
-                (Some('上'), Some('右')) => Some(Relative::RU),
-                (Some('上'), _) => Some(Relative::U),
-                (Some('引'), Some('左')) => Some(Relative::LD),
-                (Some('引'), Some('右')) => Some(Relative::RD),
-                (Some('引'), _) => Some(Relative::D),
-                (Some('寄'), Some('左')) => Some(Relative::LM),
-                (Some('寄'), Some('右')) => Some(Relative::RM),
-                (Some('寄'), _) => Some(Relative::M),
-                (Some('打'), _) => Some(Relative::H),
-                _ => None,
-            };
-        }
+        mmf.relative = infer_relative_from_position(pos, mv);
     }
     Ok(mv)
+}
+
+/// Infers the disambiguating suffix (左/右/直/上/寄/引/打) for `mv` in `pos`.
+///
+/// The traditional notation orders a move as
+/// `<destination><piece><relative><motion><promotion>` (R-NOT-001), so the
+/// promotion suffix has to come off before the relative part is reachable.
+/// Reading the tail without stripping it makes every promoting move look like
+/// it has no disambiguator, which produces KI2 that cannot be read back
+/// (R-NOT-004 / R-NOT-005).
+///
+/// This is the only place that maps a rendered move back to [`Relative`].
+/// Keeping a second copy is what let the promotion bug live in one caller and
+/// not the other.
+fn infer_relative_from_position(pos: &PartialPosition, mv: shogi_core::Move) -> Option<Relative> {
+    let mut display = display_single_move_kansuji(pos, mv)?;
+    // `不成` has to be tested first: it also ends with `成`.
+    let cut = if let Some(rest) = display.strip_suffix("不成") {
+        rest.len()
+    } else if let Some(rest) = display.strip_suffix('成') {
+        rest.len()
+    } else {
+        display.len()
+    };
+    display.truncate(cut);
+    match (display.pop(), display.pop()) {
+        (Some('左'), _) => Some(Relative::L),
+        (Some('直'), _) => Some(Relative::C),
+        (Some('右'), _) => Some(Relative::R),
+        (Some('上'), Some('左')) => Some(Relative::LU),
+        (Some('上'), Some('右')) => Some(Relative::RU),
+        (Some('上'), _) => Some(Relative::U),
+        (Some('引'), Some('左')) => Some(Relative::LD),
+        (Some('引'), Some('右')) => Some(Relative::RD),
+        (Some('引'), _) => Some(Relative::D),
+        (Some('寄'), Some('左')) => Some(Relative::LM),
+        (Some('寄'), Some('右')) => Some(Relative::RM),
+        (Some('寄'), _) => Some(Relative::M),
+        (Some('打'), _) => Some(Relative::H),
+        _ => None,
+    }
 }
 
 fn normalize_moves(
@@ -600,24 +624,7 @@ fn populate_relative_moves(
                 Err(err) => return Err(NormalizeError::Convert(err.to_string())),
             };
             if mmf.relative.is_none() {
-                if let Some(mut display) = display_single_move_kansuji(&pos, mv) {
-                    mmf.relative = match (display.pop(), display.pop()) {
-                        (Some('左'), _) => Some(Relative::L),
-                        (Some('直'), _) => Some(Relative::C),
-                        (Some('右'), _) => Some(Relative::R),
-                        (Some('上'), Some('左')) => Some(Relative::LU),
-                        (Some('上'), Some('右')) => Some(Relative::RU),
-                        (Some('上'), _) => Some(Relative::U),
-                        (Some('引'), Some('左')) => Some(Relative::LD),
-                        (Some('引'), Some('右')) => Some(Relative::RD),
-                        (Some('引'), _) => Some(Relative::D),
-                        (Some('寄'), Some('左')) => Some(Relative::LM),
-                        (Some('寄'), Some('右')) => Some(Relative::RM),
-                        (Some('寄'), _) => Some(Relative::M),
-                        (Some('打'), _) => Some(Relative::H),
-                        _ => None,
-                    };
-                }
+                mmf.relative = infer_relative_from_position(&pos, mv);
             }
             if pos.make_move(mv).is_none() {
                 return Err(NormalizeError::MakeMoveFailed(mv));
@@ -632,6 +639,56 @@ fn populate_relative_moves(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two black bishops on 7a and 3a, both able to reach 5c, so every move to
+    /// 5c needs a 左/右 disambiguator (R-NOT-004). `{mv}` is the move line.
+    fn ambiguous_bishop_kif(mv: &str) -> String {
+        format!(
+            "手合割：その他
+後手の持駒：なし
+  ９ ８ ７ ６ ５ ４ ３ ２ １
++---------------------------+
+| ・ ・ 角 ・v玉 ・ 角 ・ ・|一
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|二
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|三
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|四
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|五
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|六
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|七
+| ・ ・ ・ ・ ・ ・ ・ ・ ・|八
+| ・ ・ ・ ・ 玉 ・ ・ ・ ・|九
++---------------------------+
+先手の持駒：なし
+先手番
+手数----指手---------消費時間--
+   1 {mv}   ( 0:00/00:00:00)
+"
+        )
+    }
+
+    // R-NOT-004 / R-NOT-005: the promotion suffix must not hide the
+    // disambiguator. `不成` is covered too — stripping only `成` leaves it
+    // broken, and a KI2 written without the disambiguator cannot be read back.
+    #[test]
+    fn relative_survives_promotion_suffix() {
+        for (mv, want) in [
+            ("５三角成(71)", Relative::L),
+            ("５三角成(31)", Relative::R),
+            ("５三角(71)", Relative::L),
+            ("５三角(31)", Relative::R),
+        ] {
+            let src = ambiguous_bishop_kif(mv);
+            let mut jkf = crate::parser::parse_kif_str(&src)
+                .unwrap_or_else(|e| panic!("failed to parse {mv}: {e}"));
+            jkf.populate_relative()
+                .unwrap_or_else(|e| panic!("failed to populate {mv}: {e}"));
+            assert_eq!(
+                Some(want),
+                jkf.moves[1].move_.expect("a move").relative,
+                "relative for {mv}"
+            );
+        }
+    }
 
     #[test]
     fn normalize_moves_empty() {
