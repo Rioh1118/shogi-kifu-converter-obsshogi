@@ -91,7 +91,12 @@ fn end_of_game_line(
                     ..Default::default()
                 },
             )),
-            None => Err(nom::Err::Error(VerboseError::from_error_kind(
+            // `まで` matched, so this line *is* the outcome line whatever it
+            // says. Reporting a recoverable error would leave the line
+            // unconsumed, which ends the move list and drops the `変化：`
+            // blocks after it without a word (D1: a record we cannot read has
+            // to say so). `Failure` is what `opt` does not swallow.
+            None => Err(nom::Err::Failure(VerboseError::from_error_kind(
                 input,
                 nom::error::ErrorKind::Tag,
             ))),
@@ -233,6 +238,27 @@ mod tests {
             let mv = mf.move_.expect("a move");
             assert_eq!(relative, mv.relative, "relative for {input}");
             assert_eq!(promote, mv.promote, "promote for {input}");
+        }
+    }
+
+    // A `まで…` line whose phrase is not in the vocabulary used to be left
+    // unconsumed, which ended the move list and threw away every `変化：` block
+    // after it while still returning `Ok`. The outcome word is the one thing a
+    // reader cannot recover from the rest of the file, so a record that says
+    // something we do not understand has to be reported (D1).
+    #[test]
+    fn an_unreadable_outcome_line_is_an_error_not_a_silent_truncation() {
+        for phrase in ["持将棋成立", "先手の不戦敗", "中座", "引き分け"] {
+            let ki2 = format!(
+                "▲７六歩 △３四歩\nまで2手で{phrase}\n\n変化：2手\n△８四歩\n\n変化：1手\n▲２六歩\n"
+            );
+            let err = crate::parser::parse_ki2_str(&ki2)
+                .err()
+                .unwrap_or_else(|| panic!("{phrase} was accepted"));
+            assert!(
+                matches!(err, crate::error::ParseError::Ki2(_)),
+                "{phrase} gave {err:?}"
+            );
         }
     }
 
