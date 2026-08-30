@@ -133,9 +133,8 @@ impl TryFrom<&jkf::JsonKifuFormat> for Position {
         for mf in jkf.moves.iter() {
             if let Some(mv) = &mf.move_ {
                 let mv = mv.try_into()?;
-                pos.make_move(mv).ok_or_else(|| {
-                    ConvertError::Normalize(NormalizeError::MakeMoveFailed(mv).to_string())
-                })?;
+                pos.make_move(mv)
+                    .ok_or_else(|| ConvertError::from(NormalizeError::MakeMoveFailed(mv)))?;
             }
         }
         Ok(pos)

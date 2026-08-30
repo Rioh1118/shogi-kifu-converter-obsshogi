@@ -211,10 +211,7 @@ impl JsonKifuFormat {
                     }
                 }
             }
-            match PartialPosition::try_from(initial) {
-                Ok(pos) => pos,
-                Err(err) => return Err(NormalizeError::Convert(err.to_string())),
-            }
+            PartialPosition::try_from(initial)?
         } else {
             PartialPosition::startpos()
         };
@@ -285,10 +282,7 @@ impl JsonKifuFormat {
     /// — e.g. KI2 conversion.
     pub fn populate_relative(&mut self) -> Result<(), NormalizeError> {
         let pos = if let Some(initial) = &self.initial {
-            match PartialPosition::try_from(initial) {
-                Ok(pos) => pos,
-                Err(err) => return Err(NormalizeError::Convert(err.to_string())),
-            }
+            PartialPosition::try_from(initial)?
         } else {
             PartialPosition::startpos()
         };
@@ -402,10 +396,7 @@ fn normalize_move(
             })
             .ok_or(NormalizeError::NoLastMove)?;
     }
-    let to = match shogi_core::Square::try_from(&mmf.to) {
-        Ok(to) => to,
-        Err(err) => return Err(NormalizeError::Convert(err.to_string())),
-    };
+    let to = shogi_core::Square::try_from(&mmf.to)?;
     if mmf.from == Some(ORIGIN_UNSTATED) {
         mmf.from = calculate_from(mmf, pos, to)?;
     }
@@ -454,15 +445,10 @@ fn normalize_move(
             // loses the square for good — the writers reject the same value
             // rather than spell `(00)`, which KIF has no meaning for
             // (R-KIF-005).
-            return Err(NormalizeError::Convert(
-                ConvertError::InvalidSquare((pf.x, pf.y)).to_string(),
-            ));
+            return Err(ConvertError::InvalidSquare((pf.x, pf.y)).into());
         }
     }
-    let mv = match shogi_core::Move::try_from(&*mmf) {
-        Ok(mv) => mv,
-        Err(err) => return Err(NormalizeError::Convert(err.to_string())),
-    };
+    let mv = shogi_core::Move::try_from(&*mmf)?;
     // Set relative?
     if infer_relative && mmf.relative.is_none() {
         // A move the notation cannot spell has no suffix to record; the writer
@@ -811,10 +797,7 @@ fn populate_relative_moves(
             }
         }
         if let Some(mmf) = &mut mf.move_ {
-            let mv = match shogi_core::Move::try_from(&*mmf) {
-                Ok(mv) => mv,
-                Err(err) => return Err(NormalizeError::Convert(err.to_string())),
-            };
+            let mv = shogi_core::Move::try_from(&*mmf)?;
             if mmf.relative.is_none() {
                 mmf.relative = match infer_relative_from_position(&pos, mv) {
                     Suffix::Only(relative) => Some(relative),
@@ -1091,6 +1074,29 @@ mod tests {
                 crate::parser::parse_kif_str(&kif).is_err(),
                 "{origin} was accepted"
             );
+        }
+    }
+
+    // The KIF reader rejects an off-board origin itself, so the normalizer's
+    // own refusal is only reachable from a source that states `from` as data —
+    // JKF, which the consumer's save path feeds (R-REQ-002).
+    //
+    // The error has to name the square that could not be read. Telling "this
+    // record holds one unreadable coordinate" from "this is not a kifu at all"
+    // is a decision the caller makes on the variant, which is why the nesting
+    // is kept as errors instead of flattened to a message.
+    #[test]
+    fn an_origin_off_the_board_names_the_square_it_could_not_read() {
+        for (x, y) in [(10, 1), (1, 10), (0, 9)] {
+            let json = format!(
+                r#"{{"header":{{}},"initial":{{"preset":"HIRATE"}},"moves":[{{}},
+                   {{"move":{{"color":0,"from":{{"x":{x},"y":{y}}},"to":{{"x":7,"y":6}},"piece":"FU"}}}}]}}"#
+            );
+            let err = crate::parser::parse_jkf_str(&json).expect_err("({x},{y}) was accepted");
+            let crate::error::ParseError::Normalize(NormalizeError::Convert(inner)) = err else {
+                panic!("({x},{y}) gave {err:?}, not a conversion error");
+            };
+            assert_eq!(ConvertError::InvalidSquare((x, y)), *inner, "({x},{y})");
         }
     }
 

@@ -15,8 +15,18 @@ pub enum ConvertError {
     #[error("Invalid piece kind for `Hand`: {0:?}")]
     InvalidHandPiece(shogi_core::PieceKind),
     /// An error that occurred while normalizing [`JsonKifuFormat`](crate::jkf::JsonKifuFormat)
+    ///
+    /// Boxed rather than flattened to its message: the two enums refer to each
+    /// other, and a caller that has to tell an illegal move (valid input under
+    /// R-RULE-002) from a board it cannot build needs the variant, not prose.
     #[error("Failed to normalize: {0}")]
-    Normalize(String),
+    Normalize(Box<NormalizeError>),
+}
+
+impl From<NormalizeError> for ConvertError {
+    fn from(err: NormalizeError) -> Self {
+        Self::Normalize(Box::new(err))
+    }
 }
 
 /// An error that can occur while normalizing [`JsonKifuFormat`](crate::jkf::JsonKifuFormat)
@@ -35,11 +45,19 @@ pub enum NormalizeError {
     #[error("Invalid move: {0:?}")]
     MakeMoveFailed(shogi_core::Move),
     /// An error that occurred while converting from/into [`shogi_core::Position`]
+    ///
+    /// Boxed for the same reason as [`ConvertError::Normalize`].
     #[error("Failed to convert: {0}")]
-    Convert(String),
+    Convert(Box<ConvertError>),
     /// Incorrect sequence of move colors
     #[error("Invalid color")]
     InvalidColor,
+}
+
+impl From<ConvertError> for NormalizeError {
+    fn from(err: ConvertError) -> Self {
+        Self::Convert(Box::new(err))
+    }
 }
 
 /// An error that can occur while parsing kifu data

@@ -101,9 +101,9 @@ impl TryFrom<&Position> for jkf::JsonKifuFormat {
         for &mv in pos.moves() {
             let mmf = match mv {
                 Move::Normal { from, to, promote } => {
-                    let piece = pp.piece_at(from).ok_or_else(|| {
-                        ConvertError::Normalize(NormalizeError::NoPieceAt(from).to_string())
-                    })?;
+                    let piece = pp
+                        .piece_at(from)
+                        .ok_or_else(|| ConvertError::from(NormalizeError::NoPieceAt(from)))?;
                     jkf::MoveMoveFormat {
                         color: pp.side_to_move().into(),
                         from: Some((&from).into()),
@@ -131,9 +131,8 @@ impl TryFrom<&Position> for jkf::JsonKifuFormat {
                 move_: Some(mmf),
                 ..Default::default()
             });
-            pp.make_move(mv).ok_or_else(|| {
-                ConvertError::Normalize(NormalizeError::MakeMoveFailed(mv).to_string())
-            })?;
+            pp.make_move(mv)
+                .ok_or_else(|| ConvertError::from(NormalizeError::MakeMoveFailed(mv)))?;
         }
         let mut ret = jkf::JsonKifuFormat {
             header: HashMap::new(),
@@ -142,7 +141,7 @@ impl TryFrom<&Position> for jkf::JsonKifuFormat {
         };
         match ret.normalize() {
             Ok(()) => Ok(ret),
-            Err(err) => Err(ConvertError::Normalize(err.to_string())),
+            Err(err) => Err(err.into()),
         }
     }
 }
