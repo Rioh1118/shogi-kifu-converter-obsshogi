@@ -204,6 +204,13 @@ fn moves_with_index(
     start: Color,
     input: &str,
 ) -> IResult<&str, (usize, Vec<MoveFormat>), VerboseError<&str>> {
+    // A run can open with comment lines, and the node they make carries no ply:
+    // JKF lets a node hold only comments (R-JKF-002) and KIF has no numbered
+    // line for one, so `to_kif` writes them straight after the `変化：N手`
+    // header. Refusing them here means this crate writes `変化：` blocks its own
+    // reader rejects — and a `&` bookmark in the same place was worse, swallowed
+    // as an unreadable line and gone without a word (R-KIF-011).
+    let (input, leading) = opt(many1(move_comment_line))(input)?;
     let (mut input, (first_ply, first)) = move_with_comments(start, None, input)?;
     // Whose turn the next line is. Only a move passes the turn; an outcome takes
     // a ply number without taking a turn, which is why the parity of the number
@@ -212,7 +219,14 @@ fn moves_with_index(
         &first,
         crate::handicap::side_to_move_at_ply(start, first_ply),
     );
-    let mut out = vec![first];
+    let mut out: Vec<MoveFormat> = leading
+        .map(|comments| MoveFormat {
+            comments: Some(comments),
+            ..Default::default()
+        })
+        .into_iter()
+        .chain([first])
+        .collect();
     loop {
         // R-KIF-002: a blank line and a `#` line may sit anywhere in the move
         // list. Ending the run on one leaves every move after it to be read as
@@ -266,27 +280,44 @@ fn main_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Verbo
 }
 
 fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
-    /// Hangs `fork`, which starts at ply `at`, off `run`, whose first element
-    /// is ply `base`.
+    /// Where in `run` the node at ply `at` sits, `base` being the ply of the
+    /// run's first numbered line.
     ///
-    /// A run is the alternative *to* the move at its own ply (R-JKF-004), so
-    /// ply `at` is index `at - base` of `run`. A run numbered past the end of
-    /// `run` is not an alternative to a move that is not there: it is `run`
-    /// carrying on, and that is how tsshogi reads it (D3 rule 4 —
-    /// `research/tables/20-fork-merge.md` T5). Dropping it returned `Ok` with
-    /// those moves gone and said nothing.
+    /// The ply is the number on the line, not the position in the array. A node
+    /// carrying only comments takes no number (`occupies_a_ply`), so counting
+    /// array slots instead puts a `変化：N手` block one move off for every such
+    /// node before it. The writer numbers the same way
+    /// (`converter/kif.rs::write_move_lines`), and a reader that counts
+    /// differently reads back a tree the writer did not write.
+    fn index_of_ply(run: &[MoveFormat], base: usize, at: usize) -> Option<usize> {
+        let mut ply = base;
+        for (index, mf) in run.iter().enumerate() {
+            if !mf.occupies_a_ply() {
+                continue;
+            }
+            if ply == at {
+                return Some(index);
+            }
+            ply += 1;
+        }
+        None
+    }
+
+    /// Hangs `fork`, which starts at ply `at`, off `run`, whose first numbered
+    /// line is ply `base`.
     ///
-    /// A `変化：` number smaller than `base` cannot be placed at all. It stays
-    /// dropped, and the caller's leftover-input check does not see it either —
-    /// `research/90-gaps.md` GAP-018.
+    /// A run is the alternative *to* the move at its own ply (R-JKF-004). A run
+    /// numbered past the end of `run` is not an alternative to a move that is
+    /// not there: it is `run` carrying on, and that is how tsshogi reads it
+    /// (D3 rule 4 — `research/tables/20-fork-merge.md` T5). Dropping it returned
+    /// `Ok` with those moves gone and said nothing.
     fn attach(run: &mut Vec<MoveFormat>, base: usize, at: usize, fork: Vec<MoveFormat>) {
-        match at.checked_sub(base).and_then(|k| run.get_mut(k)) {
-            Some(node) => match &mut node.forks {
+        match index_of_ply(run, base, at) {
+            Some(index) => match &mut run[index].forks {
                 Some(v) => v.push(fork),
-                None => node.forks = Some(vec![fork]),
+                None => run[index].forks = Some(vec![fork]),
             },
-            None if at >= base => run.extend(fork),
-            None => {}
+            None => run.extend(fork),
         }
     }
 
@@ -304,10 +335,10 @@ fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Ver
                 }
             }
         }
-        // The main line opens with the initial position's slot, so its first
-        // element is ply 0 (R-JKF-001).
+        // The main line opens with the initial position's slot, which takes no
+        // number of its own, so its first numbered line is ply 1 (R-JKF-001).
         while let Some((i, fork)) = stack.pop() {
-            attach(&mut moves, 0, i, fork);
+            attach(&mut moves, 1, i, fork);
         }
         moves
     }
@@ -931,6 +962,79 @@ mod tests {
         assert!(
             moves.iter().all(|m| m.forks.is_none()),
             "nothing branched: {moves:?}"
+        );
+    }
+
+    // A `変化：` block can open with a node carrying only comments: JKF allows
+    // one (R-JKF-002), KIF has no numbered line for it, and `to_kif` writes it
+    // straight after the `変化：N手` header. The reader has to take back what
+    // the writer puts out — refusing it made this crate reject its own output,
+    // and the KI2 reader produces exactly this shape (`parser::ki2::tests::
+    // a_comment_only_node_does_not_shift_the_outcome_ply`).
+    //
+    // A `&` bookmark in the same place was worse than an error: it was taken
+    // for an unreadable line and skipped, so it came back missing with nothing
+    // said (R-KIF-011).
+    //
+    // The ply is the number on the line, not the position in the array, so the
+    // comment node must not shift where the block attaches either.
+    #[test]
+    fn a_branch_can_open_with_a_comment_and_survives_a_kif_round_trip() {
+        use crate::converter::ToKif;
+        use crate::parser::{parse_ki2_str, parse_kif_str};
+        for opening in ["*このあとは", "&しおり"] {
+            let ki2 = format!(
+                "手合割：平手\n▲７六歩 △３四歩\nまで2手で中断\n\n変化：2手\n{opening}\n△８四歩\nまで2手で反則勝ち\n"
+            );
+            let jkf = parse_ki2_str(&ki2).unwrap_or_else(|e| panic!("{opening}: {e}"));
+            let branch = &jkf.moves[2]
+                .forks
+                .as_ref()
+                .unwrap_or_else(|| panic!("{opening}: no branch"))[0];
+            assert_eq!(3, branch.len(), "{opening}: comment, move, outcome");
+
+            let kif = jkf
+                .try_to_kif_owned()
+                .unwrap_or_else(|e| panic!("{opening}: {e}"));
+            let back = parse_kif_str(&kif).unwrap_or_else(|e| {
+                panic!("{opening}: this crate cannot read its own KIF: {e}\n{kif}")
+            });
+            assert_eq!(jkf, back, "{opening}: {kif:?}");
+        }
+    }
+
+    // The same node must not move the branch either. Here the block that opens
+    // with a comment is itself the target of a later `変化：`, so counting array
+    // slots instead of ply numbers hangs the second block off the wrong move.
+    #[test]
+    fn a_comment_node_does_not_shift_where_a_branch_attaches() {
+        use crate::parser::parse_kif_str;
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77)
+   2 ３四歩(33)
+   3 ２六歩(27)
+
+変化：2
+*このあとは
+   2 ８四歩(83)
+   3 ２六歩(27)
+
+変化：3
+   3 ７八金(69)
+";
+        let jkf = parse_kif_str(kif).expect("parses");
+        let outer = &jkf.moves[2].forks.as_ref().expect("a branch at ply 2")[0];
+        assert_eq!(
+            [false, true, true],
+            [0, 1, 2].map(|i| outer[i].occupies_a_ply()),
+            "comment node first, then plies 2 and 3: {outer:?}"
+        );
+        // `変化：3` is an alternative to ply 3, which is `outer[2]` — not
+        // `outer[3]`, which does not exist.
+        assert!(
+            outer[2].forks.is_some(),
+            "the inner branch hangs off ply 3: {outer:?}"
         );
     }
 

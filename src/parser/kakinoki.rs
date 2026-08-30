@@ -88,12 +88,18 @@ fn comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
 
 /// A line that is none of the shapes the move list is made of, skipped whole.
 ///
-/// The excluded set has to include the line endings themselves. Without them
-/// the parser starts on the newline of a *blank* line, takes the line after it
-/// as this line's content, and swallows two lines where one was meant — so a
-/// blank line in the middle of a record destroys the move that follows it.
+/// The excluded set is every character a line the reader *does* understand can
+/// start with. `&` is one of them: a bookmark is kept as a comment
+/// (R-KIF-011), and letting this parser take the line instead drops it without
+/// a word — which is what happened to a bookmark at the head of a `変化：`
+/// block that `to_kif` had just written.
+///
+/// The line endings have to be excluded too. Without them the parser starts on
+/// the newline of a *blank* line, takes the line after it as this line's
+/// content, and swallows two lines where one was meant — so a blank line in the
+/// middle of a record destroys the move that follows it.
 pub(super) fn not_move_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
-    delimited(none_of(" \r\n0123456789*▲△"), not_line_ending, end_of_line)(input)
+    delimited(none_of(" \r\n0123456789*&▲△"), not_line_ending, end_of_line)(input)
 }
 
 pub(super) fn move_comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
