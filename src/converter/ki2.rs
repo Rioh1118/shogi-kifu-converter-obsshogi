@@ -6,16 +6,30 @@ use std::fmt::{Result, Write};
 pub trait ToKi2 {
     /// Write `self` in KI2 format.
     ///
-    /// This function returns Err(core::fmt::Error)
-    /// if and only if it fails to write to `sink`.
+    /// # Errors
+    ///
+    /// Returns `Err` if `sink` fails, or if the record holds something KI2
+    /// cannot spell — a coordinate outside the board, or more pieces in hand
+    /// than a set contains. Such a record comes from outside this crate; it is
+    /// not a value any parser here produces.
     fn to_ki2<W: Write>(&self, sink: &mut W) -> Result;
 
+    /// Returns `self`'s string representation, or the error [`Self::to_ki2`]
+    /// gave.
+    fn try_to_ki2_owned(&self) -> std::result::Result<String, std::fmt::Error> {
+        let mut s = String::new();
+        self.to_ki2(&mut s)?;
+        Ok(s)
+    }
+
     /// Returns `self`'s string representation.
+    ///
+    /// A record that cannot be spelled in KI2 yields whatever was written
+    /// before the failure. Use [`Self::try_to_ki2_owned`] to see the error
+    /// instead of a truncated file.
     fn to_ki2_owned(&self) -> String {
         let mut s = String::new();
-        // guaranteed to be Ok(())
-        let result = self.to_ki2(&mut s);
-        debug_assert_eq!(result, Ok(()));
+        let _ = self.to_ki2(&mut s);
         s
     }
 }

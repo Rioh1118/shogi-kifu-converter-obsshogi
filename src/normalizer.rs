@@ -99,42 +99,48 @@ impl Hand {
             HI: 0,
         }
     }
-    pub(crate) fn increment(&mut self, kind: Kind) {
-        match kind {
-            Kind::FU => self.FU += 1,
-            Kind::KY => self.KY += 1,
-            Kind::KE => self.KE += 1,
-            Kind::GI => self.GI += 1,
-            Kind::KI => self.KI += 1,
-            Kind::KA => self.KA += 1,
-            Kind::HI => self.HI += 1,
-            _ => unreachable!(),
-        }
+    /// The slot for `kind`, or `None` for a king or a promoted piece.
+    ///
+    /// Neither can sit in hand (R-CSA-006), but a broken CSA can say they do,
+    /// and that has to come back as an error rather than take the process down.
+    fn slot(&mut self, kind: Kind) -> Option<&mut u8> {
+        Some(match kind {
+            Kind::FU => &mut self.FU,
+            Kind::KY => &mut self.KY,
+            Kind::KE => &mut self.KE,
+            Kind::GI => &mut self.GI,
+            Kind::KI => &mut self.KI,
+            Kind::KA => &mut self.KA,
+            Kind::HI => &mut self.HI,
+            _ => return None,
+        })
     }
-    pub(crate) fn decrement(&mut self, kind: Kind) {
-        match kind {
-            Kind::FU => self.FU -= 1,
-            Kind::KY => self.KY -= 1,
-            Kind::KE => self.KE -= 1,
-            Kind::GI => self.GI -= 1,
-            Kind::KI => self.KI -= 1,
-            Kind::KA => self.KA -= 1,
-            Kind::HI => self.HI -= 1,
-            _ => unreachable!(),
-        }
+    /// Adds one to `kind`. `None` if it cannot be held, or would overflow.
+    pub(crate) fn increment(&mut self, kind: Kind) -> Option<()> {
+        let slot = self.slot(kind)?;
+        *slot = slot.checked_add(1)?;
+        Some(())
+    }
+    /// Takes one from `kind`. `None` if it cannot be held, or none are left —
+    /// which means the board holds more of that piece than a set contains.
+    pub(crate) fn decrement(&mut self, kind: Kind) -> Option<()> {
+        let slot = self.slot(kind)?;
+        *slot = slot.checked_sub(1)?;
+        Some(())
     }
 }
 
 fn add_timeformat(lhs: &TimeFormat, rhs: &TimeFormat) -> TimeFormat {
-    let s = (lhs.h.unwrap_or_default() + rhs.h.unwrap_or_default()) as u64 * 3600
-        + (lhs.m + rhs.m) as u64 * 60
-        + (lhs.s + rhs.s) as u64;
-    let m = (s / 60) % 60;
-    let h = s / 3600;
+    // Widen before adding: two times that each fit in a `u8` need not.
+    let total = (lhs.h.unwrap_or_default() as u64 + rhs.h.unwrap_or_default() as u64) * 3600
+        + (lhs.m as u64 + rhs.m as u64) * 60
+        + (lhs.s as u64 + rhs.s as u64);
     TimeFormat {
-        h: Some(h as u8),
-        m: m as u8,
-        s: (s % 60) as u8,
+        // Hours past 255 saturate rather than wrap. A cumulative time that long
+        // is broken input, and a wrapped value would be a plausible-looking lie.
+        h: Some((total / 3600).min(u8::MAX as u64) as u8),
+        m: ((total / 60) % 60) as u8,
+        s: (total % 60) as u8,
     }
 }
 

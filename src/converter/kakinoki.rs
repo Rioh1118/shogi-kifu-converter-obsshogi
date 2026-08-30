@@ -5,17 +5,39 @@ use std::fmt::{Result, Write};
 const SANYOU_SUJI: [char; 9] = ['１', '２', '３', '４', '５', '６', '７', '８', '９'];
 const KANSUJI: [char; 10] = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
 
+/// Writes a file as a full-width digit.
+///
+/// `num` comes from the record, so a value outside 1-9 is a broken input rather
+/// than something to index the table with. The KIF parser leaves `to` at (0, 0)
+/// for a `同` move until the position fills it in, so an unnormalised record
+/// reaches here with a zero.
 pub(super) fn write_sanyou_suji<W: Write>(num: u8, sink: &mut W) -> Result {
-    sink.write_char(SANYOU_SUJI[num as usize - 1])?;
+    let c = num
+        .checked_sub(1)
+        .and_then(|i| SANYOU_SUJI.get(i as usize))
+        .ok_or(std::fmt::Error)?;
+    sink.write_char(*c)?;
     Ok(())
 }
 
+/// Writes a number 1-18 in kanji.
+///
+/// Ranks are 1-9 and hand counts reach 18 for pawns. Anything past that has no
+/// spelling here — and writing `歩十十` would produce a file this crate's own
+/// parser cannot read back.
 pub(super) fn write_kansuji<W: Write>(mut num: u8, sink: &mut W) -> Result {
+    if num > 18 {
+        return Err(std::fmt::Error);
+    }
     if num > 10 {
         sink.write_char('十')?;
         num -= 10;
     }
-    sink.write_char(KANSUJI[num as usize - 1])?;
+    let c = num
+        .checked_sub(1)
+        .and_then(|i| KANSUJI.get(i as usize))
+        .ok_or(std::fmt::Error)?;
+    sink.write_char(*c)?;
     Ok(())
 }
 
@@ -173,6 +195,53 @@ mod tests {
 手数----指手---------消費時間--
    1 ５三飛(52)   ( 0:00/00:00:00)
 ";
+
+    /// Coordinates and hand counts come from the record, so they can be out of
+    /// range. Writing used to index a table with them and take the process
+    /// down; now it is an error the caller can see.
+    #[test]
+    fn unspellable_records_are_errors() {
+        use crate::jkf::*;
+        let bad_square = JsonKifuFormat {
+            moves: vec![
+                MoveFormat::default(),
+                MoveFormat {
+                    move_: Some(MoveMoveFormat {
+                        color: Color::Black,
+                        from: None,
+                        to: PlaceFormat { x: 0, y: 0 },
+                        piece: Kind::FU,
+                        same: None,
+                        promote: None,
+                        capture: None,
+                        relative: None,
+                    }),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(bad_square.try_to_kif_owned().is_err());
+
+        let mut state = StateFormat {
+            color: Color::Black,
+            board: [[Piece {
+                color: None,
+                kind: None,
+            }; 9]; 9],
+            hands: [Hand::default(); 2],
+        };
+        // 18 is every pawn on the board; 21 has no kanji spelling.
+        state.hands[0].FU = 21;
+        let too_many = JsonKifuFormat {
+            initial: Some(Initial {
+                preset: Preset::PresetOther,
+                data: Some(state),
+            }),
+            ..Default::default()
+        };
+        assert!(too_many.try_to_kif_owned().is_err());
+    }
 
     // A board without `後手番` reads back as Black to move, and the first move
     // then fails to apply. The consumer used to patch the line in by hand after

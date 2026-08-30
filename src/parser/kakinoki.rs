@@ -38,15 +38,19 @@ impl InformationData {
             Self::merged_hand(lhs[1], rhs[1]),
         ]
     }
+    /// Adds the hands stated before and after the board.
+    ///
+    /// Saturating rather than wrapping: a file that states a hand twice is
+    /// broken either way, and a wrapped count would look like a real one.
     fn merged_hand(lhs: Hand, rhs: Hand) -> Hand {
         Hand {
-            FU: lhs.FU + rhs.FU,
-            KY: lhs.KY + rhs.KY,
-            KE: lhs.KE + rhs.KE,
-            GI: lhs.GI + rhs.GI,
-            KI: lhs.KI + rhs.KI,
-            KA: lhs.KA + rhs.KA,
-            HI: lhs.HI + rhs.HI,
+            FU: lhs.FU.saturating_add(rhs.FU),
+            KY: lhs.KY.saturating_add(rhs.KY),
+            KE: lhs.KE.saturating_add(rhs.KE),
+            GI: lhs.GI.saturating_add(rhs.GI),
+            KI: lhs.KI.saturating_add(rhs.KI),
+            KA: lhs.KA.saturating_add(rhs.KA),
+            HI: lhs.HI.saturating_add(rhs.HI),
         }
     }
 }
@@ -125,17 +129,21 @@ fn information_value_hand(input: &str) -> IResult<&str, Hand, VerboseError<&str>
                 many0(one_of(" 　")),
             )),
             |v| {
+                // The counts come from the file, so they can add up past what a
+                // `u8` holds. Overflowing here would silently record a
+                // different hand.
                 v.iter().try_fold(Hand::default(), |mut acc, &(k, n)| {
-                    match k {
-                        Kind::FU => acc.FU += n,
-                        Kind::KY => acc.KY += n,
-                        Kind::KE => acc.KE += n,
-                        Kind::GI => acc.GI += n,
-                        Kind::KI => acc.KI += n,
-                        Kind::KA => acc.KA += n,
-                        Kind::HI => acc.HI += n,
+                    let slot = match k {
+                        Kind::FU => &mut acc.FU,
+                        Kind::KY => &mut acc.KY,
+                        Kind::KE => &mut acc.KE,
+                        Kind::GI => &mut acc.GI,
+                        Kind::KI => &mut acc.KI,
+                        Kind::KA => &mut acc.KA,
+                        Kind::HI => &mut acc.HI,
                         _ => return Err(()),
-                    }
+                    };
+                    *slot = slot.checked_add(n).ok_or(())?;
                     Ok(acc)
                 })
             },

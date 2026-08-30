@@ -36,7 +36,7 @@ impl TryFrom<GameRecord> for JsonKifuFormat {
             header.insert(String::from("戦型"), s);
         }
         // Initial
-        let initial = Some(record.start_pos.into());
+        let initial = Some(Initial::try_from(record.start_pos)?);
         // Moves
         let mut moves = vec![MoveFormat::default()];
         for m in record.moves {
@@ -50,8 +50,23 @@ impl TryFrom<GameRecord> for JsonKifuFormat {
     }
 }
 
-impl From<Position> for Initial {
-    fn from(mut pos: Position) -> Self {
+/// A square inside the board, as a `(file, rank)` index pair.
+///
+/// The `csa` crate accepts any two digits, so `P+09FU` and `PI00FU` reach here
+/// with a zero. Positions are 1-9 in each direction (R-CSA-005); anything else
+/// is a broken file, not a square to index with.
+fn board_index(sq: csa::Square) -> Result<(usize, usize), ParseError> {
+    if (1..=9).contains(&sq.file) && (1..=9).contains(&sq.rank) {
+        Ok((sq.file as usize - 1, sq.rank as usize - 1))
+    } else {
+        Err(ParseError::CsaConvert("position out of range"))
+    }
+}
+
+impl TryFrom<Position> for Initial {
+    type Error = ParseError;
+
+    fn try_from(mut pos: Position) -> Result<Self, Self::Error> {
         let mut all_pieces = Hand {
             FU: 18,
             KY: 4,
@@ -91,22 +106,25 @@ impl From<Position> for Initial {
             // 平手初期配置と駒落ち
             let mut b = HIRATE_BOARD;
             for &(sq, _) in &pos.drop_pieces {
-                b[sq.file as usize - 1][sq.rank as usize - 1] = Piece::empty()
+                let (file, rank) = board_index(sq)?;
+                b[file][rank] = Piece::empty()
             }
             b
         } else {
             // 駒別単独表現
             let mut b = [[Piece::empty(); 9]; 9];
             for &(c, sq, pt) in &pos.add_pieces {
-                b[sq.file as usize - 1][sq.rank as usize - 1] = Piece::from((c, pt));
+                let (file, rank) = board_index(sq)?;
+                b[file][rank] = Piece::from((c, pt));
             }
             b
         };
         for row in &board {
             for col in row {
                 if let Some(unpromoted) = col.kind.map(Kind::unpromoted) {
-                    if unpromoted != Kind::OU {
-                        all_pieces.decrement(unpromoted);
+                    if unpromoted != Kind::OU && all_pieces.decrement(unpromoted).is_none() {
+                        // More of that piece on the board than a set holds.
+                        return Err(ParseError::CsaConvert("too many pieces on the board"));
                     }
                 }
             }
@@ -116,19 +134,24 @@ impl From<Position> for Initial {
         for &(c, pt) in &hand_pieces {
             let index = Into::<Color>::into(c) as usize;
             match pt.try_into() {
-                Ok(kind) => hands[index].increment(kind),
-                // In case PieceType::All
+                Ok(kind) => {
+                    if hands[index].increment(kind).is_none() {
+                        // A king or a promoted piece in hand (R-CSA-006).
+                        return Err(ParseError::CsaConvert("piece cannot be held in hand"));
+                    }
+                }
+                // `AL`: everything still unaccounted for.
                 Err(_) => hands[index] = all_pieces,
             }
         }
-        Self {
+        Ok(Self {
             preset: Preset::PresetOther,
             data: Some(StateFormat {
                 color,
                 board,
                 hands,
             }),
-        }
+        })
     }
 }
 
@@ -291,6 +314,29 @@ impl TryFrom<csa::PieceType> for Kind {
             csa::PieceType::All => {
                 Err(ParseError::CsaConvert("`AL` cannot be converted to `Kind`"))
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::parser::parse_csa_str;
+
+    /// The `csa` crate takes any two digits as a position and any piece type in
+    /// hand, so a broken file reaches the conversion with a zero file or a king
+    /// on the stand. Those have to come back as errors: the consumer is a Tauri
+    /// command, and a panic there takes the application with it (R-REQ-004).
+    #[test]
+    fn broken_positions_are_errors() {
+        for src in [
+            // A king cannot be held in hand (R-CSA-006).
+            "V2.2\nPI\nP+00OU\n+\n",
+            // Positions are 1-9 in each direction (R-CSA-005).
+            "V2.2\nP+05FU\n+\n",
+            "V2.2\nP+50FU\n+\n",
+            "V2.2\nPI00FU\n+\n",
+        ] {
+            assert!(parse_csa_str(src).is_err(), "expected an error for {src:?}");
         }
     }
 }
