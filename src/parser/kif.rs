@@ -1,6 +1,6 @@
 use super::kakinoki::{
     blank_line, end_of_line, move_comment_line, move_to, not_move_line, parse_without_moves,
-    piece_kind, program_comment_line,
+    piece_kind,
 };
 use crate::jkf::*;
 use nom::branch::alt;
@@ -82,6 +82,35 @@ fn move_special(
 /// for — `変化：<N>手`, `まで<N>手で<結末>`, the `手数----指手---` rule.
 fn skippable_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
     alt((blank_line, not_move_line))(input)
+}
+
+/// Skips the blank lines and `#` lines that may sit between two moves of a run
+/// (R-KIF-002). Ending the run on one leaves every move after it to be read as
+/// a branch of a ply that does not exist, and dropped (GAP-008).
+///
+/// Only these two. A line the format has no meaning for still ends the run, and
+/// the leftover-input check then reports it (D1) rather than guessing.
+///
+/// Written by hand rather than as `many0(alt((blank_line, program_comment_line)))`
+/// because it runs once per move and almost always matches nothing: the nom
+/// version allocates a `VerboseError` on each of those misses, which cost 13%
+/// of the time to read the whole corpus.
+fn skip_interruptions(mut input: &str) -> &str {
+    loop {
+        let rest = if let Some(rest) = input.strip_prefix('#') {
+            rest
+        } else {
+            let trimmed = input.trim_start_matches([' ', '\t']);
+            if !(trimmed.starts_with('\n') || trimmed.starts_with("\r\n")) {
+                return input;
+            }
+            trimmed
+        };
+        input = match rest.find('\n') {
+            Some(i) => &rest[i + 1..],
+            None => return "",
+        };
+    }
 }
 
 fn move_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
@@ -230,17 +259,7 @@ fn moves_with_index(
         .chain([first])
         .collect();
     loop {
-        // R-KIF-002: a blank line and a `#` line may sit anywhere in the move
-        // list. Ending the run on one leaves every move after it to be read as
-        // a branch of a ply that does not exist, and dropped (GAP-008).
-        //
-        // Only these two. A line the format has no meaning for still ends the
-        // run, and the leftover-input check then reports it (D1) rather than
-        // guessing what it was.
-        let (skipped, _) = many0(alt((
-            blank_line,
-            nom::combinator::recognize(program_comment_line),
-        )))(input)?;
+        let skipped = skip_interruptions(input);
         // `many1` stops on `Error` and throws anything else back. Swallowing a
         // `Failure` here would drop the rest of the record without a word,
         // which is the failure this branch exists to remove.
