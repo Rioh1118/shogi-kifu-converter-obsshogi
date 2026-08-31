@@ -443,12 +443,12 @@ fn normalize_move(
             // piece the move left behind instead (R-CSA-005), which arrives as a
             // `piece` that is the promoted form of the one standing on `from`.
             //
-            // Deciding it from the board instead is how a `成` on a move the
+            // Deciding it from the board instead drops a `成` on a move the
             // rules do not allow to promote — a recorded illegal move is valid
-            // input (R-RULE-002) — got dropped without a word, leaving a record
-            // that spells the move without it. A promotion the piece has no
-            // promoted form for is not written off here either: `make_move`
-            // refuses it below, and the error names the ply.
+            // input (R-RULE-002) — without a word, leaving a record that spells
+            // the move without it. A promotion the piece has no promoted form
+            // for is not written off here either: `make_move` refuses it below,
+            // and the error names the ply.
             //
             // The piece name is read only where the record left `promote` empty.
             // It is CSA's way of stating a promotion, not a second opinion on a
@@ -951,9 +951,9 @@ mod tests {
 
     // R-RULE-002: a kifu records what was played, illegal moves included, and
     // R-KIF-006 / R-NOT-005 leave the notation as the only place a promotion is
-    // stated. Working `promote` out from the board instead threw this `成` away
-    // without a word — the move came back, and was written back, as a plain 7六歩
-    // — so the record on disk no longer said what the file it was read from said.
+    // stated. Working `promote` out from the board instead throws this `成`
+    // away without a word, and the record is read — and written back — as a
+    // plain 7六歩 that the file it came from does not contain.
     #[test]
     fn a_stated_promotion_survives_a_move_the_rules_cannot_promote() {
         let kif = "手合割：平手
@@ -983,7 +983,7 @@ mod tests {
         assert_eq!(
             Kind::KA,
             mv.piece,
-            "J14: `piece` names the piece that moved"
+            "D12: `piece` names the piece that moved, whatever the record spelled"
         );
     }
 

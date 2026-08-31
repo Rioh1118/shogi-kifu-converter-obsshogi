@@ -122,9 +122,13 @@ fn end_of_game_line(
 
 /// Reads a `変化：N手` header and returns `N`.
 ///
+/// The declaration `N` is read here and used, unlike in KIF where the tree comes
+/// from the ply numbers alone (D3): tsshogi reads this line in KI2 and not in
+/// KIF, and the two readers have to build the same tree from the same file.
+///
 /// The header owns the rest of its line. Reading to the end of the line and
-/// dropping what was there took the first move of the branch with it whenever
-/// the newline between them was lost.
+/// dropping what was there takes the first move of the branch with it whenever
+/// the newline between them is lost.
 fn branch_header(input: &str) -> IResult<&str, usize, VerboseError<&str>> {
     let (line, _) = many0(line_ending)(input)?;
     let (rest, ply) = preceded(tag("変化："), map_res(digit1, str::parse::<usize>))(line)?;

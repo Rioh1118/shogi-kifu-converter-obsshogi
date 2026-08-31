@@ -247,11 +247,12 @@ fn move_line(
     let side_to_move = known_side.unwrap_or_else(|| crate::handicap::side_to_move_at_ply(start, i));
     let (input, mut mf) = preceded(space0, alt((move_special(side_to_move), move_move)))(input)?;
     let (input, time) = preceded(space0, opt(move_time))(input)?;
-    // R-KIF-005 / R-KIF-008: a move line is the ply, the move and the time, and
-    // the line ends there. Reading to the end of the line and throwing away
-    // whatever was left is how a move line joined to the one under it — one
-    // newline arriving as a space does it — read as a single move and dropped
-    // the other, `Ok` and a ply short.
+    // R-KIF-005 / R-KIF-008 say what a move line is made of — the ply, the move,
+    // and the time that may or may not follow it — and say nothing about what
+    // may come after. So what may come after is whatever is not a line: reading
+    // to the end and throwing it away takes the line underneath with it when the
+    // newline between them is lost, and a move goes missing from a record that
+    // still comes back `Ok`. `ends_here` draws that line.
     let (input, _) = ends_here(line, input)?;
     if let Some(mmf) = &mut mf.move_ {
         mmf.color = side_to_move;

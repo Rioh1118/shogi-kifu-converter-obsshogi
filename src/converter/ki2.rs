@@ -799,11 +799,11 @@ mod tests {
         assert_eq!(shape(&jkf.moves[1..], 1), shape(&back.moves[1..], 1));
     }
 
-    // A record with no header, no starting position and no moves used to write
-    // nothing at all, and a caller saving that to `.ki2` got a zero-byte file
-    // back with an `Ok` — indistinguishable from a save that was cut short.
-    // Naming the starting position is the least a kifu can say, and it is what
-    // KIF and CSA already write for the same record.
+    // A record with no header, no starting position and no moves has the
+    // starting position as the only thing left to write. Without it the file is
+    // zero bytes and the `Ok` says nothing is wrong, which no caller can tell
+    // from a save that was cut short. Naming where the game starts is the least
+    // a kifu can say, and it is what KIF and CSA write for the same record.
     #[test]
     fn to_ki2_names_the_starting_position_of_an_empty_record() {
         let ki2 = JsonKifuFormat::default()

@@ -30,8 +30,8 @@ use std::path::Path;
 ///
 /// # Panics
 ///
-/// Panics on the inputs [`parse_csa_str`] panics on, which every file this
-/// decodes now reaches whichever encoding it is written in.
+/// Panics on the inputs [`parse_csa_str`] panics on. Every file this decodes
+/// reaches that parser, in either encoding.
 pub fn parse_csa_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseError> {
     let mut buf = Vec::new();
     File::open(&path)?.read_to_end(&mut buf)?;
@@ -448,9 +448,9 @@ mod tests {
     // that.
     //
     // Whether a blank line happens to sit in front of the header is not a
-    // difference the answer can turn on: the run above used to swallow the
-    // header when there was no blank line to stop it, and the branch went
-    // missing quietly in exactly that case.
+    // difference the answer can turn on, so both spellings are here: a run that
+    // swallows the header on its way past leaves nothing to ask about, and the
+    // branch goes missing quietly in exactly that case.
     #[test]
     fn a_branch_header_with_nothing_under_it_is_an_error() {
         const KIF: &str = "手合割：平手
@@ -693,9 +693,9 @@ mod tests {
 
     // R-CSA-001: the CSA spec leaves the encoding to whatever wrote the file, so
     // the bytes are all there is to go on — and the Windows GUIs that write most
-    // CSA in the wild write Shift-JIS. Reading the file as UTF-8 and nothing else
-    // made the same game readable or not depending on the format it was saved
-    // in, while KIF and KI2 next to it read both.
+    // CSA in the wild write Shift-JIS. Reading the file as UTF-8 and nothing
+    // else makes the same game readable or not depending on the format it was
+    // saved in, while KIF and KI2 next to it read both.
     #[test]
     fn a_csa_is_read_in_either_encoding() {
         const CSA: &str = "V2.2\nN+山田太郎\nN-田中一郎\nPI\n+\n+7776FU\n";
