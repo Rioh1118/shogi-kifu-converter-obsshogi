@@ -443,6 +443,34 @@ mod tests {
         }
     }
 
+    // The header block is the same in both formats, but what a header value can
+    // have swallowed is not: only KI2 keeps its moves on a line the block could
+    // run into. A KIF header naming an opening is made of the same characters
+    // and has nothing wrong with it, and so is a KI2 one — a run is two moves.
+    #[test]
+    fn a_header_that_names_moves_is_only_suspect_as_a_run_in_ki2() {
+        for header in ["戦型：▲２六歩から", "消費時間：104▲379△380"] {
+            let kif = format!(
+                "手合割：平手\n{header}\n手数----指手---------消費時間--\n   1 ７六歩(77)\n"
+            );
+            assert_eq!(
+                1,
+                parse_kif_str(&kif).expect("parses").moves.len() - 1,
+                "{header}"
+            );
+            let ki2 = format!("手合割：平手\n{header}\n▲７六歩 △３四歩\n");
+            assert_eq!(
+                2,
+                parse_ki2_str(&ki2).expect("parses").moves.len() - 1,
+                "{header}"
+            );
+        }
+        // The run is what a KI2 record whose starting position lost its newline
+        // leaves in the value.
+        let err = parse_ki2_str("手合割：平手 ▲７六歩 △３四歩\n").expect_err("an error");
+        refusal(err, 1);
+    }
+
     // A `変化：N手` says a branch follows it. A file that ends right after one
     // was cut short, and coming back with one fewer branch says nothing about
     // that.

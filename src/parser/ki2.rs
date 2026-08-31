@@ -77,6 +77,33 @@ fn single_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
     )(input)
 }
 
+/// Whether a header value carries a run of KI2 moves, which means it swallowed
+/// the line under it.
+///
+/// A header value is free text a user can put anything in (R-KIF-004), so unlike
+/// [`ends_here`](super::kakinoki::ends_here) there is no point at which the line
+/// ought to have ended: the question is what the text carries, not where it
+/// stops. A KI2 record whose starting position lost its newline puts the whole
+/// game in one.
+///
+/// Two moves in a row, because either one alone is something a header says of
+/// its own accord. `▲` and `△` are how the standard `消費時間` header spells
+/// each side's clock (`消費時間：104▲379△380`,
+/// `data/tests/kif/oui202106290101.kif`), and one move is how a `戦型` names an
+/// opening. A record of a single move that also lost that newline is missed
+/// (`research/90-gaps.md` GAP-020) — the alternative is refusing files with
+/// nothing wrong with them.
+fn a_header_value_carrying_moves(value: &str) -> bool {
+    value
+        .char_indices()
+        .filter(|(_, c)| matches!(c, '▲' | '△'))
+        .any(|(i, _)| {
+            single_move(&value[i..])
+                .map(|(rest, _)| single_move(rest).is_ok())
+                .unwrap_or(false)
+        })
+}
+
 /// Reads the `まで<N>手で…` line that KI2 uses instead of an outcome move.
 ///
 /// `ply` is the ply the outcome occupies, which decides whose turn it is and
@@ -307,7 +334,7 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
 /// else is set. Only the reader knows the difference — one consumed a line and
 /// the other did not — so it has to say so here (D1, `parse_kif_str`).
 pub(crate) fn parse(input: &str) -> IResult<&str, (JsonKifuFormat, bool), VerboseError<&str>> {
-    let (rest, mut jkf) = parse_without_moves(input)?;
+    let (rest, mut jkf) = parse_without_moves(input, a_header_value_carrying_moves)?;
     let read_header = rest.len() < input.len();
     // The side has to come from the starting position, not the ply parity: a
     // handicap record has White at every odd ply (R-HC-001).

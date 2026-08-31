@@ -116,29 +116,6 @@ fn starts_a_line(tail: &str) -> bool {
     }
 }
 
-/// Whether `value` — everything after `<キーワード>：` on a header line — carries
-/// a run of KI2 moves.
-///
-/// A header value is free text a user can put anything in (R-KIF-004), so unlike
-/// [`ends_here`] there is no point at which the line ought to have ended: the
-/// question is what the text carries, not where it stops. A KI2 record whose
-/// starting position lost its newline puts its whole move list in a header
-/// value.
-///
-/// The whole shape of a move has to be there. `▲` and `△` alone are not it —
-/// the standard `消費時間` header spells each side's clock with them
-/// (`消費時間：104▲379△380`, `data/tests/kif/oui202106290101.kif`).
-///
-/// A KIF move line joined to a header is not caught: `棋戦：第 3 回` and a lost
-/// newline before `   3 ７六歩(77)` are the same shape, and refusing the first to
-/// catch the second would reject records nothing is wrong with
-/// (`research/90-gaps.md` GAP-020).
-pub(super) fn carries_a_move_run(value: &str) -> bool {
-    value.char_indices().any(|(i, c)| {
-        matches!(c, '▲' | '△') && pair(move_to, piece_kind)(&value[i + c.len_utf8()..]).is_ok()
-    })
-}
-
 /// Requires the line to end where the reader finished reading it, or to trail
 /// off into something that is not a line of its own.
 ///
@@ -369,32 +346,48 @@ fn information_line_hands(input: &str) -> IResult<&str, Information, VerboseErro
 /// A `<キーワード>：<値>` line, which a header can be any of (R-KIF-004).
 ///
 /// This is where every header line that is nothing more specific ends up, so it
-/// is where a header that swallowed the line under it is caught
-/// ([`carries_a_move_run`]). Without that, a KI2 whose `手合割：平手` lost its
-/// newline files the entire game under `header["手合割"]` and comes back `Ok`
-/// with no moves in it.
-fn information_line_keyvalue(input: &str) -> IResult<&str, Information, VerboseError<&str>> {
-    let (rest, (key, value)) = terminated(
-        separated_pair(is_not("：\r\n"), tag("："), not_line_ending),
-        line_ending,
-    )(input)?;
-    if carries_a_move_run(value) {
-        return Err(broken_line(input, "this line runs into the one below it"));
+/// is also where a header that swallowed the line under it has to be caught.
+/// `carries_a_line` is the reader's own answer to "is this value a line of my
+/// format?", because the header block is shared and the answer is not: a KI2
+/// whose `手合割：平手` lost its newline files the entire game under
+/// `header["手合割"]` and comes back `Ok` with no moves in it, while a KIF move
+/// line joined to a header is the same shape as `棋戦：第 3 回` and cannot be
+/// told from it (`research/90-gaps.md` GAP-020).
+fn information_line_keyvalue(
+    carries_a_line: fn(&str) -> bool,
+) -> impl FnMut(&str) -> IResult<&str, Information, VerboseError<&str>> {
+    move |input| {
+        let (rest, (key, value)) = terminated(
+            separated_pair(is_not("：\r\n"), tag("："), not_line_ending),
+            line_ending,
+        )(input)?;
+        if carries_a_line(value) {
+            return Err(broken_line(input, "this line runs into the one below it"));
+        }
+        Ok((
+            rest,
+            Information::KeyValue(key.to_owned(), value.to_owned()),
+        ))
     }
-    Ok((
-        rest,
-        Information::KeyValue(key.to_owned(), value.to_owned()),
-    ))
 }
 
-fn informations(input: &str) -> IResult<&str, InformationData, VerboseError<&str>> {
+fn informations(
+    carries_a_line: fn(&str) -> bool,
+) -> impl FnMut(&str) -> IResult<&str, InformationData, VerboseError<&str>> {
+    move |input| information_lines(carries_a_line, input)
+}
+
+fn information_lines(
+    carries_a_line: fn(&str) -> bool,
+    input: &str,
+) -> IResult<&str, InformationData, VerboseError<&str>> {
     map(
         many0(preceded(
             many0(comment_line),
             alt((
                 information_line_preset,
                 information_line_hands,
-                information_line_keyvalue,
+                information_line_keyvalue(carries_a_line),
             )),
         )),
         |v| {
@@ -510,14 +503,20 @@ fn side_to_move_line(input: &str) -> IResult<&str, Color, VerboseError<&str>> {
     Ok((rest, color))
 }
 
+/// Reads the header block, the board and the side-to-move line.
+///
+/// `carries_a_line` is how the reader says a header value has swallowed a line
+/// of its own format; see [`information_line_keyvalue`]. The block itself is the
+/// same in KIF and KI2, and this is the one place where they differ in it.
 pub(super) fn parse_without_moves(
     input: &str,
+    carries_a_line: fn(&str) -> bool,
 ) -> IResult<&str, JsonKifuFormat, VerboseError<&str>> {
     map(
         tuple((
-            informations,
+            informations(carries_a_line),
             opt(board),
-            informations,
+            informations(carries_a_line),
             opt(side_to_move_line),
         )),
         |(info1, opt_board, info2, side_to_move)| {
@@ -724,23 +723,40 @@ mod tests {
         );
     }
 
+    /// A reader that finds no line of its own in any header value — what the
+    /// KIF side passes, and what these cases are about.
+    fn nothing(_: &str) -> bool {
+        false
+    }
+
     #[test]
     fn parse_information_keyvalue() {
-        assert!(information_line_keyvalue("").is_err());
-        assert!(information_line_keyvalue("# comment\n").is_err());
-        assert!(information_line_keyvalue("key：value with not line ending").is_err());
+        assert!(information_line_keyvalue(nothing)("").is_err());
+        assert!(information_line_keyvalue(nothing)("# comment\n").is_err());
+        assert!(information_line_keyvalue(nothing)("key：value with not line ending").is_err());
         assert_eq!(
             Ok((
                 "",
                 Information::KeyValue(String::from("key"), String::from("value"))
             )),
-            information_line_keyvalue("key：value\n")
+            information_line_keyvalue(nothing)("key：value\n")
+        );
+        // And a value the reader does find one in: the line under it was read as
+        // part of it, so the record is short by however much that line held.
+        assert!(
+            information_line_keyvalue(|value: &str| value.contains('▲'))(
+                "手合割：平手 ▲７六歩\n"
+            )
+            .is_err()
         );
     }
 
     #[test]
     fn parse_informations() {
-        assert_eq!(Ok(("", InformationData::default())), informations(""));
+        assert_eq!(
+            Ok(("", InformationData::default())),
+            informations(nothing)("")
+        );
         assert_eq!(
             Ok((
                 "",
@@ -751,7 +767,7 @@ mod tests {
                     ..Default::default()
                 }
             )),
-            informations("# comment\n# comment：comment\nkey：value\n")
+            informations(nothing)("# comment\n# comment：comment\nkey：value\n")
         );
     }
 

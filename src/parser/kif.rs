@@ -78,6 +78,16 @@ fn move_special(
     }
 }
 
+/// Whether a header value carries a KIF move line. It never does.
+///
+/// Not because one cannot be joined to a header, but because nothing tells the
+/// two apart: a KIF move line opens with a number and a space, and so does
+/// `棋戦：第 3 回`. Refusing the one to catch the other rejects records nothing
+/// is wrong with (`research/90-gaps.md` GAP-020).
+fn a_header_value_carrying_moves(_: &str) -> bool {
+    false
+}
+
 /// The `変化：<N>手` line that opens a branch.
 ///
 /// The number is read only to be thrown away: the tree comes from the ply
@@ -473,7 +483,7 @@ fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Ver
 /// else is set. Only the reader knows the difference — one consumed a line and
 /// the other did not — so it has to say so here (D1, `parse_kif_str`).
 pub(crate) fn parse(input: &str) -> IResult<&str, (JsonKifuFormat, bool), VerboseError<&str>> {
-    let (rest, mut jkf) = parse_without_moves(input)?;
+    let (rest, mut jkf) = parse_without_moves(input, a_header_value_carrying_moves)?;
     let read_header = rest.len() < input.len();
     // The side has to come from the starting position, not the ply parity: a
     // handicap record has White at every odd ply (R-HC-001).
