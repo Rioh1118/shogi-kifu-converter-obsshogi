@@ -70,6 +70,34 @@ fn write_move_kind<W: Write>(kind: Kind, sink: &mut W) -> Result {
     Ok(())
 }
 
+/// Whether R-NOT-005 has a `不成` for this move: a promotable piece, with the
+/// enemy camp at one end of it.
+///
+/// A gold, a king or an already-promoted piece has no such word, and neither
+/// has a move that goes nowhere near the camp. Writing one anyway produces
+/// `△６八玉不成`, which is not something the notation can say.
+///
+/// The gate is here and not left to the normalizer because a record reaches a
+/// writer without having been through it: past an outcome the position is no
+/// longer tracked (R-RULE-002), a branch that could not be normalized is kept as
+/// it was, and a JKF the consumer built never went through it at all
+/// (R-REQ-002). What the record says a move did is `promote` (D12); whether the
+/// notation has a word for it is what the piece and the squares say.
+fn promotion_was_on_the_table(mv: &MoveMoveFormat) -> bool {
+    fn in_the_enemy_camp(color: Color, place: &PlaceFormat) -> bool {
+        match color {
+            Color::Black => place.y <= 3,
+            Color::White => place.y >= 7,
+        }
+    }
+    shogi_core::PieceKind::from(mv.piece).promote().is_some()
+        && (in_the_enemy_camp(mv.color, &mv.to)
+            || mv
+                .from
+                .as_ref()
+                .is_some_and(|from| in_the_enemy_camp(mv.color, from)))
+}
+
 /// Writes the KI2 notation for `moves`, deriving the disambiguating suffix from
 /// `position` rather than from [`MoveMoveFormat::relative`].
 ///
@@ -204,12 +232,12 @@ fn write_line<'a, W: Write>(
                     Relative::H => sink.write_str("打")?,
                 }
             }
-            if let Some(promote) = mv.promote {
-                if promote {
-                    sink.write_str("成")?;
-                } else {
-                    sink.write_str("不成")?;
-                }
+            match mv.promote {
+                // D12: a promotion is what the record says, and it is spelled
+                // whatever the board makes of it.
+                Some(true) => sink.write_str("成")?,
+                Some(false) if promotion_was_on_the_table(mv) => sink.write_str("不成")?,
+                _ => {}
             }
             position = position.and_then(|mut pos| {
                 let core_move = core_move?;
@@ -797,6 +825,33 @@ mod tests {
         );
         let back = crate::parser::parse_ki2_str(&ki2).expect("reads back");
         assert_eq!(shape(&jkf.moves[1..], 1), shape(&back.moves[1..], 1));
+    }
+
+    // R-NOT-005: `不成` exists only for a promotable piece with the enemy camp at
+    // one end of the move. `△６八玉不成` is not something the notation can say.
+    //
+    // The moves after an outcome are where this shows: the position is no longer
+    // tracked past one (R-RULE-002), so nothing rewrites what the record said,
+    // and a KIF states `不成` by leaving `成` off (R-KIF-006) — which the reader
+    // records as `promote: false` on every move that did not promote.
+    #[test]
+    fn no_不成_where_the_notation_has_no_word_for_it() {
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77)
+   2 中断
+   3 ５八金(69)
+   4 ３四歩(33)
+";
+        let jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
+        assert!(
+            ki2.contains("△５八金 ") || ki2.ends_with("△５八金\n"),
+            "a gold has no 成 and no 不成: {ki2:?}"
+        );
+        // The pawn on the line after it does get one: it moves out of the enemy
+        // camp, which is a move R-NOT-005 asks to be spelled either way.
+        assert!(ki2.contains("▲３四歩不成"), "{ki2:?}");
     }
 
     // A record with no header, no starting position and no moves has the
