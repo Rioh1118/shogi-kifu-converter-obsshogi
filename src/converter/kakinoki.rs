@@ -152,12 +152,17 @@ pub(super) fn write_header<W: Write>(header: &HashMap<String, String>, sink: &mu
 /// cut short — for KI2, where a hirate opening was the only thing left to write,
 /// a record with no header and no moves came out as zero bytes.
 ///
-/// `header` decides one case. A `手合割` this crate could not fold into a
-/// `Preset` is kept as text (`手合割：詰将棋`, `parser::kakinoki`), and `initial`
-/// then holds the even game because that is what the reader falls back to. The
-/// preset line is left out rather than written under it: two `手合割` lines
-/// saying different things is the file contradicting itself about the one thing
-/// this is here to state.
+/// `header` decides one case, and only one. A `手合割` this crate could not fold
+/// into a `Preset` is kept as text (`手合割：詰将棋`, `parser::kakinoki`), which
+/// leaves `preset` at the even game — not because the record says so, but
+/// because that is what a reader takes from a line it cannot read. Writing the
+/// even game under it makes the file say two different things about the one
+/// thing this is here to state, and the fallback is exactly what leaving the
+/// line out already means.
+///
+/// A `preset` that names a handicap is not dropped for a header, and neither is
+/// a board. Those say something the header does not, and a file that repeats
+/// itself is better than one that reads back as a different game.
 ///
 /// # Errors
 ///
@@ -168,14 +173,18 @@ pub(super) fn write_initial<W: Write>(
     initial: &Option<Initial>,
     sink: &mut W,
 ) -> Result {
-    match initial {
+    let preset = match initial {
         Some(Initial {
             data: Some(data), ..
-        }) => write_initial_data(data, sink),
-        _ if header.contains_key("手合割") => Ok(()),
-        Some(initial) => write_initial_preset(initial.preset, sink),
-        None => write_initial_preset(Preset::PresetHirate, sink),
+        }) => return write_initial_data(data, sink),
+        Some(initial) => initial.preset,
+        // R-JKF-001: `initial` is optional, and its absence is the even game.
+        None => Preset::PresetHirate,
+    };
+    if preset == Preset::PresetHirate && header.contains_key("手合割") {
+        return Ok(());
     }
+    write_initial_preset(preset, sink)
 }
 
 #[cfg(test)]
@@ -232,6 +241,29 @@ mod tests {
                 "and it is the one read: {text}"
             );
         }
+    }
+
+    // The other way round, the header does not get to decide. A record that
+    // names a handicap says something the header does not, and dropping the
+    // line for it reads back as the even game — where Black moves first, not
+    // the upper hand (R-HC-001), so every move changes sides.
+    #[test]
+    fn a_handicap_the_record_names_is_written_whatever_the_header_says() {
+        let kif = "手合割：香落ち
+手合割：詰将棋
+手数----指手---------消費時間--
+   1 ３四歩(33)
+";
+        let jkf = parse_kif_str(kif).expect("parses");
+        let text = jkf.try_to_kif_owned().expect("writes KIF");
+        assert!(text.contains("手合割：香落ち"), "{text}");
+        let back = parse_kif_str(&text).expect("reads back");
+        assert_eq!(jkf.initial, back.initial);
+        assert_eq!(
+            jkf.moves[1].move_.map(|mv| mv.color),
+            back.moves[1].move_.map(|mv| mv.color),
+            "R-HC-001: the upper hand moves first"
+        );
     }
 
     /// R-KIF-004: a header is one line. A value with a newline in it splits the
