@@ -160,7 +160,7 @@ fn branch_header(input: &str) -> IResult<&str, usize, VerboseError<&str>> {
     let (line, _) = many0(line_ending)(input)?;
     let (rest, ply) = preceded(tag("変化："), map_res(digit1, str::parse::<usize>))(line)?;
     // `手` is what the writers put after the number, but nothing requires it of
-    // a reader — tsshogi reads the number and stops (`kakinoki.cjs:189`).
+    // a reader — tsshogi's `branchRegExp` reads the number and stops.
     let (rest, _) = opt(tag("手"))(rest)?;
     let (rest, _) = ends_here(line, rest)?;
     Ok((rest, ply))

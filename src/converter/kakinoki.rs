@@ -166,8 +166,10 @@ pub(super) fn write_header<W: Write>(header: &HashMap<String, String>, sink: &mu
 ///
 /// # Errors
 ///
-/// [`ConvertError::UnknownPreset`] for a handicap with no board of its own
-/// (R-HC-004): nothing gets written, because there is no word for it.
+/// [`ConvertError::UnknownPreset`] for `Initial { preset: PresetOther, data:
+/// None }` — `その他` says the position is spelled out as a board, and without
+/// one there is no word for it (`research/90-gaps.md` GAP-001). Every other
+/// `Preset` has a name in `40-handicap.md`.
 pub(super) fn write_initial<W: Write>(
     header: &HashMap<String, String>,
     initial: &Option<Initial>,

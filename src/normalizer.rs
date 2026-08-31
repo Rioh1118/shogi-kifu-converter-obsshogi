@@ -189,9 +189,21 @@ impl JsonKifuFormat {
     /// whether a move that did *not* promote is worth recording as `false`
     /// (R-NOT-005).
     ///
-    /// `from` and `relative` are filled in when absent and otherwise left alone.
+    /// `from` is worked out from the position only where the record wrote an
+    /// origin it could not read — [`ORIGIN_UNSTATED`], the square off the board.
+    /// A `from` that is simply absent is a drop (R-JKF-003) and stays absent.
+    ///
+    /// `relative` is filled in only when `infer_relative` is set, which
+    /// `parse_kif_str` does not do (R-REQ-006): a JKF read from a KIF has none,
+    /// and [`Self::populate_relative`] is what fills them.
+    ///
     /// `same` is read before it is written: it is what says a move's destination
     /// is the previous move's, which is the only way `to` can be filled in.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NormalizeError`] if a move cannot be resolved against the
+    /// position it is played from.
     pub fn normalize_with_options(
         &mut self,
         correct_color: bool,
@@ -440,7 +452,7 @@ fn normalize_move(
             // argue: a promotion is spelled out in every notation this crate
             // reads. KIF and KI2 write `成` and the reader puts that in
             // `promote` (R-KIF-006 / R-NOT-005); CSA has no `成` and names the
-            // piece the move left behind instead (R-CSA-005), which arrives as a
+            // piece the move left behind instead (R-CSA-007), which arrives as a
             // `piece` that is the promoted form of the one standing on `from`.
             //
             // Deciding it from the board instead drops a `成` on a move the
@@ -971,7 +983,7 @@ mod tests {
         );
     }
 
-    // CSA has no `成`. It names the piece the move left behind (R-CSA-005), so a
+    // CSA has no `成`. It names the piece the move left behind (R-CSA-007), so a
     // CSA promotion arrives as a `piece` that is the promoted form of the one on
     // `from` and an empty `promote` — a statement in the record just the same.
     #[test]
@@ -987,7 +999,7 @@ mod tests {
         );
     }
 
-    // The piece name is how CSA states a promotion (R-CSA-005), not a second
+    // The piece name is how CSA states a promotion (R-CSA-007), not a second
     // opinion on a record that already stated one. Read over a statement, it
     // puts a `成` into a record that has none: `７五と` on a square holding a
     // pawn is a spelling that disagrees with the board, and D12 answers a

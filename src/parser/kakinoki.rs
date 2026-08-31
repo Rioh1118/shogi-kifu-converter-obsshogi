@@ -304,9 +304,14 @@ fn information_value_preset(input: &str) -> IResult<&str, Information, VerboseEr
 ///
 /// Anything else on the line — a name this table has no entry for, a handicap
 /// followed by a note — is not this line, and the reader hands it to
-/// [`information_line_keyvalue`] to keep as text (R-KIF-004). Nothing is dropped
-/// either way, so there is no reason to be strict here: a value that starts with
-/// a handicap and carries a joined move list is caught where the text is kept.
+/// [`information_line_keyvalue`] to keep as text (R-KIF-004).
+///
+/// The text is kept, but the position it named is not: `initial` falls back to
+/// the even game, and for a handicap that also flips every move's side, since
+/// the upper hand moves first only in a handicap (R-HC-001). `手合割：香落ち（30分）`
+/// reads as a hirate game with Black to open. Being strict here instead would
+/// refuse the file outright, which is worse and still not the fix — the fix is a
+/// table with an entry for what the file says.
 fn information_line_preset(input: &str) -> IResult<&str, Information, VerboseError<&str>> {
     terminated(
         preceded(tag("手合割："), information_value_preset),

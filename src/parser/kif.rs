@@ -99,7 +99,7 @@ fn a_header_value_carrying_moves(_: &str) -> bool {
 /// point.
 fn branch_header_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
     // `手` is what the writers put after the number, but nothing requires it of
-    // a reader — tsshogi reads the number and stops (`kakinoki.cjs:189`).
+    // a reader — tsshogi's `branchRegExp` reads the number and stops.
     let (rest, _) = tuple((tag("変化："), digit1, opt(tag("手"))))(input)?;
     let (rest, _) = ends_here(input, rest)?;
     Ok((rest, input))
@@ -181,7 +181,7 @@ fn move_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
                     // origin the absence of `成` is the record saying the move
                     // did not promote — not the record saying nothing. Leaving
                     // it empty makes it look like the latter, and the normalizer
-                    // then reads the piece name to decide (R-CSA-005, which is
+                    // then reads the piece name to decide (R-CSA-007, which is
                     // how CSA states a promotion) and can put a `成` into a
                     // record that has none.
                     //
