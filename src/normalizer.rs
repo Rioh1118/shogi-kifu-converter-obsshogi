@@ -170,6 +170,22 @@ impl JsonKifuFormat {
     /// KIF parsing supplies an explicit `from`, so the inference is dead work for that path.
     /// Downstream code that needs `relative` (e.g. KI2 conversion) can call
     /// [`Self::populate_relative`] to fill it in lazily.
+    ///
+    /// # What the position decides, and what the record does
+    ///
+    /// `piece`, `same`, `capture` and `time.total` are worked out from the
+    /// position and replace whatever the input held. They describe the board,
+    /// not the game: which piece stands on `from`, what it took, whether the
+    /// square is the one the move before went to. An input that disagrees was
+    /// describing a different board.
+    ///
+    /// `promote` is not one of them. Only the record says whether a move
+    /// promoted — no board can be asked after the fact — so a promotion the
+    /// input states is kept, and the position is consulted only to decide
+    /// whether a move that did *not* promote is worth recording as `false`
+    /// (R-NOT-005).
+    ///
+    /// `from` and `relative` are filled in when absent and otherwise left alone.
     pub fn normalize_with_options(
         &mut self,
         correct_color: bool,
@@ -238,9 +254,9 @@ impl JsonKifuFormat {
     /// and [`Self::normalize_with_color_correction`] for those where it is
     /// derived from the move number (KIF, KI2).
     ///
-    /// The following fields are recomputed from the position and overwrite
-    /// whatever the input held: `piece`, `same`, `promote`, `capture` and
-    /// `time.total`.
+    /// `piece`, `same`, `capture` and `time.total` are recomputed from the
+    /// position and overwrite whatever the input held; `promote` is the
+    /// record's to state. See [`Self::normalize_with_options`].
     ///
     /// # Errors
     ///
@@ -402,15 +418,6 @@ fn normalize_move(
                 None => return Err(NormalizeErrorKind::NoPieceAt(from)),
             };
             let from_piece_kind = piece.piece_kind();
-            let to_piece_kind = {
-                let pk = shogi_core::PieceKind::from(mmf.piece);
-                if mmf.promote.unwrap_or_default() {
-                    pk.promote().unwrap_or(pk)
-                } else {
-                    pk
-                }
-            };
-            mmf.piece = pk2k(from_piece_kind);
             // Set same?
             mmf.same = if pos
                 .last_move()
@@ -422,11 +429,35 @@ fn normalize_move(
                 None
             };
             // Set promote?
-            mmf.promote = if from_piece_kind.promote().is_some()
+            //
+            // The record is what says a move promoted, and the board cannot
+            // argue: a promotion is spelled out in every notation this crate
+            // reads. KIF and KI2 write `成` and the reader puts that in
+            // `promote` (R-KIF-006 / R-NOT-005); CSA has no `成` and names the
+            // piece the move left behind instead (R-CSA-005), which arrives as a
+            // `piece` that is the promoted form of the one standing on `from`.
+            //
+            // Deciding it from the board instead is how a `成` on a move the
+            // rules do not allow to promote — a recorded illegal move is valid
+            // input (R-RULE-002) — got dropped without a word, leaving a record
+            // that spells the move without it. A promotion the piece has no
+            // promoted form for is not written off here either: `make_move`
+            // refuses it below, and the error names the ply.
+            //
+            // What the position does decide is the other direction — whether a
+            // move that did *not* promote is one where promoting was on the
+            // table, and so worth recording as `false` at all. R-NOT-005: a
+            // promotable piece with the enemy camp at one end of the move.
+            let promoted = mmf.promote == Some(true)
+                || from_piece_kind.promote() == Some(shogi_core::PieceKind::from(mmf.piece));
+            mmf.piece = pk2k(from_piece_kind);
+            mmf.promote = if promoted {
+                Some(true)
+            } else if from_piece_kind.promote().is_some()
                 && (from.relative_rank(pos.side_to_move()) <= 3
                     || to.relative_rank(pos.side_to_move()) <= 3)
             {
-                Some(from_piece_kind != to_piece_kind)
+                Some(false)
             } else {
                 None
             };
@@ -904,6 +935,86 @@ fn populate_relative_moves(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // R-RULE-002: a kifu records what was played, illegal moves included, and
+    // R-KIF-006 / R-NOT-005 leave the notation as the only place a promotion is
+    // stated. Working `promote` out from the board instead threw this `成` away
+    // without a word — the move came back, and was written back, as a plain 7六歩
+    // — so the record on disk no longer said what the file it was read from said.
+    #[test]
+    fn a_stated_promotion_survives_a_move_the_rules_cannot_promote() {
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩成(77)
+";
+        let jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        let mv = jkf.moves[1].move_.expect("a move");
+        assert_eq!(Some(true), mv.promote, "the record says it promoted");
+        assert!(
+            crate::converter::ToKif::try_to_kif_owned(&jkf)
+                .expect("writes")
+                .contains("７六歩成(77)"),
+            "and it is written back"
+        );
+    }
+
+    // CSA has no `成`. It names the piece the move left behind (R-CSA-005), so a
+    // CSA promotion arrives as a `piece` that is the promoted form of the one on
+    // `from` and an empty `promote` — a statement in the record just the same.
+    #[test]
+    fn a_csa_states_a_promotion_by_naming_the_piece_it_became() {
+        let csa = "V2.2\nPI\n+\n+7776FU\n-3334FU\n+8822UM\n";
+        let jkf = crate::parser::parse_csa_str(csa).expect("parses");
+        let mv = jkf.moves[3].move_.expect("a move");
+        assert_eq!(Some(true), mv.promote);
+        assert_eq!(
+            Kind::KA,
+            mv.piece,
+            "J14: `piece` names the piece that moved"
+        );
+    }
+
+    // A promotion with nowhere to go is the one the record cannot have right: a
+    // gold has no promoted form, so there is no move to keep. That has to be an
+    // error naming the ply — the reader silently unpromoting it would leave a
+    // record that disagrees with the file for the rest of the game.
+    #[test]
+    fn a_promotion_the_piece_has_no_form_for_is_an_error() {
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ６八金成(69)
+";
+        let err = crate::parser::parse_kif_str(kif).expect_err("refuses");
+        assert!(
+            err.to_string().contains("６八") || err.to_string().contains("Invalid move"),
+            "the error points at the move: {err}"
+        );
+    }
+
+    // R-NOT-005: `false` is worth recording only where promoting was on the
+    // table — a promotable piece with the enemy camp at one end of the move.
+    // Everywhere else the field stays empty, which is what the writers read to
+    // decide whether KI2 spells 不成.
+    #[test]
+    fn a_move_that_did_not_promote_records_false_only_in_the_enemy_camp() {
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77)
+   2 ３四歩(33)
+   3 ２二角(88)
+";
+        let jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        assert_eq!(
+            None,
+            jkf.moves[1].move_.expect("a move").promote,
+            "7七から7六は敵陣に無関係"
+        );
+        assert_eq!(
+            Some(false),
+            jkf.moves[3].move_.expect("a move").promote,
+            "2二は敵陣なので不成であることに意味がある"
+        );
+    }
 
     // `同` carries no destination of its own — it means the square the previous
     // move went to (R-NOT-002) — and only normalization can fill it in. Stopping
