@@ -115,7 +115,7 @@ fn write_initial_data<W: Write>(data: &StateFormat, sink: &mut W) -> Result {
 }
 
 fn write_initial_preset<W: Write>(preset: Preset, sink: &mut W) -> Result {
-    // `その他` never reaches here — it carries a board instead.
+    // A `その他` with a board never reaches here — the board is written instead.
     let name = match crate::handicap::lookup(preset) {
         Some(handicap) => handicap.kif_name,
         None => return Err(ConvertError::UnknownPreset(preset)),
@@ -143,18 +143,36 @@ pub(super) fn write_header<W: Write>(header: &HashMap<String, String>, sink: &mu
     Ok(())
 }
 
-/// Writes the line, or the board, that names the position the record starts from.
+/// Writes the line, or the board, that names the position the record starts
+/// from (D13).
 ///
-/// Always writes one. A record that leaves its starting position unsaid is read
-/// back as the even game, which is what it means (R-JKF-001, and `initial` is
-/// optional in JKF), but the file no longer says so on its own — and for KI2,
-/// where a hirate opening was the only thing being written, a record with no
-/// header and no moves came out as zero bytes.
-pub(super) fn write_initial<W: Write>(initial: &Option<Initial>, sink: &mut W) -> Result {
+/// A record that leaves its starting position unsaid is read back as the even
+/// game, which is what it means (`initial` is optional in JKF), but a file that
+/// does not say so on its own is one nothing distinguishes from a save that was
+/// cut short — for KI2, where a hirate opening was the only thing left to write,
+/// a record with no header and no moves came out as zero bytes.
+///
+/// `header` decides one case. A `手合割` this crate could not fold into a
+/// `Preset` is kept as text (`手合割：詰将棋`, `parser::kakinoki`), and `initial`
+/// then holds the even game because that is what the reader falls back to. The
+/// preset line is left out rather than written under it: two `手合割` lines
+/// saying different things is the file contradicting itself about the one thing
+/// this is here to state.
+///
+/// # Errors
+///
+/// [`ConvertError::UnknownPreset`] for a handicap with no board of its own
+/// (R-HC-004): nothing gets written, because there is no word for it.
+pub(super) fn write_initial<W: Write>(
+    header: &HashMap<String, String>,
+    initial: &Option<Initial>,
+    sink: &mut W,
+) -> Result {
     match initial {
         Some(Initial {
             data: Some(data), ..
         }) => write_initial_data(data, sink),
+        _ if header.contains_key("手合割") => Ok(()),
         Some(initial) => write_initial_preset(initial.preset, sink),
         None => write_initial_preset(Preset::PresetHirate, sink),
     }
@@ -186,6 +204,35 @@ mod tests {
 手数----指手---------消費時間--
    1 ５三飛(52)   ( 0:00/00:00:00)
 ";
+
+    // A `手合割` whose value is not one of the handicaps in `40-handicap.md` is
+    // kept as text (R-KIF-004) and `initial` falls back to the even game, which
+    // is what the reader does with a record that names no handicap it knows.
+    // Writing the preset line under it leaves the file saying two different
+    // things about the one thing D13 is there to state.
+    #[test]
+    fn a_handicap_kept_as_text_is_not_written_over() {
+        let kif = "手合割：詰将棋
+先手：Ａ
+手数----指手---------消費時間--
+   1 ７六歩(77)
+";
+        let jkf = parse_kif_str(kif).expect("parses");
+        for text in [
+            jkf.try_to_kif_owned().expect("writes KIF"),
+            jkf.try_to_ki2_owned().expect("writes KI2"),
+        ] {
+            assert_eq!(
+                1,
+                text.matches("手合割").count(),
+                "one and only one: {text}"
+            );
+            assert!(
+                text.contains("手合割：詰将棋"),
+                "and it is the one read: {text}"
+            );
+        }
+    }
 
     /// R-KIF-004: a header is one line. A value with a newline in it splits the
     /// header block, and everything after the split is skipped as a non-move

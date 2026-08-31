@@ -48,7 +48,7 @@ pub trait ToKif {
 impl ToKif for JsonKifuFormat {
     fn to_kif<W: Write>(&self, sink: &mut W) -> Result {
         write_header(&self.header, sink)?;
-        write_initial(&self.initial, sink)?;
+        write_initial(&self.header, &self.initial, sink)?;
         write_moves(&self.moves, sink)?;
         Ok(())
     }

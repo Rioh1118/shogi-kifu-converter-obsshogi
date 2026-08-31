@@ -269,7 +269,7 @@ fn write_line<'a, W: Write>(
 impl ToKi2 for JsonKifuFormat {
     fn to_ki2<W: Write>(&self, sink: &mut W) -> Result {
         write_header(&self.header, sink)?;
-        write_initial(&self.initial, sink)?;
+        write_initial(&self.header, &self.initial, sink)?;
         // R-HC-001: only the even game starts with Black. The board says so too
         // when there is one, but a record this crate cannot turn into a position
         // still has to name the right side at its outcome.
