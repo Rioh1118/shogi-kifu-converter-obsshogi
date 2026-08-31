@@ -48,7 +48,7 @@ pub trait ToKif {
 impl ToKif for JsonKifuFormat {
     fn to_kif<W: Write>(&self, sink: &mut W) -> Result {
         write_header(&self.header, sink)?;
-        write_initial(&self.initial, false, sink)?;
+        write_initial(&self.initial, sink)?;
         write_moves(&self.moves, sink)?;
         Ok(())
     }
@@ -368,6 +368,7 @@ mod tests {
     fn to_kif_default() {
         assert_eq!(
             r#"
+手合割：平手
 手数----指手---------消費時間--
 "#[1..],
             JsonKifuFormat::default()

@@ -269,7 +269,7 @@ fn write_line<'a, W: Write>(
 impl ToKi2 for JsonKifuFormat {
     fn to_ki2<W: Write>(&self, sink: &mut W) -> Result {
         write_header(&self.header, sink)?;
-        write_initial(&self.initial, true, sink)?;
+        write_initial(&self.initial, sink)?;
         // R-HC-001: only the even game starts with Black. The board says so too
         // when there is one, but a record this crate cannot turn into a position
         // still has to name the right side at its outcome.
@@ -799,23 +799,26 @@ mod tests {
         assert_eq!(shape(&jkf.moves[1..], 1), shape(&back.moves[1..], 1));
     }
 
-    // A record with no header, no starting position and no moves writes
-    // nothing at all: a move run that never opened a line has none to end.
+    // A record with no header, no starting position and no moves used to write
+    // nothing at all, and a caller saving that to `.ki2` got a zero-byte file
+    // back with an `Ok` — indistinguishable from a save that was cut short.
+    // Naming the starting position is the least a kifu can say, and it is what
+    // KIF and CSA already write for the same record.
     #[test]
-    fn to_ki2_default() {
-        assert_eq!(
-            "",
-            JsonKifuFormat::default()
-                .try_to_ki2_owned()
-                .expect("writes KI2")
-        );
-        assert!(crate::parser::parse_ki2_str("").is_ok());
+    fn to_ki2_names_the_starting_position_of_an_empty_record() {
+        let ki2 = JsonKifuFormat::default()
+            .try_to_ki2_owned()
+            .expect("writes KI2");
+        assert_eq!("手合割：平手\n", ki2);
+        let back = crate::parser::parse_ki2_str(&ki2).expect("reads back");
+        assert_eq!(1, back.moves.len(), "R-JKF-001: the slot, and no move");
+        assert_eq!(Some(Preset::PresetHirate), back.initial.map(|i| i.preset));
     }
 
     #[test]
     fn to_ki2_moves() {
         assert_eq!(
-            "▲２六歩 △８四歩 ▲２五歩\n",
+            "手合割：平手\n▲２六歩 △８四歩 ▲２五歩\n",
             JsonKifuFormat {
                 moves: vec![
                     MoveFormat::default(),

@@ -143,22 +143,21 @@ pub(super) fn write_header<W: Write>(header: &HashMap<String, String>, sink: &mu
     Ok(())
 }
 
-pub(super) fn write_initial<W: Write>(
-    initial: &Option<Initial>,
-    omit_hirate: bool,
-    sink: &mut W,
-) -> Result {
-    if let Some(initial) = initial {
-        if let Some(data) = &initial.data {
-            write_initial_data(data, sink)?;
-        } else {
-            if omit_hirate && initial.preset == Preset::PresetHirate {
-                return Ok(());
-            }
-            write_initial_preset(initial.preset, sink)?;
-        }
+/// Writes the line, or the board, that names the position the record starts from.
+///
+/// Always writes one. A record that leaves its starting position unsaid is read
+/// back as the even game, which is what it means (R-JKF-001, and `initial` is
+/// optional in JKF), but the file no longer says so on its own — and for KI2,
+/// where a hirate opening was the only thing being written, a record with no
+/// header and no moves came out as zero bytes.
+pub(super) fn write_initial<W: Write>(initial: &Option<Initial>, sink: &mut W) -> Result {
+    match initial {
+        Some(Initial {
+            data: Some(data), ..
+        }) => write_initial_data(data, sink),
+        Some(initial) => write_initial_preset(initial.preset, sink),
+        None => write_initial_preset(Preset::PresetHirate, sink),
     }
-    Ok(())
 }
 
 #[cfg(test)]
