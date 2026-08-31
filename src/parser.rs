@@ -428,6 +428,40 @@ mod tests {
         }
     }
 
+    // A `変化：N手` says a branch follows it. A file that ends right after one
+    // was cut short, and coming back with one fewer branch says nothing about
+    // that.
+    //
+    // Whether a blank line happens to sit in front of the header is not a
+    // difference the answer can turn on: the run above used to swallow the
+    // header when there was no blank line to stop it, and the branch went
+    // missing quietly in exactly that case.
+    #[test]
+    fn a_branch_header_with_nothing_under_it_is_an_error() {
+        const KIF: &str = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77)
+   2 ３四歩(33)
+";
+        for (gap, line) in [("\n", 6), ("", 5)] {
+            let err = parse_kif_str(&format!("{KIF}{gap}変化：2手\n")).expect_err("an error");
+            let text = refusal(err, line);
+            assert!(
+                text.contains("変化"),
+                "the error points at the header itself: {text}"
+            );
+        }
+
+        // A block whose first line cannot be read is a different fault with a
+        // different cause. D1's leftover-input check names that line, and saying
+        // "no moves under it" instead would name a cause that is not the one —
+        // `パス` is a word this reader has no meaning for (D8), not a missing
+        // branch.
+        let err = parse_kif_str(&format!("{KIF}\n変化：2手\n   2 パス\n")).expect_err("an error");
+        let text = refusal(err, 7);
+        assert!(text.contains("パス"), "the error names the word: {text}");
+    }
+
     // Kifu for Windows marks some moves with a trailing `+`
     // (`data/tests/kif/everyday_20211107.kif`). It is not in R-KIF-005's
     // grammar and there is nothing to read it into, but dropping it loses
