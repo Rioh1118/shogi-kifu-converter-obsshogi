@@ -15,14 +15,22 @@ use std::path::Path;
 
 /// Parses a CSA file to [`jkf::JsonKifuFormat`](crate::jkf::JsonKifuFormat)
 ///
+/// The bytes decide the encoding, as they do for KIF and KI2: UTF-8 first, then
+/// Shift-JIS. R-CSA-001 leaves the encoding to the environment that wrote the
+/// file, and the Windows GUIs that write most CSA in the wild write Shift-JIS.
+///
+/// The extension is not consulted — R-CSA-001 gives it nothing to say — so a CSA
+/// under any name is read.
+///
 /// # Errors
 ///
-/// This function returns [`ParseError`] if it fails to parse the file.
+/// Returns [`ParseError::Decode`] when neither encoding reads the bytes cleanly,
+/// [`ParseError::Io`] when the file cannot be read, and otherwise whatever
+/// [`parse_csa_str`] returns.
 pub fn parse_csa_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseError> {
-    let mut file = File::open(&path)?;
-    let mut buf = String::new();
-    file.read_to_string(&mut buf)?;
-    parse_csa_str(&buf)
+    let mut buf = Vec::new();
+    File::open(&path)?.read_to_end(&mut buf)?;
+    parse_csa_str(&decode_kifu(&buf, UTF_8)?)
 }
 
 /// Parses a CSA formatted string to [`jkf::JsonKifuFormat`](crate::jkf::JsonKifuFormat)
@@ -83,9 +91,20 @@ fn read_kifu<P: AsRef<Path>>(
         .ok_or(ParseError::FileExtension)?;
     let mut buf = Vec::new();
     File::open(&path)?.read_to_end(&mut buf)?;
-    let other = if named == SHIFT_JIS { UTF_8 } else { SHIFT_JIS };
-    for encoding in [named, other] {
-        let (text, _, had_errors) = encoding.decode(&buf);
+    decode_kifu(&buf, named)
+}
+
+/// Decodes `buf` as `first`, falling back to the other of the two encodings a
+/// kifu is written in.
+///
+/// A decode that reports errors is not the one the file was written in, so the
+/// first clean decode wins. `first` is what the caller has reason to expect —
+/// the extension for KIF and KI2, UTF-8 for CSA — and only breaks the tie for
+/// bytes both encodings accept.
+fn decode_kifu(buf: &[u8], first: &'static Encoding) -> Result<String, ParseError> {
+    let second = if first == SHIFT_JIS { UTF_8 } else { SHIFT_JIS };
+    for encoding in [first, second] {
+        let (text, _, had_errors) = encoding.decode(buf);
         if !had_errors {
             return Ok(text.into_owned());
         }
@@ -538,6 +557,31 @@ mod tests {
             let jkf = parse_ki2_file(scratch(name, &bytes))
                 .unwrap_or_else(|e| panic!("{name} was not read: {e}"));
             assert_eq!(2, jkf.moves.len() - 1, "{name}");
+        }
+    }
+
+    // R-CSA-001: the CSA spec leaves the encoding to whatever wrote the file, so
+    // the bytes are all there is to go on — and the Windows GUIs that write most
+    // CSA in the wild write Shift-JIS. Reading the file as UTF-8 and nothing else
+    // made the same game readable or not depending on the format it was saved
+    // in, while KIF and KI2 next to it read both.
+    #[test]
+    fn a_csa_is_read_in_either_encoding() {
+        const CSA: &str = "V2.2\nN+山田太郎\nN-田中一郎\nPI\n+\n+7776FU\n";
+        let sjis = SHIFT_JIS.encode(CSA).0.into_owned();
+
+        let from_utf8 = parse_csa_file(scratch("both.csa", CSA.as_bytes())).expect("reads UTF-8");
+        let from_sjis = parse_csa_file(scratch("sjis.csa", &sjis)).expect("reads Shift-JIS");
+        assert_eq!(from_utf8, from_sjis);
+        assert_eq!(1, from_utf8.moves.len() - 1);
+
+        // R-CSA-001 gives the extension nothing to say, so no extension is
+        // claimed and none is refused.
+        for name in ["upper.CSA", "named.txt", "noextension"] {
+            assert!(
+                parse_csa_file(scratch(name, &sjis)).is_ok(),
+                "{name} was rejected"
+            );
         }
     }
 
