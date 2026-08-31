@@ -1062,10 +1062,9 @@ mod tests {
    1 ６八金成(69)
 ";
         let err = crate::parser::parse_kif_str(kif).expect_err("refuses");
-        assert!(
-            err.to_string().contains("６八") || err.to_string().contains("Invalid move"),
-            "the error points at the move: {err}"
-        );
+        let text = err.to_string();
+        assert!(text.contains("６八"), "the error names the move: {text}");
+        assert!(text.contains("at ply 1"), "and which ply it is: {text}");
     }
 
     // R-NOT-005: `false` is worth recording only where promoting was on the
