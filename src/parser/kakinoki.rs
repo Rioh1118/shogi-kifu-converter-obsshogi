@@ -66,24 +66,77 @@ pub(super) fn end_of_line(input: &str) -> IResult<&str, &str, VerboseError<&str>
     alt((line_ending, eof))(input)
 }
 
-/// Whether `tail` opens a line the reader would have read on its own, had the
-/// newline in front of it survived.
+/// The spaces a line can be padded with. Full-width among them: KI2 is a record
+/// people read (R-KI2-001), and what people paste is padded either way.
+const SPACES: [char; 3] = [' ', '\t', '　'];
+
+/// Whether `head` is the beginning of a line the reader has a shape for: a
+/// numbered KIF line, a KI2 run, a comment, a bookmark, a `#` note, a `変化：`
+/// header, a `まで…` outcome.
+fn opens_a_line(head: &str) -> bool {
+    head.starts_with(['*', '&', '#', '▲', '△'])
+        || head.starts_with("変化：")
+        || head.starts_with("まで")
+        || opens_a_numbered_line(head)
+}
+
+/// Whether `head` is the beginning of a `<手数> <指し手>` line
+/// (R-KIF-005 / R-KIF-008).
 ///
-/// These are the shapes that carry a move or a branch: a numbered KIF line, a
-/// KI2 run, a comment, a bookmark, a `#` note, a `変化：` header, a `まで…`
-/// outcome. Everything else after a line the reader has finished with is an
-/// annotation the formats do not define — Kifu for Windows marks some moves with
-/// a trailing `+` (`data/tests/kif/everyday_20211107.kif`) — and dropping one of
-/// those loses nothing the record was made of.
+/// The number on its own is not the shape. A `( 0:01)` this reader has no shape
+/// for and a bare `55` both carry digits and neither is a line — what makes one
+/// is a number, then space, then something for the number to be about.
+fn opens_a_numbered_line(head: &str) -> bool {
+    let after_digits = head.trim_start_matches(|c: char| c.is_ascii_digit());
+    after_digits.len() < head.len()
+        && after_digits.starts_with(SPACES)
+        && !after_digits.trim_start_matches(SPACES).is_empty()
+}
+
+/// Whether `tail` — what is left of a line the reader has finished with —
+/// begins the line that should have been underneath it.
+///
+/// What follows a finished line is one of two things. Either the line below,
+/// whose newline was lost, or an annotation the formats do not define: Kifu for
+/// Windows marks moves with a trailing `+`
+/// (`data/tests/kif/everyday_20211107.kif`), and a consumed-time spelling this
+/// reader has no shape for is left over the same way. Only the first means the
+/// record is missing something.
+///
+/// What was lost is the newline itself, so whatever sits in its place belongs to
+/// neither line: the shapes are tried once more past a single character.
 fn starts_a_line(tail: &str) -> bool {
-    let tail = match tail.find(['\r', '\n']) {
-        Some(end) => &tail[..end],
-        None => tail,
-    };
-    tail.contains(['*', '&', '#', '▲', '△'])
-        || tail.contains("変化：")
-        || tail.contains("まで")
-        || tail.contains(|c: char| c.is_ascii_digit())
+    let head = tail.trim_start_matches(SPACES);
+    if opens_a_line(head) {
+        return true;
+    }
+    match head.chars().next() {
+        Some(c) => opens_a_line(head[c.len_utf8()..].trim_start_matches(SPACES)),
+        None => false,
+    }
+}
+
+/// Whether `value` — everything after `<キーワード>：` on a header line — carries
+/// a run of KI2 moves.
+///
+/// A header value is free text a user can put anything in (R-KIF-004), so unlike
+/// [`ends_here`] there is no point at which the line ought to have ended: the
+/// question is what the text carries, not where it stops. A KI2 record whose
+/// starting position lost its newline puts its whole move list in a header
+/// value.
+///
+/// The whole shape of a move has to be there. `▲` and `△` alone are not it —
+/// the standard `消費時間` header spells each side's clock with them
+/// (`消費時間：104▲379△380`, `data/tests/kif/oui202106290101.kif`).
+///
+/// A KIF move line joined to a header is not caught: `棋戦：第 3 回` and a lost
+/// newline before `   3 ７六歩(77)` are the same shape, and refusing the first to
+/// catch the second would reject records nothing is wrong with
+/// (`research/90-gaps.md` GAP-020).
+pub(super) fn carries_a_move_run(value: &str) -> bool {
+    value.char_indices().any(|(i, c)| {
+        matches!(c, '▲' | '△') && pair(move_to, piece_kind)(&value[i + c.len_utf8()..]).is_ok()
+    })
 }
 
 /// Requires the line to end where the reader finished reading it, or to trail
@@ -272,19 +325,16 @@ fn information_value_preset(input: &str) -> IResult<&str, Information, VerboseEr
 
 /// A `手合割：<名前>` line naming one of the handicaps in `40-handicap.md`.
 ///
-/// A value that is not one of them is not this line: the reader hands it on to
-/// [`information_line_keyvalue`], which files it under `header`. Unknown values
-/// do turn up — `手合割：詰将棋` from the Mynavi software above all — and there is
-/// nothing to make of them but to keep the text.
-///
-/// A value that *is* one of them owns the rest of the line ([`ends_here`]).
-/// Otherwise the same fall-through files a joined line — the handicap and the
-/// moves that lost their newline — under `header` as one string: the record then
-/// starts from the even game, holds no moves, and comes back `Ok`.
+/// Anything else on the line — a name this table has no entry for, a handicap
+/// followed by a note — is not this line, and the reader hands it to
+/// [`information_line_keyvalue`] to keep as text (R-KIF-004). Nothing is dropped
+/// either way, so there is no reason to be strict here: a value that starts with
+/// a handicap and carries a joined move list is caught where the text is kept.
 fn information_line_preset(input: &str) -> IResult<&str, Information, VerboseError<&str>> {
-    let (rest, info) = preceded(tag("手合割："), information_value_preset)(input)?;
-    let (rest, _) = ends_here(input, rest)?;
-    Ok((rest, info))
+    terminated(
+        preceded(tag("手合割："), information_value_preset),
+        line_ending,
+    )(input)
 }
 
 fn information_line_hands(input: &str) -> IResult<&str, Information, VerboseError<&str>> {
@@ -316,18 +366,25 @@ fn information_line_hands(input: &str) -> IResult<&str, Information, VerboseErro
     ))
 }
 
+/// A `<キーワード>：<値>` line, which a header can be any of (R-KIF-004).
+///
+/// This is where every header line that is nothing more specific ends up, so it
+/// is where a header that swallowed the line under it is caught
+/// ([`carries_a_move_run`]). Without that, a KI2 whose `手合割：平手` lost its
+/// newline files the entire game under `header["手合割"]` and comes back `Ok`
+/// with no moves in it.
 fn information_line_keyvalue(input: &str) -> IResult<&str, Information, VerboseError<&str>> {
-    terminated(
-        map(
-            separated_pair(
-                map(is_not("：\r\n"), String::from),
-                tag("："),
-                map(not_line_ending, String::from),
-            ),
-            |(k, v)| Information::KeyValue(k, v),
-        ),
+    let (rest, (key, value)) = terminated(
+        separated_pair(is_not("：\r\n"), tag("："), not_line_ending),
         line_ending,
-    )(input)
+    )(input)?;
+    if carries_a_move_run(value) {
+        return Err(broken_line(input, "this line runs into the one below it"));
+    }
+    Ok((
+        rest,
+        Information::KeyValue(key.to_owned(), value.to_owned()),
+    ))
 }
 
 fn informations(input: &str) -> IResult<&str, InformationData, VerboseError<&str>> {
