@@ -96,6 +96,9 @@ fn opens_a_numbered_line(head: &str) -> bool {
 /// Whether `tail` — what is left of a line the reader has finished with —
 /// begins the line that should have been underneath it.
 ///
+/// [`opens_a_line`] asks the same question of text that starts where a line
+/// starts; this one asks it of text that starts where a line ends.
+///
 /// What follows a finished line is one of two things. Either the line below,
 /// whose newline was lost, or an annotation the formats do not define: Kifu for
 /// Windows marks moves with a trailing `+`
@@ -105,7 +108,7 @@ fn opens_a_numbered_line(head: &str) -> bool {
 ///
 /// What was lost is the newline itself, so whatever sits in its place belongs to
 /// neither line: the shapes are tried once more past a single character.
-fn starts_a_line(tail: &str) -> bool {
+fn begins_the_line_below(tail: &str) -> bool {
     let head = tail.trim_start_matches(SPACES);
     if opens_a_line(head) {
         return true;
@@ -139,7 +142,7 @@ pub(super) fn ends_here<'a>(
     if let Ok(ended) = preceded(space0, end_of_line)(rest) {
         return Ok(ended);
     }
-    if starts_a_line(rest) {
+    if begins_the_line_below(rest) {
         return Err(broken_line(line, "this line runs into the one below it"));
     }
     preceded(not_line_ending, end_of_line)(rest)

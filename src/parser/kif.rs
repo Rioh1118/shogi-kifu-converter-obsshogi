@@ -131,7 +131,9 @@ fn skippable_line(input: &str) -> IResult<&str, Skipped<'_>, VerboseError<&str>>
 /// means the header is gone by the time anyone can ask, and a branch with
 /// nothing under it passes unnoticed — but only when no blank line happens to
 /// sit in front of it, which is not a difference a record can be judged on.
-fn skippable_line_before_a_branch(input: &str) -> IResult<&str, Skipped<'_>, VerboseError<&str>> {
+fn skippable_line_except_a_branch_header(
+    input: &str,
+) -> IResult<&str, Skipped<'_>, VerboseError<&str>> {
     verify(skippable_line, |line| {
         !matches!(line, Skipped::BranchHeader(_))
     })(input)
@@ -346,7 +348,7 @@ fn moves_with_index(
             Err(err) => return Err(err),
         }
     }
-    let (input, _) = opt(skippable_line_before_a_branch)(input)?;
+    let (input, _) = opt(skippable_line_except_a_branch_header)(input)?;
     Ok((input, (first_ply, out)))
 }
 
@@ -457,9 +459,12 @@ fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Ver
             // check (D1) names it and where it is; saying "no moves under it"
             // instead would name a line that has moves under it and a cause that
             // is not the one.
-            Err(nom::Err::Error(_)) if branch_header.is_some() && rest.trim().is_empty() => {
-                let line = branch_header.unwrap_or(rest);
-                return Err(broken_line(line, "a 変化 block with no moves under it"));
+            Err(nom::Err::Error(_)) if rest.trim().is_empty() => {
+                if let Some(line) = branch_header {
+                    return Err(broken_line(line, "a 変化 block with no moves under it"));
+                }
+                input = rest;
+                break;
             }
             // The lines just skipped are accounted for even though no run
             // followed them. A record trails off into prose — `まで<N>手で…`,
