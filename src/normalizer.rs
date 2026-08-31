@@ -173,19 +173,25 @@ impl JsonKifuFormat {
     ///
     /// # What the position decides, and what the record does
     ///
-    /// `piece`, `same`, `capture` and `time.total` are worked out from the
-    /// position and replace whatever the input held. They describe the board,
-    /// not the game: which piece stands on `from`, what it took, whether the
-    /// square is the one the move before went to. An input that disagrees was
-    /// describing a different board.
+    /// For a move that has an origin, `piece`, `same` and `capture` are worked
+    /// out from the position and replace whatever the input held. They describe
+    /// the board, not the game: which piece stands on `from`, what it took,
+    /// whether the square is the one the move before went to. An input that
+    /// disagrees was describing a different board.
     ///
-    /// `promote` is not one of them. Only the record says whether a move
+    /// A drop has no origin (R-JKF-003), so there is no square to ask about and
+    /// those three are left as they came. `time.total` is recomputed for every
+    /// move, drops included.
+    ///
+    /// `promote` is not one of them either. Only the record says whether a move
     /// promoted — no board can be asked after the fact — so a promotion the
     /// input states is kept, and the position is consulted only to decide
     /// whether a move that did *not* promote is worth recording as `false`
     /// (R-NOT-005).
     ///
     /// `from` and `relative` are filled in when absent and otherwise left alone.
+    /// `same` is read before it is written: it is what says a move's destination
+    /// is the previous move's, which is the only way `to` can be filled in.
     pub fn normalize_with_options(
         &mut self,
         correct_color: bool,
@@ -254,8 +260,8 @@ impl JsonKifuFormat {
     /// and [`Self::normalize_with_color_correction`] for those where it is
     /// derived from the move number (KIF, KI2).
     ///
-    /// `piece`, `same`, `capture` and `time.total` are recomputed from the
-    /// position and overwrite whatever the input held; `promote` is the
+    /// On a move with an origin, `piece`, `same` and `capture` are recomputed
+    /// from the position and overwrite whatever the input held; `promote` is the
     /// record's to state. See [`Self::normalize_with_options`].
     ///
     /// # Errors
@@ -1020,6 +1026,29 @@ mod tests {
         // there is worth recording.
         assert_eq!(Some(false), mv.promote);
         assert_eq!(Kind::KA, mv.piece);
+    }
+
+    // A drop has no origin (R-JKF-003), so there is no square to ask what piece
+    // moved or what it took, and the three fields the position otherwise decides
+    // are left as they came. The contract in `normalize_with_options` is what
+    // the consumer reads before trusting those fields, so the exception is worth
+    // a test of its own.
+    #[test]
+    fn a_drop_keeps_the_fields_an_origin_would_have_decided() {
+        let json = r#"{"header":{},"initial":{"preset":"HIRATE"},"moves":[{},
+            {"move":{"color":0,"from":{"x":7,"y":7},"to":{"x":7,"y":6},"piece":"FU"}},
+            {"move":{"color":1,"from":{"x":3,"y":3},"to":{"x":3,"y":4},"piece":"FU"}},
+            {"move":{"color":0,"from":{"x":8,"y":8},"to":{"x":2,"y":2},"piece":"KA","promote":true}},
+            {"move":{"color":1,"from":{"x":3,"y":1},"to":{"x":2,"y":2},"piece":"GI"}},
+            {"move":{"color":0,"to":{"x":4,"y":5},"piece":"KA","capture":"HI"}}]}"#;
+        let jkf = crate::parser::parse_jkf_str(json).expect("parses");
+        let mv = jkf.moves[5].move_.expect("a move");
+        assert_eq!(None, mv.from, "R-JKF-003: a drop states no origin");
+        assert_eq!(
+            Some(Kind::HI),
+            mv.capture,
+            "4五 is empty, but there is no origin to work that out from"
+        );
     }
 
     // A promotion with nowhere to go is the one the record cannot have right: a

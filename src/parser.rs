@@ -27,6 +27,11 @@ use std::path::Path;
 /// Returns [`ParseError::Decode`] when neither encoding reads the bytes cleanly,
 /// [`ParseError::Io`] when the file cannot be read, and otherwise whatever
 /// [`parse_csa_str`] returns.
+///
+/// # Panics
+///
+/// Panics on the inputs [`parse_csa_str`] panics on, which every file this
+/// decodes now reaches whichever encoding it is written in.
 pub fn parse_csa_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseError> {
     let mut buf = Vec::new();
     File::open(&path)?.read_to_end(&mut buf)?;
@@ -38,6 +43,16 @@ pub fn parse_csa_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseEr
 /// # Errors
 ///
 /// This function returns [`ParseError`] if it fails to parse the string.
+///
+/// # Panics
+///
+/// The body goes to the `csa` crate, which unwraps rather than reports on some
+/// values it cannot read: a `$START_TIME` naming a day no month has
+/// (`2004/02/30`), a `T` line with more digits than the number it holds. Both
+/// are things a file can say, so this is reachable from input alone — the
+/// consumer catches it (obs-shogi's `parse_csa_guarded`) because a Tauri command
+/// that panics takes the application with it. `research/90-gaps.md` GAP-012
+/// holds what it would take to fix rather than catch.
 pub fn parse_csa_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
     let mut jkf = JsonKifuFormat::try_from(csa::parse_csa(s)?)?;
     jkf.normalize()?;
