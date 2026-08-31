@@ -6,7 +6,7 @@ use crate::jkf::*;
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::character::complete::{digit1, space0};
-use nom::combinator::{map, map_res, opt, value, verify};
+use nom::combinator::{map, map_res, opt, value};
 use nom::error::{ParseError, VerboseError};
 use nom::multi::{many0, many1};
 use nom::sequence::{delimited, preceded, separated_pair, terminated, tuple};
@@ -105,38 +105,31 @@ fn branch_header_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
     Ok((rest, input))
 }
 
-/// What a line between the runs of moves was.
-#[derive(Clone, Copy)]
-enum Skipped<'a> {
-    /// `変化：<N>手` — a branch is about to start. Carries the line.
-    BranchHeader(&'a str),
-    /// Blank, or a line the move list has no shape for: `まで<N>手で<結末>`, the
-    /// `手数----指手---` rule, a closing remark.
-    Other,
-}
-
-/// A line between the runs of moves.
-fn skippable_line(input: &str) -> IResult<&str, Skipped<'_>, VerboseError<&str>> {
-    alt((
-        value(Skipped::Other, blank_line),
-        map(branch_header_line, Skipped::BranchHeader),
-        value(Skipped::Other, not_move_line),
-    ))(input)
-}
-
-/// A line between the runs of moves, other than a `変化：<N>手`.
+/// A line between the runs of moves: blank, a `変化：<N>手` header, or one the
+/// move list has no shape for — `まで<N>手で<結末>`, the `手数----指手---` rule,
+/// a closing remark.
 ///
-/// Only [`entire_moves`] consumes a branch header: it is the one that knows
-/// whether a run follows. Letting a run's own trailing skip take one instead
-/// means the header is gone by the time anyone can ask, and a branch with
-/// nothing under it passes unnoticed — but only when no blank line happens to
-/// sit in front of it, which is not a difference a record can be judged on.
-fn skippable_line_except_a_branch_header(
-    input: &str,
-) -> IResult<&str, Skipped<'_>, VerboseError<&str>> {
-    verify(skippable_line, |line| {
-        !matches!(line, Skipped::BranchHeader(_))
-    })(input)
+/// Only used before the main line, where a `変化：` is nothing to act on: a
+/// branch cannot come before the moves it is an alternative to, and one written
+/// there anyway is what tsshogi skips as well.
+fn skippable_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
+    alt((blank_line, branch_header_line, not_move_line))(input)
+}
+
+/// The same, except that a `変化：` line is left where it is.
+///
+/// [`entire_moves`] is the one that reads branch headers, because it is the one
+/// that knows whether a run follows. A line that merely looks like one is
+/// declined too: a header the reader refuses ([`branch_header_line`]) has to
+/// reach that loop to be refused, not be skipped as unreadable prose.
+fn skippable_line_except_a_branch_header(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
+    if input.starts_with("変化：") {
+        return Err(nom::Err::Error(VerboseError::from_error_kind(
+            input,
+            nom::error::ErrorKind::Not,
+        )));
+    }
+    alt((blank_line, not_move_line))(input)
 }
 
 /// Skips the blank lines and `#` lines that may sit between two moves of a run
@@ -439,41 +432,49 @@ fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Ver
     let (input, _) = many0(skippable_line)(input)?;
     let (mut input, main) = main_moves(start, input)?;
     let mut forks = Vec::new();
+    // One `変化：N手` header and the run under it per turn. Reading them one at a
+    // time is what makes "this header has no moves under it" answerable: a skip
+    // that takes headers along the way leaves nothing to ask about, and a branch
+    // goes missing without a word.
     loop {
-        let (rest, skipped) = many0(skippable_line)(input)?;
-        let branch_header = skipped.iter().rev().find_map(|line| match line {
-            Skipped::BranchHeader(line) => Some(*line),
-            Skipped::Other => None,
-        });
+        let (rest, _) = many0(skippable_line_except_a_branch_header)(input)?;
+        let (rest, header) = match branch_header_line(rest) {
+            Ok((after, line)) => (after, Some(line)),
+            // The header is there and cannot be read — it ran into the moves
+            // under it. That is the branch, gone.
+            Err(err @ nom::Err::Failure(_)) => return Err(err),
+            // Not a header. A run can still follow: the tree comes from the ply
+            // numbers, not from the declaration (D3).
+            Err(_) => (rest, None),
+        };
+        let (rest, _) = many0(skippable_line_except_a_branch_header)(rest)?;
         match moves_with_index(start, rest) {
             Ok((after_run, run)) => {
                 forks.push(run);
                 input = after_run;
             }
-            // A `変化：N手` says a branch follows. Nothing at all after one means
-            // the branch is gone, and skipping on returns a record that is a
-            // whole branch short without saying so.
-            //
-            // Only when there is nothing. A line that could not be read is a
-            // different fault with a different cause, and the leftover-input
-            // check (D1) names it and where it is; saying "no moves under it"
-            // instead would name a line that has moves under it and a cause that
-            // is not the one.
-            Err(nom::Err::Error(_)) if rest.trim().is_empty() => {
-                if let Some(line) = branch_header {
-                    return Err(broken_line(line, "a 変化 block with no moves under it"));
-                }
-                input = rest;
-                break;
-            }
-            // The lines just skipped are accounted for even though no run
-            // followed them. A record trails off into prose — `まで<N>手で…`,
-            // a comment block — and the run parser already swallows one such
-            // line, so stopping here would accept one trailing line and call
-            // the second one unreadable input (D1). Skip them the same way.
             Err(nom::Err::Error(_)) => {
-                input = rest;
-                break;
+                // A header with nothing under it but the end of the file, or the
+                // next header, is a branch that is gone.
+                //
+                // Anything else there is a different fault with a different
+                // cause, and the leftover-input check (D1) names it and where it
+                // is; saying "no moves under it" instead would name a line that
+                // has moves under it and a cause that is not the one.
+                match header {
+                    Some(line) if rest.trim().is_empty() || rest.starts_with("変化：") => {
+                        return Err(broken_line(line, "a 変化 block with no moves under it"));
+                    }
+                    // The lines just skipped are accounted for even though no run
+                    // followed them. A record trails off into prose — `まで<N>手で…`,
+                    // a comment block — and the run parser already swallows one
+                    // such line, so stopping before them would accept one
+                    // trailing line and call the second one unreadable (D1).
+                    _ => {
+                        input = rest;
+                        break;
+                    }
+                }
             }
             Err(err) => return Err(err),
         }

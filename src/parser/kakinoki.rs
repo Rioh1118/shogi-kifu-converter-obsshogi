@@ -74,10 +74,36 @@ const SPACES: [char; 3] = [' ', '\t', '　'];
 /// numbered KIF line, a KI2 run, a comment, a bookmark, a `#` note, a `変化：`
 /// header, a `まで…` outcome.
 fn opens_a_line(head: &str) -> bool {
-    head.starts_with(['*', '&', '#', '▲', '△'])
-        || head.starts_with("変化：")
+    head.starts_with(['*', '&', '#'])
+        || opens_a_ki2_move(head)
+        || opens_a_branch_header(head)
         || head.starts_with("まで")
         || opens_a_numbered_line(head)
+}
+
+/// Whether `head` is the beginning of a KI2 move.
+///
+/// The whole shape of one, not just the `▲`. Those two characters are how a
+/// commentary marks a side — `▲有利`, `（△の反撃）` — and how the standard
+/// `消費時間` header spells each side's clock. A reader that takes them for a
+/// move refuses records with nothing wrong with them.
+///
+/// [`super::ki2::a_header_value_carrying_moves`] asks a stronger question of a
+/// header value, where one move is not enough to conclude anything.
+fn opens_a_ki2_move(head: &str) -> bool {
+    match head.chars().next() {
+        Some(c @ ('▲' | '△')) => pair(move_to, piece_kind)(&head[c.len_utf8()..]).is_ok(),
+        _ => false,
+    }
+}
+
+/// Whether `head` is the beginning of a `変化：<N>手` header.
+///
+/// The number is what makes it one. `変化：` on its own is two characters a
+/// sentence can open with.
+pub(super) fn opens_a_branch_header(head: &str) -> bool {
+    head.strip_prefix("変化：")
+        .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
 }
 
 /// Whether `head` is the beginning of a `<手数> <指し手>` line

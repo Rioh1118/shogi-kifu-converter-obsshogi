@@ -84,18 +84,19 @@ fn write_move_kind<W: Write>(kind: Kind, sink: &mut W) -> Result {
 /// (R-REQ-002). What the record says a move did is `promote` (D12); whether the
 /// notation has a word for it is what the piece and the squares say.
 fn promotion_was_on_the_table(mv: &MoveMoveFormat) -> bool {
-    fn in_the_enemy_camp(color: Color, place: &PlaceFormat) -> bool {
-        match color {
-            Color::Black => place.y <= 3,
-            Color::White => place.y >= 7,
-        }
-    }
+    // Both ends have to be squares on the board. A move with no origin is a drop
+    // (R-JKF-003), which enters the board unpromoted and has neither word; an
+    // origin the record stated and the reader could not place
+    // (`normalizer::ORIGIN_UNSTATED`) is off the board, not in the camp.
+    let (Some(Ok(from)), Ok(to)) = (
+        mv.from.as_ref().map(shogi_core::Square::try_from),
+        shogi_core::Square::try_from(&mv.to),
+    ) else {
+        return false;
+    };
+    let color = shogi_core::Color::from(mv.color);
     shogi_core::PieceKind::from(mv.piece).promote().is_some()
-        && (in_the_enemy_camp(mv.color, &mv.to)
-            || mv
-                .from
-                .as_ref()
-                .is_some_and(|from| in_the_enemy_camp(mv.color, from)))
+        && (from.relative_rank(color) <= 3 || to.relative_rank(color) <= 3)
 }
 
 /// Writes the KI2 notation for `moves`, deriving the disambiguating suffix from
@@ -852,6 +853,21 @@ mod tests {
         // The pawn on the line after it does get one: it moves out of the enemy
         // camp, which is a move R-NOT-005 asks to be spelled either way.
         assert!(ki2.contains("▲３四歩不成"), "{ki2:?}");
+
+        // Neither end of a drop is an origin, and an origin the reader could not
+        // place is off the board rather than deep in the camp. Both used to read
+        // as "the enemy camp is involved" through a raw `y`.
+        for mv in [
+            r#"{"color":0,"to":{"x":2,"y":2},"piece":"GI","promote":false}"#,
+            r#"{"color":0,"from":{"x":0,"y":0},"to":{"x":5,"y":6},"piece":"FU","promote":false}"#,
+        ] {
+            let json = format!(
+                r#"{{"header":{{}},"initial":{{"preset":"HIRATE"}},"moves":[{{}},{{"move":{mv}}}]}}"#
+            );
+            let jkf: JsonKifuFormat = serde_json::from_str(&json).expect("reads the JKF");
+            let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
+            assert!(!ki2.contains("不成"), "{mv} -> {ki2:?}");
+        }
     }
 
     // A record with no header, no starting position and no moves has the
