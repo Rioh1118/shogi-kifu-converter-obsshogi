@@ -66,6 +66,70 @@ pub(super) fn end_of_line(input: &str) -> IResult<&str, &str, VerboseError<&str>
     alt((line_ending, eof))(input)
 }
 
+/// Whether `tail` opens a line the reader would have read on its own, had the
+/// newline in front of it survived.
+///
+/// These are the shapes that carry a move or a branch: a numbered KIF line, a
+/// KI2 run, a comment, a bookmark, a `#` note, a `変化：` header, a `まで…`
+/// outcome. Everything else after a line the reader has finished with is an
+/// annotation the formats do not define — Kifu for Windows marks some moves with
+/// a trailing `+` (`data/tests/kif/everyday_20211107.kif`) — and dropping one of
+/// those loses nothing the record was made of.
+fn starts_a_line(tail: &str) -> bool {
+    let tail = match tail.find(['\r', '\n']) {
+        Some(end) => &tail[..end],
+        None => tail,
+    };
+    tail.contains(['*', '&', '#', '▲', '△'])
+        || tail.contains("変化：")
+        || tail.contains("まで")
+        || tail.contains(|c: char| c.is_ascii_digit())
+}
+
+/// Requires the line to end where the reader finished reading it, or to trail
+/// off into something that is not a line of its own.
+///
+/// `line` is the whole line, for the error to point at; `rest` is what is left
+/// of it.
+///
+/// A reader that has recognised what a line says owns the line to its end. What
+/// follows a line the reader has finished with is not more of that line: the
+/// newline that should have separated them is gone, and the line underneath is
+/// read as part of this one and lost. One byte does it — a `\n` that arrives as
+/// a space joins two move lines, and the second move disappears from a record
+/// that still comes back `Ok`, which no caller can tell from a shorter game.
+///
+/// `Failure` rather than `Error` because every caller sits under an `opt` or an
+/// `alt` that swallows a recoverable error and skips the line whole — which is
+/// the silence this exists to break.
+pub(super) fn ends_here<'a>(
+    line: &'a str,
+    rest: &'a str,
+) -> IResult<&'a str, &'a str, VerboseError<&'a str>> {
+    if let Ok(ended) = preceded(space0, end_of_line)(rest) {
+        return Ok(ended);
+    }
+    if starts_a_line(rest) {
+        return Err(broken_line(line, "this line runs into the one below it"));
+    }
+    preceded(not_line_ending, end_of_line)(rest)
+}
+
+/// The error for a record that cannot be read, pointing at `at` and saying
+/// `what`.
+///
+/// A [`nom::error::VerboseErrorKind::Context`] rather than an `ErrorKind`, whose
+/// name (`CrLf`, `Many1`) says what combinator gave up rather than what is wrong
+/// with the file. The caller here is someone whose kifu did not open.
+///
+/// `Failure`: these are all raised from under an `opt` or an `alt` that swallows
+/// a recoverable error and carries on without the line.
+pub(super) fn broken_line<'a>(at: &'a str, what: &'static str) -> nom::Err<VerboseError<&'a str>> {
+    nom::Err::Failure(VerboseError {
+        errors: vec![(at, nom::error::VerboseErrorKind::Context(what))],
+    })
+}
+
 /// A line with nothing on it but spaces.
 ///
 /// KIF puts one before each `変化：` block, and R-KIF-002 lets one sit anywhere
@@ -206,11 +270,21 @@ fn information_value_preset(input: &str) -> IResult<&str, Information, VerboseEr
     Ok((rest, Information::Preset(preset)))
 }
 
+/// A `手合割：<名前>` line naming one of the handicaps in `40-handicap.md`.
+///
+/// A value that is not one of them is not this line: the reader hands it on to
+/// [`information_line_keyvalue`], which files it under `header`. Unknown values
+/// do turn up — `手合割：詰将棋` from the Mynavi software above all — and there is
+/// nothing to make of them but to keep the text.
+///
+/// A value that *is* one of them owns the rest of the line ([`ends_here`]).
+/// Otherwise the same fall-through files a joined line — the handicap and the
+/// moves that lost their newline — under `header` as one string: the record then
+/// starts from the even game, holds no moves, and comes back `Ok`.
 fn information_line_preset(input: &str) -> IResult<&str, Information, VerboseError<&str>> {
-    terminated(
-        preceded(tag("手合割："), information_value_preset),
-        line_ending,
-    )(input)
+    let (rest, info) = preceded(tag("手合割："), information_value_preset)(input)?;
+    let (rest, _) = ends_here(input, rest)?;
+    Ok((rest, info))
 }
 
 fn information_line_hands(input: &str) -> IResult<&str, Information, VerboseError<&str>> {
@@ -361,16 +435,22 @@ pub(super) fn move_to(input: &str) -> IResult<&str, Option<PlaceFormat>, Verbose
     ))(input)
 }
 
+/// The `後手番` line that says the position starts with White to move
+/// (R-KIF-014).
+///
+/// The word owns the rest of the line ([`ends_here`]). This parser sits under an
+/// `opt`, so a line it merely declines is read as one the format has no shape
+/// for and skipped — taking a `後手番` joined with the moves under it with it,
+/// and leaving a tsume that starts from the wrong side and has no moves.
 fn side_to_move_line(input: &str) -> IResult<&str, Color, VerboseError<&str>> {
-    terminated(
-        alt((
-            value(Color::Black, tag("先手番")),
-            value(Color::White, tag("後手番")),
-            value(Color::Black, tag("下手番")),
-            value(Color::White, tag("上手番")),
-        )),
-        line_ending,
-    )(input)
+    let (rest, color) = alt((
+        value(Color::Black, tag("先手番")),
+        value(Color::White, tag("後手番")),
+        value(Color::Black, tag("下手番")),
+        value(Color::White, tag("上手番")),
+    ))(input)?;
+    let (rest, _) = ends_here(input, rest)?;
+    Ok((rest, color))
 }
 
 pub(super) fn parse_without_moves(

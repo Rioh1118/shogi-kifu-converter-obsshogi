@@ -1,6 +1,6 @@
 use super::kakinoki::{
-    move_comment_line, move_to, not_move_line, parse_without_moves, piece_kind,
-    program_comment_line,
+    broken_line, ends_here, move_comment_line, move_to, not_move_line, parse_without_moves,
+    piece_kind, program_comment_line,
 };
 use crate::jkf::*;
 use nom::branch::alt;
@@ -9,7 +9,7 @@ use nom::character::complete::{digit1, line_ending, not_line_ending, space0};
 use nom::combinator::{map, map_res, opt, value};
 use nom::error::{ParseError, VerboseError};
 use nom::multi::{many0, many1};
-use nom::sequence::{delimited, preceded, terminated, tuple};
+use nom::sequence::{preceded, terminated, tuple};
 use nom::IResult;
 
 fn single_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
@@ -121,12 +121,18 @@ fn end_of_game_line(
 }
 
 /// Reads a `変化：N手` header and returns `N`.
+///
+/// The header owns the rest of its line. Reading to the end of the line and
+/// dropping what was there took the first move of the branch with it whenever
+/// the newline between them was lost.
 fn branch_header(input: &str) -> IResult<&str, usize, VerboseError<&str>> {
-    delimited(
-        preceded(many0(line_ending), tag("変化：")),
-        map_res(digit1, str::parse::<usize>),
-        preceded(not_line_ending, opt(line_ending)),
-    )(input)
+    let (line, _) = many0(line_ending)(input)?;
+    let (rest, ply) = preceded(tag("変化："), map_res(digit1, str::parse::<usize>))(line)?;
+    // `手` is what the writers put after the number, but nothing requires it of
+    // a reader — tsshogi reads the number and stops (`kakinoki.cjs:189`).
+    let (rest, _) = opt(tag("手"))(rest)?;
+    let (rest, _) = ends_here(line, rest)?;
+    Ok((rest, ply))
 }
 
 /// Reads one line of the record: the moves and any outcome lines among them.
@@ -258,9 +264,13 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
     loop {
         if let Ok((rest, start_ply)) = branch_header(input) {
             let (rest, branch) = move_run(start, start_ply)(rest)?;
-            if !branch.is_empty() {
-                attach_branch(&mut out[1..], &mut path, start_ply, branch);
+            if branch.is_empty() {
+                // The header says a branch follows. Reading nothing under it
+                // means the branch is gone, and carrying on returns a record
+                // that is a whole branch short without saying so.
+                return Err(broken_line(input, "a 変化 block with no moves under it"));
             }
+            attach_branch(&mut out[1..], &mut path, start_ply, branch);
             input = rest;
             continue;
         }

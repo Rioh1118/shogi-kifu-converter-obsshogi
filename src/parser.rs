@@ -360,6 +360,66 @@ mod tests {
         }
     }
 
+    // A record loses one byte — the `\n` at the end of a line arrives as a
+    // space, a NUL, a comma — and the line under it is read as part of the line
+    // above. Whatever that line held is gone: a move, the whole move list, a
+    // branch. The record still came back `Ok`, and a caller cannot tell it from
+    // a shorter game, so obs-shogi indexed the moves it had and nothing said the
+    // rest were missing.
+    //
+    // The move counts here are the point: each case has to be an error, not a
+    // record one ply short.
+    #[test]
+    fn a_line_that_lost_its_ending_is_an_error_not_a_shorter_record() {
+        const KIF: &str = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77)   ( 0:01/00:00:01)
+   2 ３四歩(33)   ( 0:01/00:00:02)
+   3 ２二角成(88)   ( 0:01/00:00:03)
+";
+        // A move line joined to the one below it.
+        let joined = KIF.replace("00:00:02)\n", "00:00:02) ");
+        assert_eq!(3, parse_kif_str(KIF).expect("parses").moves.len() - 1);
+        let err = parse_kif_str(&joined).expect_err("the joined line is an error");
+        assert!(
+            err.to_string().contains("at line 4"),
+            "the error points at the joined line: {err}"
+        );
+
+        // A `変化：N手` header joined to the first move of its branch. The whole
+        // branch went missing.
+        let with_branch = format!("{KIF}\n変化：3手\n   3 ８八銀(79)   ( 0:01/00:00:03)\n");
+        // R-JKF-004: the branch is the alternative *to* ply 3, so it hangs off
+        // that node — `moves[3]`, the initial position's slot being `moves[0]`.
+        assert!(parse_kif_str(&with_branch).expect("parses").moves[3]
+            .forks
+            .is_some());
+        assert!(parse_kif_str(&with_branch.replace("変化：3手\n", "変化：3手 ")).is_err());
+        // And a header with nothing readable under it at all.
+        assert!(parse_kif_str(&format!("{KIF}\n変化：3手\n")).is_err());
+
+        // KI2: the starting position joined to the moves. Every move was read as
+        // part of the header value, and the record came back with none.
+        const KI2: &str = "手合割：平手\n▲７六歩 △３四歩 ▲２二角成\n";
+        assert_eq!(3, parse_ki2_str(KI2).expect("parses").moves.len() - 1);
+        assert!(parse_ki2_str(&KI2.replace("平手\n", "平手 ")).is_err());
+        assert!(parse_ki2_str(&format!("{KI2}\n変化：3手\n")).is_err());
+    }
+
+    // Kifu for Windows marks some moves with a trailing `+`
+    // (`data/tests/kif/everyday_20211107.kif`). It is not in R-KIF-005's
+    // grammar and there is nothing to read it into, but dropping it loses
+    // nothing the record was made of — unlike the line underneath.
+    #[test]
+    fn an_annotation_after_a_move_is_still_skipped() {
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77)   ( 0:01/00:00:01)+
+   2 ３四歩(33)   ( 0:01/00:00:02)!?
+";
+        assert_eq!(2, parse_kif_str(kif).expect("parses").moves.len() - 1);
+    }
+
     // Leftover input is not enough on its own. A line the move list has no
     // shape for is skipped whole, so an input made only of such lines leaves
     // nothing behind to report and used to come back as an empty record.
