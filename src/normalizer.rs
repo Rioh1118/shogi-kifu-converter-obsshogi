@@ -444,12 +444,19 @@ fn normalize_move(
             // promoted form for is not written off here either: `make_move`
             // refuses it below, and the error names the ply.
             //
+            // The piece name is read only where the record left `promote` empty.
+            // It is CSA's way of stating a promotion, not a second opinion on a
+            // record that already stated one: a `false` overruled that way turns
+            // a spelling that disagrees with the board — `７五と` on a square
+            // holding a pawn — into a `成` the record does not have.
+            //
             // What the position does decide is the other direction — whether a
             // move that did *not* promote is one where promoting was on the
             // table, and so worth recording as `false` at all. R-NOT-005: a
             // promotable piece with the enemy camp at one end of the move.
-            let promoted = mmf.promote == Some(true)
-                || from_piece_kind.promote() == Some(shogi_core::PieceKind::from(mmf.piece));
+            let promoted = mmf.promote.unwrap_or_else(|| {
+                from_piece_kind.promote() == Some(shogi_core::PieceKind::from(mmf.piece))
+            });
             mmf.piece = pk2k(from_piece_kind);
             mmf.promote = if promoted {
                 Some(true)
@@ -972,6 +979,47 @@ mod tests {
             mv.piece,
             "J14: `piece` names the piece that moved"
         );
+    }
+
+    // The piece name is how CSA states a promotion (R-CSA-005), not a second
+    // opinion on a record that already stated one. Read over a statement, it
+    // puts a `成` into a record that has none: `７五と` on a square holding a
+    // pawn is a spelling that disagrees with the board, and D12 answers a
+    // disagreeing `piece` by taking the board's — not by promoting the move.
+    #[test]
+    fn a_piece_name_that_disagrees_with_the_board_does_not_promote_the_move() {
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77)
+   2 ３四歩(33)
+   3 ７五と(76)
+";
+        let jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        let mv = jkf.moves[3].move_.expect("a move");
+        assert_eq!(None, mv.promote, "7五 is nowhere near the enemy camp");
+        assert_eq!(Kind::FU, mv.piece, "D12: the board names the piece");
+        let back = crate::converter::ToKif::try_to_kif_owned(&jkf).expect("writes");
+        assert!(
+            !back.contains('成'),
+            "no 成 in the record, so none in the write-back: {back}"
+        );
+    }
+
+    // The same the other way round, on the entry the consumer's save path feeds
+    // (R-REQ-002): a JKF that says `promote: false` while naming the promoted
+    // piece. D12 puts the record first, so the statement wins.
+    #[test]
+    fn a_stated_promote_false_is_not_overruled_by_the_piece_name() {
+        let json = r#"{"header":{},"initial":{"preset":"HIRATE"},"moves":[{},
+            {"move":{"color":0,"from":{"x":7,"y":7},"to":{"x":7,"y":6},"piece":"FU"}},
+            {"move":{"color":1,"from":{"x":3,"y":3},"to":{"x":3,"y":4},"piece":"FU"}},
+            {"move":{"color":0,"from":{"x":8,"y":8},"to":{"x":2,"y":2},"piece":"UM","promote":false}}]}"#;
+        let jkf = crate::parser::parse_jkf_str(json).expect("parses");
+        let mv = jkf.moves[3].move_.expect("a move");
+        // R-NOT-005 keeps the `false`: 2二 is the enemy camp, so not promoting
+        // there is worth recording.
+        assert_eq!(Some(false), mv.promote);
+        assert_eq!(Kind::KA, mv.piece);
     }
 
     // A promotion with nowhere to go is the one the record cannot have right: a

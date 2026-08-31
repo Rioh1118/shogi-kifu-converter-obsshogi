@@ -167,7 +167,17 @@ fn move_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
                     to: to.unwrap_or_default(), // Might be (0, 0) if it's the same place as previous
                     piece: kind,
                     same: if to.is_none() { Some(true) } else { None },
-                    promote: promote.map(|_| true),
+                    // R-KIF-006: KIF never writes 不成, so on a move that has an
+                    // origin the absence of `成` is the record saying the move
+                    // did not promote — not the record saying nothing. Leaving
+                    // it empty makes it look like the latter, and the normalizer
+                    // then reads the piece name to decide (R-CSA-005, which is
+                    // how CSA states a promotion) and can put a `成` into a
+                    // record that has none.
+                    //
+                    // A drop has nothing to say either way: a piece enters the
+                    // board unpromoted, and R-NOT-005 has no 成/不成 for it.
+                    promote: from.map(|_| promote.is_some()),
                     capture: None,
                     relative: None,
                 }),
@@ -671,7 +681,7 @@ mod tests {
                         to: PlaceFormat { x: 7, y: 6 },
                         piece: Kind::FU,
                         same: None,
-                        promote: None,
+                        promote: Some(false),
                         capture: None,
                         relative: None,
                     }),
@@ -716,7 +726,7 @@ mod tests {
                             to: PlaceFormat { x: 7, y: 6 },
                             piece: Kind::FU,
                             same: None,
-                            promote: None,
+                            promote: Some(false),
                             capture: None,
                             relative: None,
                         }),
@@ -779,7 +789,7 @@ mod tests {
                             to: PlaceFormat { x: 7, y: 8 },
                             piece: Kind::KI,
                             same: None,
-                            promote: None,
+                            promote: Some(false),
                             capture: None,
                             relative: None,
                         }),
@@ -821,7 +831,7 @@ mod tests {
                             to: PlaceFormat { x: 7, y: 6 },
                             piece: Kind::FU,
                             same: None,
-                            promote: None,
+                            promote: Some(false),
                             capture: None,
                             relative: None,
                         }),
@@ -848,7 +858,7 @@ mod tests {
                             to: PlaceFormat { x: 3, y: 4 },
                             piece: Kind::FU,
                             same: None,
-                            promote: None,
+                            promote: Some(false),
                             capture: None,
                             relative: None,
                         }),
@@ -912,7 +922,7 @@ mod tests {
                             to: PlaceFormat { x: 2, y: 6 },
                             piece: Kind::FU,
                             same: None,
-                            promote: None,
+                            promote: Some(false),
                             capture: None,
                             relative: None,
                         }),
