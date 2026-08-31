@@ -737,6 +737,41 @@ mod tests {
         false
     }
 
+    // What separates a line that lost its ending from a line that trails off
+    // into something the formats do not define. The right-hand column is what
+    // `ends_here` does with it: refuse the record, or skip the rest of the line.
+    #[test]
+    fn what_counts_as_the_line_below() {
+        for tail in [
+            "   5 ８八銀(79)   ( 0:01/00:00:05)",
+            "\u{0}   5 ８八銀(79)", // the newline arrived as another byte
+            ",   5 ８八銀(79)",
+            " ▲７六歩 △３四歩",
+            "*コメント",
+            "&しおり",
+            "# メモ",
+            "変化：3手",
+            "まで82手で先手の勝ち",
+        ] {
+            assert!(begins_the_line_below(tail), "{tail:?} is a line of its own");
+        }
+        for tail in [
+            "+", // Kifu for Windows marks moves with it
+            "!?",
+            " 評価値+120",
+            "( 0:01)", // a consumed time this reader cannot read
+            "（ 0:01/00:00:01）",
+            " 55",
+            "　※好手",
+            "",
+        ] {
+            assert!(
+                !begins_the_line_below(tail),
+                "{tail:?} is an annotation, and dropping it loses nothing"
+            );
+        }
+    }
+
     #[test]
     fn parse_information_keyvalue() {
         assert!(information_line_keyvalue(nothing)("").is_err());

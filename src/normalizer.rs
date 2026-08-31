@@ -446,46 +446,8 @@ fn normalize_move(
             } else {
                 None
             };
-            // Set promote?
-            //
-            // The record is what says a move promoted, and the board cannot
-            // argue: a promotion is spelled out in every notation this crate
-            // reads. KIF and KI2 write `成` and the reader puts that in
-            // `promote` (R-KIF-006 / R-NOT-005); CSA has no `成` and names the
-            // piece the move left behind instead (R-CSA-007), which arrives as a
-            // `piece` that is the promoted form of the one standing on `from`.
-            //
-            // Deciding it from the board instead drops a `成` on a move the
-            // rules do not allow to promote — a recorded illegal move is valid
-            // input (R-RULE-002) — without a word, leaving a record that spells
-            // the move without it. A promotion the piece has no promoted form
-            // for is not written off here either: `make_move` refuses it below,
-            // and the error names the ply.
-            //
-            // The piece name is read only where the record left `promote` empty.
-            // It is CSA's way of stating a promotion, not a second opinion on a
-            // record that already stated one: a `false` overruled that way turns
-            // a spelling that disagrees with the board — `７五と` on a square
-            // holding a pawn — into a `成` the record does not have.
-            //
-            // What the position does decide is the other direction — whether a
-            // move that did *not* promote is one where promoting was on the
-            // table, and so worth recording as `false` at all. R-NOT-005: a
-            // promotable piece with the enemy camp at one end of the move.
-            let promoted = mmf.promote.unwrap_or_else(|| {
-                from_piece_kind.promote() == Some(shogi_core::PieceKind::from(mmf.piece))
-            });
+            mmf.promote = decide_promote(&*mmf, from_piece_kind, from, to, pos.side_to_move());
             mmf.piece = pk2k(from_piece_kind);
-            mmf.promote = if promoted {
-                Some(true)
-            } else if from_piece_kind.promote().is_some()
-                && (from.relative_rank(pos.side_to_move()) <= 3
-                    || to.relative_rank(pos.side_to_move()) <= 3)
-            {
-                Some(false)
-            } else {
-                None
-            };
             // Set capture?
             mmf.capture = pos.piece_at(to).map(|p| pk2k(p.piece_kind()));
         } else {
@@ -509,6 +471,52 @@ fn normalize_move(
         };
     }
     Ok(mv)
+}
+
+/// Whether `mmf` promoted, as the record has it (D12).
+///
+/// The record is what says a move promoted, and the board cannot argue: a
+/// promotion is spelled out in every notation this crate reads. KIF and KI2
+/// write `成` and the reader puts that in `promote` (R-KIF-006 / R-NOT-005);
+/// CSA has no `成` and names the piece the move left behind instead
+/// (R-CSA-007), which arrives as a `piece` that is the promoted form of the one
+/// standing on `from`.
+///
+/// Deciding it from the board instead drops a `成` on a move the rules do not
+/// allow to promote — a recorded illegal move is valid input (R-RULE-002) —
+/// without a word, leaving a record that spells the move without it. A promotion
+/// the piece has no promoted form for is not written off here either:
+/// `make_move` refuses it later, and the error names the ply.
+///
+/// The piece name is read only where the record left `promote` empty. It is
+/// CSA's way of stating a promotion, not a second opinion on a record that
+/// already stated one: a `false` overruled that way turns a spelling that
+/// disagrees with the board — `７五と` on a square holding a pawn — into a `成`
+/// the record does not have.
+///
+/// What the position decides is the other direction — whether a move that did
+/// *not* promote is one where promoting was on the table, and so worth recording
+/// as `false` at all. R-NOT-005: a promotable piece with the enemy camp at one
+/// end of the move.
+fn decide_promote(
+    mmf: &MoveMoveFormat,
+    from_piece_kind: shogi_core::PieceKind,
+    from: shogi_core::Square,
+    to: shogi_core::Square,
+    side: shogi_core::Color,
+) -> Option<bool> {
+    let promoted = mmf.promote.unwrap_or_else(|| {
+        from_piece_kind.promote() == Some(shogi_core::PieceKind::from(mmf.piece))
+    });
+    if promoted {
+        Some(true)
+    } else if from_piece_kind.promote().is_some()
+        && (from.relative_rank(side) <= 3 || to.relative_rank(side) <= 3)
+    {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 /// The squares a piece of the same kind could have moved to `to` from.
@@ -1041,10 +1049,13 @@ mod tests {
     }
 
     // A drop has no origin (R-JKF-003), so there is no square to ask what piece
-    // moved or what it took, and the three fields the position otherwise decides
-    // are left as they came. The contract in `normalize_with_options` is what
-    // the consumer reads before trusting those fields, so the exception is worth
-    // a test of its own.
+    // moved or what it took, and `piece` and `capture` are left as they came.
+    // The contract in `normalize_with_options` is what the consumer reads before
+    // trusting those fields, so the exception is worth a test of its own.
+    //
+    // `same` is not among them for a reason that is not worth a case: a drop
+    // whose destination is the square the move before went to is a drop onto an
+    // occupied square, so there is no record to write it in.
     #[test]
     fn a_drop_keeps_the_fields_an_origin_would_have_decided() {
         let json = r#"{"header":{},"initial":{"preset":"HIRATE"},"moves":[{},
@@ -1061,6 +1072,7 @@ mod tests {
             mv.capture,
             "4五 is empty, but there is no origin to work that out from"
         );
+        assert_eq!(Kind::KA, mv.piece, "the piece dropped, from the record");
     }
 
     // A promotion with nowhere to go is the one the record cannot have right: a
