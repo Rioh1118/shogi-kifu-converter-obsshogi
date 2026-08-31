@@ -360,12 +360,26 @@ mod tests {
         }
     }
 
+    /// The error, and the line number it names.
+    ///
+    /// Both matter. A reader that reports the wrong line sends whoever has to
+    /// repair the file to the wrong place, and every case here is one byte away
+    /// from a record that is silently short — so an error raised for some other
+    /// reason would look like a pass.
+    fn refusal(err: impl std::fmt::Display, line: usize) -> String {
+        let text = err.to_string();
+        assert!(
+            text.contains(&format!("at line {line}")),
+            "expected the error to point at line {line}: {text}"
+        );
+        text
+    }
+
     // A record loses one byte — the `\n` at the end of a line arrives as a
     // space, a NUL, a comma — and the line under it is read as part of the line
     // above. Whatever that line held is gone: a move, the whole move list, a
-    // branch. The record still came back `Ok`, and a caller cannot tell it from
-    // a shorter game, so obs-shogi indexed the moves it had and nothing said the
-    // rest were missing.
+    // branch. The record comes back `Ok` all the same, and no caller can tell it
+    // from a shorter game.
     //
     // The move counts here are the point: each case has to be an error, not a
     // record one ply short.
@@ -377,33 +391,41 @@ mod tests {
    2 ３四歩(33)   ( 0:01/00:00:02)
    3 ２二角成(88)   ( 0:01/00:00:03)
 ";
-        // A move line joined to the one below it.
-        let joined = KIF.replace("00:00:02)\n", "00:00:02) ");
         assert_eq!(3, parse_kif_str(KIF).expect("parses").moves.len() - 1);
-        let err = parse_kif_str(&joined).expect_err("the joined line is an error");
-        assert!(
-            err.to_string().contains("at line 4"),
-            "the error points at the joined line: {err}"
-        );
+        // A move line joined to the one below it. The byte in the newline's
+        // place can be anything, so the shapes are looked for past it too.
+        for byte in [" ", "\u{0}", ",", "x"] {
+            let joined = KIF.replace("00:00:02)\n", &format!("00:00:02){byte}"));
+            let err = parse_kif_str(&joined).expect_err("the joined line is an error");
+            refusal(err, 4);
+        }
 
         // A `変化：N手` header joined to the first move of its branch. The whole
-        // branch went missing.
+        // branch goes missing.
         let with_branch = format!("{KIF}\n変化：3手\n   3 ８八銀(79)   ( 0:01/00:00:03)\n");
         // R-JKF-004: the branch is the alternative *to* ply 3, so it hangs off
         // that node — `moves[3]`, the initial position's slot being `moves[0]`.
         assert!(parse_kif_str(&with_branch).expect("parses").moves[3]
             .forks
             .is_some());
-        assert!(parse_kif_str(&with_branch.replace("変化：3手\n", "変化：3手 ")).is_err());
-        // And a header with nothing readable under it at all.
-        assert!(parse_kif_str(&format!("{KIF}\n変化：3手\n")).is_err());
+        let err = parse_kif_str(&with_branch.replace("変化：3手\n", "変化：3手 "))
+            .expect_err("the joined header is an error");
+        refusal(err, 7);
 
-        // KI2: the starting position joined to the moves. Every move was read as
-        // part of the header value, and the record came back with none.
+        // KI2: the starting position joined to the moves. Every move is read as
+        // part of the header value, and the record comes back with none.
         const KI2: &str = "手合割：平手\n▲７六歩 △３四歩 ▲２二角成\n";
         assert_eq!(3, parse_ki2_str(KI2).expect("parses").moves.len() - 1);
-        assert!(parse_ki2_str(&KI2.replace("平手\n", "平手 ")).is_err());
-        assert!(parse_ki2_str(&format!("{KI2}\n変化：3手\n")).is_err());
+        let err = parse_ki2_str(&KI2.replace("平手\n", "平手 ")).expect_err("an error");
+        refusal(err, 1);
+
+        // KI2 again, at the branch header. What follows it need not be a move:
+        // an outcome line joined to the header takes the block with it.
+        for tail in ["△８四歩", "まで1手で中断"] {
+            let joined = format!("手合割：平手\n▲７六歩 △３四歩\n\n変化：2手 {tail}\n");
+            let err = parse_ki2_str(&joined).expect_err("the joined header is an error");
+            refusal(err, 4);
+        }
     }
 
     // Kifu for Windows marks some moves with a trailing `+`

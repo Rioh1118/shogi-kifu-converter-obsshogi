@@ -262,17 +262,25 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
     // `変化：N手` blocks, in the order the file lists them.
     let mut path = Vec::new();
     loop {
-        if let Ok((rest, start_ply)) = branch_header(input) {
-            let (rest, branch) = move_run(start, start_ply)(rest)?;
-            if branch.is_empty() {
-                // The header says a branch follows. Reading nothing under it
-                // means the branch is gone, and carrying on returns a record
-                // that is a whole branch short without saying so.
-                return Err(broken_line(input, "a 変化 block with no moves under it"));
+        match branch_header(input) {
+            Ok((rest, start_ply)) => {
+                let (rest, branch) = move_run(start, start_ply)(rest)?;
+                if branch.is_empty() {
+                    // The header says a branch follows. Reading nothing under it
+                    // means the branch is gone, and carrying on returns a record
+                    // that is a whole branch short without saying so.
+                    return Err(broken_line(input, "a 変化 block with no moves under it"));
+                }
+                attach_branch(&mut out[1..], &mut path, start_ply, branch);
+                input = rest;
+                continue;
             }
-            attach_branch(&mut out[1..], &mut path, start_ply, branch);
-            input = rest;
-            continue;
+            // A `Failure` is `branch_header` saying the line *is* a header and is
+            // broken — it ran into the moves under it. Taking it for "not a
+            // branch header" hands the line to the skip below, which drops the
+            // whole block and returns `Ok`.
+            Err(err @ nom::Err::Failure(_)) => return Err(err),
+            Err(_) => {}
         }
         // A line the format has no shape for — a note after the record, a
         // closing remark — is skipped rather than left behind for the
