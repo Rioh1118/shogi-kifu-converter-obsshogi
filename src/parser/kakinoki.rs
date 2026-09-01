@@ -921,6 +921,12 @@ mod tests {
             (kif::SHAPES, "\t\n*コメント\n"),
             (kif::SHAPES, " \n変化：2手\n"),
             (ki2::SHAPES, "　\n△８四歩\n"),
+            // A note that names the move it is about is prose with a move at
+            // the head of it. `まで…` and `変化：` are where D18 puts notes, so
+            // a line of KI2 has to be moves the whole way to count as one.
+            (ki2::SHAPES, " △８四歩が最善だった"),
+            (ki2::SHAPES, "　△３三桂が敗着"),
+            (ki2::SHAPES, " △８四歩から"),
         ] {
             assert!(
                 !begins_the_line_below(shapes, tail),

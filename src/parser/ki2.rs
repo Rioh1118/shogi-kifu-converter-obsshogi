@@ -91,30 +91,44 @@ fn single_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
     )(input)
 }
 
-/// What a KI2 line looks like. The two questions differ in what they take as
-/// proof of a move, and each says why in its own doc:
-/// [`a_header_value_carrying_moves`] wants two, [`opens_a_ki2_line`] one.
+/// What a KI2 line looks like. Both questions take a run of moves that reaches
+/// the end as proof of one, and each says in its own doc what else it wants.
 pub(super) const SHAPES: LineShapes = LineShapes {
     carries_a_line: a_header_value_carrying_moves,
     opens_a_line: opens_a_ki2_line,
 };
 
-/// What a KI2 line looks like: the shapes both formats have, or a move.
-///
-/// One move is enough here, unlike in a header value: the lines this is asked
-/// about — a `変化：N手` header, a `後手番` — have no free-text role in KI2, so a
-/// move after one is the line below it and not a note about it.
+/// What a KI2 line looks like: the shapes both formats have, or a run of moves.
 fn opens_a_ki2_line(head: &str) -> bool {
-    opens_a_shared_line(head) || a_move_starts_here(head)
+    opens_a_shared_line(head) || a_move_run_fills_the_line(head)
 }
 
-/// Whether `head` is the beginning of a move.
+/// Whether `head` is a run of moves and nothing else, to the end of its line.
 ///
-/// The whole shape of one, not just the `▲`. Those two characters are how
-/// commentary marks a side — `▲有利`, `（△の反撃）` — and how the standard
-/// `消費時間` header spells each side's clock.
-fn a_move_starts_here(head: &str) -> bool {
-    head.starts_with(|c| SIDE_MARKS.iter().any(|(mark, _)| *mark == c)) && single_move(head).is_ok()
+/// Not just the `▲`: those two characters are how commentary marks a side
+/// (`▲有利`, `（△の反撃）`) and how the standard `消費時間` header spells each
+/// side's clock. And not just one move either, because the lines this is asked
+/// about carry notes. `まで<N>手で<結末>` is where D18 puts them
+/// (`まで2手で中断 （▲有利）`) and `変化：N手` takes one the same way, and a note
+/// naming the move it is about (`まで114手で先手の勝ち　△３三桂が敗着`) is prose
+/// with a move at the head of it. Refusing those refuses records that read as
+/// `.kif`.
+///
+/// So the same line [`a_header_value_carrying_moves`] draws: what a lost newline
+/// leaves behind is the line below it, whole, and a line of KI2 is moves all the
+/// way to its end. A note stops being one.
+fn a_move_run_fills_the_line(head: &str) -> bool {
+    if !head.starts_with(|c| SIDE_MARKS.iter().any(|(mark, _)| *mark == c)) {
+        return false;
+    }
+    // `single_move` reads past a newline into the comments under a move, so the
+    // question has to be put to this line alone: the line below is not what a
+    // line below is made of.
+    let line = head.split(LINE_ENDS).next().unwrap_or(head);
+    matches!(
+        many1(single_move)(line),
+        Ok((rest, _)) if rest.trim_start_matches(SPACES).is_empty()
+    )
 }
 
 /// Whether a header value carries a run of KI2 moves, which means it swallowed
@@ -680,6 +694,44 @@ mod tests {
                     "{src:?}: the outcome is gone"
                 );
             }
+        }
+    }
+
+    // D18: `まで<N>手で<結末>` and `変化：N手` are where a note goes, and a note
+    // naming the move it is about opens with one. Reading a single move as the
+    // line below refuses records that read as `.kif`; reading a run that fills
+    // the line as a note lets a lost newline through in silence. Both directions
+    // in one table.
+    #[test]
+    fn a_note_after_an_outcome_or_a_branch_header_is_a_note() {
+        use crate::parser::parse_ki2_str;
+        const MOVES: &str = "手合割：平手\n▲７六歩 △３四歩\n";
+        for line in [
+            "まで2手で投了 △８四歩が最善だった\n",
+            "まで2手で投了　△３三桂が敗着\n",
+            "まで2手で投了 惜しい将棋だった\n",
+        ] {
+            let jkf = parse_ki2_str(&format!("{MOVES}{line}"))
+                .unwrap_or_else(|e| panic!("{line:?}: {e}"));
+            assert!(
+                jkf.moves.last().expect("a node").special.is_some(),
+                "{line:?}: refused, or the outcome is gone"
+            );
+        }
+        let jkf = parse_ki2_str("手合割：平手\n▲７六歩 △３四歩\n変化：2手 △８四歩から\n△８四歩\n")
+            .expect("a branch header takes a note too");
+        assert!(jkf.moves[2].forks.is_some(), "{:?}", jkf.moves);
+        // And what fills the line is the line below, whose newline is gone.
+        for line in [
+            "まで1手で中断 △３四歩\n",
+            "まで2手で投了 ▲７六歩 △３四歩\n",
+            "まで2手で投了 変化：2手\n△８四歩\n",
+            "まで2手で投了 *感想\n",
+        ] {
+            assert!(
+                parse_ki2_str(&format!("{MOVES}{line}")).is_err(),
+                "{line:?} was read as a note, and what it held is gone"
+            );
         }
     }
 
