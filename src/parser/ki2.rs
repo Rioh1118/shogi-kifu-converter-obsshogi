@@ -277,8 +277,7 @@ fn move_run(
             // record has to read the same way as `.kif` and as `.ki2` (D10).
             let (rest, _) = many0(alt((
                 line_ending,
-                tag(" "),
-                tag("　"),
+                nom::bytes::complete::take_while1(is_padding),
                 nom::combinator::recognize(program_comment_line),
                 // Prose between the header and the moves under it. KIF skips
                 // one here as well, and a record that reads as `.kif` has to
@@ -331,7 +330,11 @@ fn move_run(
 /// carrying `▲` or `△` is therefore never skippable, and the leftover-input
 /// check reports it instead.
 fn a_line_only_prose_opens(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
-    if opens_a_shared_line(input) {
+    // Past the padding, the same as `begins_the_line_below` looks past it. A
+    // `変化：` one tab in is still a `変化：`, and asking from the raw start
+    // hands it to the skip below — the branch is gone and its moves carry on as
+    // the main line (R-JKF-004).
+    if opens_a_shared_line(input.trim_start_matches(is_padding)) {
         return Err(nom::Err::Error(VerboseError::from_error_kind(
             input,
             nom::error::ErrorKind::Not,
@@ -697,6 +700,37 @@ mod tests {
                     "{src:?}: the outcome is gone"
                 );
             }
+        }
+    }
+
+    // R-KI2-001: a run can arrive indented, because KI2 is a record people read
+    // and paste. The padding in front of a line has to be padding to every
+    // reader of that line, not just to the ones that ask `is_padding`: a line
+    // whose shape is only recognised from column 0 falls to the prose skip, and
+    // what it said goes with it — the outcome KI2 has no other place for
+    // (R-KI2-006 / D5), or a branch whose moves then read as the main line
+    // carrying on (R-JKF-004).
+    #[test]
+    fn a_line_is_the_line_it_is_however_far_in_it_starts() {
+        use crate::parser::parse_ki2_str;
+        const MOVES: &str = "手合割：平手\n▲７六歩 △３四歩\n";
+        for pad in ["", " ", "　", "\t", "\u{a0}"] {
+            let outcome = parse_ki2_str(&format!("{MOVES}{pad}まで2手で投了\n"))
+                .unwrap_or_else(|e| panic!("{pad:?}: {e}"));
+            assert!(
+                outcome.moves.last().expect("a node").special.is_some(),
+                "{pad:?}: the outcome is gone"
+            );
+            let branch = parse_ki2_str(&format!("{MOVES}{pad}変化：2手\n▲２六歩\n"))
+                .unwrap_or_else(|e| panic!("{pad:?}: {e}"));
+            assert!(
+                branch.moves[2].forks.is_some(),
+                "{pad:?}: the branch reads as the main line carrying on: {:?}",
+                branch.moves
+            );
+            let run = parse_ki2_str(&format!("手合割：平手\n{pad}▲７六歩 △３四歩\n"))
+                .unwrap_or_else(|e| panic!("{pad:?}: {e}"));
+            assert_eq!(2, run.moves.len() - 1, "{pad:?}");
         }
     }
 
