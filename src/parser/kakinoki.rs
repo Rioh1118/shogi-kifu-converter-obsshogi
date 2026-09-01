@@ -324,8 +324,16 @@ fn a_branch_header_fills_the_line(head: &str) -> bool {
 /// something went wrong with, and skipping it as prose would take the move with
 /// it (D1).
 pub(super) fn opens_a_numbered_line(head: &str) -> bool {
-    let after_digits = head.trim_start_matches(|c: char| c.is_ascii_digit());
-    if after_digits.len() == head.len() {
+    // This line only. `head` is the rest of the input, and padding stops at the
+    // newline but emptiness does not — asking "is there anything after the
+    // number" of the whole rest makes `  55 ` a move line because the line
+    // *below* it has something on it, while `  55` is prose.
+    let line = head
+        .split(crate::notation::LINE_ENDS)
+        .next()
+        .unwrap_or(head);
+    let after_digits = line.trim_start_matches(|c: char| c.is_ascii_digit());
+    if after_digits.len() == line.len() {
         return false;
     }
     if after_digits.starts_with(is_padding) {
@@ -1464,7 +1472,7 @@ mod tests {
     // move.
     #[test]
     fn a_move_line_a_writer_left_unaligned_is_still_a_move_line() {
-        use crate::parser::parse_kif_str;
+        use crate::parser::{parse_ki2_str, parse_kif_str};
         const KIF: &str = concat!(
             "手合割：平手\n手数----指手---------消費時間--\n",
             "   1 ７六歩(77)\n   2 ８四歩(83)\n   3 ２六歩(27)\n",
@@ -1487,10 +1495,32 @@ mod tests {
         // prose, and a number followed by padding is a move line whatever comes
         // after — including a word this reader has no meaning for, which the
         // leftover-input check then names (D1, D8, GAP-020).
-        for prose in ["　35手目まで", "　1図以下、先手優勢", "  55"] {
+        for prose in [
+            "　35手目まで",
+            "　1図以下、先手優勢",
+            "  55",
+            // Padding at the end of the line does not make the line below it
+            // into what the number is about.
+            "  55 ",
+            "  55　",
+            "   3   ",
+            // A number and then something that is not a whole move: the origin
+            // is what makes a move line one, and a note that quotes a move
+            // does not carry it.
+            "2同銀と取れば",
+            "1同歩",
+            "2２六歩が本筋",
+            // An outcome word owns its line, so a note *about* an outcome is
+            // not one (R-KIF-007).
+            "3投了もあった",
+        ] {
             assert!(
                 parse_kif_str(&format!("{KIF}{prose}\n")).is_ok(),
                 "{prose:?}"
+            );
+            assert!(
+                parse_ki2_str(&format!("手合割：平手\n▲７六歩 △８四歩\n{prose}\n")).is_ok(),
+                "{prose:?} in a KI2"
             );
         }
         for line in ["   2 パス", "   1 ７六歩(00)"] {

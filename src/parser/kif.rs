@@ -177,29 +177,44 @@ fn skip_interruptions(mut input: &str) -> &str {
 
 /// Whether what follows a ply number is the move that number is about.
 ///
-/// The other half of [`opens_a_numbered_line`], which is the question
-/// `not_move_line` asks before it skips a line. Both sides read the same
-/// padding — none of it, or any amount — so that a line the skip declines is a
-/// line [`move_line`] can take, and a line it takes is one nothing else wanted.
-/// A ply number followed by prose (`1図以下、先手優勢`) is a note; a ply number
-/// followed by a move is a move line however the two are spaced.
+/// The half of [`opens_a_numbered_line`] that answers when nothing separates
+/// the number from what follows it. A writer that aligned its columns leaves
+/// padding there and the question does not reach here; without it, `35手目まで`
+/// and `2８四歩(83)` are the same characters until somebody tries to read them.
 ///
-/// The destination and the piece, not the whole move: `   1 ７六歩(00)` is a
-/// move line with an origin no square answers to, and calling it prose would
-/// hand it to the skip — the reader would come back a move short instead of
-/// saying what it could not read (D1).
+/// So this asks whether [`move_line`] would find a move: the destination, the
+/// piece, and the *shape* of an origin. `move_from` itself is not used —
+/// it raises a `Failure` for `(00)`, which `.is_ok()` would fold into "not a
+/// move line" and hand `1７六歩(00)` to the skip. The shape keeps such a line
+/// here, where the leftover-input check reports it (D1).
+///
+/// The origin is what makes this the whole shape rather than half of it.
+/// Without it `2同銀と取れば` counts as a move line and nothing can consume it:
+/// the record is refused over a note (D17).
 ///
 /// The outcome words are in it because a move line can hold one instead of a
 /// move (`   5 投了`, R-KIF-007). Which side 反則勝ち accuses does not change
 /// whether the line is one, so either colour will do to ask.
 pub(super) fn a_move_follows_the_number(after_digits: &str) -> bool {
-    preceded(
-        padding,
-        alt((
-            recognize(move_special(Color::Black)),
-            recognize(pair(move_to, piece_kind)),
+    alt((
+        // The whole of what is left, for an outcome: a move line that holds one
+        // holds nothing else (`   5 投了`, R-KIF-007), so `3投了もあった` is a
+        // note about an outcome and not a line that names one.
+        recognize(terminated(
+            move_special(Color::Black),
+            pair(padding, nom::combinator::eof),
         )),
-    )(after_digits)
+        recognize(tuple((
+            move_to,
+            piece_kind,
+            opt(tag("成")),
+            // The *shape* of an origin, not `move_from` itself: that one raises
+            // a `Failure` for `(00)`, and `.is_ok()` would fold it into "not a
+            // move line" — sending `1７六歩(00)` to the skip, which drops it
+            // (D1, `an_origin_off_the_board_is_an_error_not_a_drop`).
+            alt((tag("打"), recognize(delimited(tag("("), digit1, tag(")"))))),
+        ))),
+    ))(after_digits)
     .is_ok()
 }
 
