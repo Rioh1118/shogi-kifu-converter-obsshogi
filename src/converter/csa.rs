@@ -191,6 +191,25 @@ fn write_initial<W: Write>(initial: &Option<Initial>, sink: &mut W) -> Result {
     Ok(())
 }
 
+/// Writes one comment, as as many `'` lines as it takes.
+///
+/// R-CSA-009 makes `,` the end of a statement, so a comment carrying one is read
+/// as a comment and then as something the reader has no shape for — and the
+/// `csa` crate drops the rest of the file from there without a word
+/// (`research/90-gaps.md` GAP-023: 33 of 609 records lose moves through this,
+/// one of them 168 down to 10, because the automatic notes shogi sites write
+/// look like `囲い：居飛車穴熊, 一枚穴熊`).
+///
+/// The comma is the one thing CSA cannot hold here. Everything either side of it
+/// can, so each piece becomes a line of its own rather than the record ending
+/// there.
+fn write_comment<W: Write>(comment: &str, sink: &mut W) -> Result {
+    for piece in comment.split(',') {
+        sink.write_fmt(format_args!("'{piece}\n"))?;
+    }
+    Ok(())
+}
+
 fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
     for mf in moves {
         // A node with neither a move nor an outcome carries only comments,
@@ -222,7 +241,7 @@ fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
         }
         if let Some(comments) = &mf.comments {
             for comment in comments {
-                sink.write_fmt(format_args!("'{}\n", comment))?;
+                write_comment(comment, sink)?;
             }
         }
     }
@@ -232,6 +251,34 @@ fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // R-CSA-009: `,` ends a statement. A comment carrying one is written as a
+    // comment and then as a statement the reader has no shape for, and the `csa`
+    // crate drops the rest of the file there — silently, because it throws its
+    // leftover input away (GAP-012). The record comes back short with `Ok`.
+    //
+    // The notes shogi sites write look exactly like this
+    // (`*▲囲い：居飛車穴熊, 一枚穴熊`), so 33 of the 609 records in the corpus
+    // went through it, one of them losing 158 of its 168 moves.
+    #[test]
+    fn a_comment_with_a_statement_separator_in_it_does_not_end_the_record() {
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77)
+*囲い：居飛車穴熊, 一枚穴熊
+   2 ３四歩(33)
+   3 ２六歩(27)
+";
+        let jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        let csa = jkf.try_to_csa_owned().expect("writes CSA");
+        let back = crate::parser::parse_csa_str(&csa).expect("reads back");
+        assert_eq!(3, back.moves.len() - 1, "{csa}");
+        // The text is on the file; the comma is not, because CSA has nowhere to
+        // put it. (Reading it back into the record is another matter: the `csa`
+        // crate drops `'` lines, so the round trip loses comments whatever this
+        // writes.)
+        assert!(csa.contains("'囲い：居飛車穴熊\n' 一枚穴熊\n"), "{csa}");
+    }
 
     #[test]
     fn to_csa_default() {
