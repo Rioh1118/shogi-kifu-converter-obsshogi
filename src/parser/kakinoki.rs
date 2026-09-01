@@ -454,11 +454,17 @@ fn kansuji(input: &str) -> IResult<&str, u8, VerboseError<&str>> {
 
 fn information_value_hand(input: &str) -> IResult<&str, Hand, VerboseError<&str>> {
     alt((
-        value(Hand::default(), tag("なし")),
+        // The padding after the value belongs to the value, in both arms. Left
+        // out of one of them, `後手の持駒：なし ` reaches the newline check with
+        // a space still to read and the whole file is refused with an error
+        // naming nothing (`in Tag:`) — while `後手の持駒：歩 ` reads. tsshogi
+        // splits the value on spaces and drops the empty pieces (R-KIF-014), so
+        // that record opens on the TS side of the consumer and not on this one.
+        terminated(value(Hand::default(), tag("なし")), take_while(is_padding)),
         map_res(
             many1(terminated(
                 pair(piece_kind, map(opt(kansuji), |o| o.unwrap_or(1))),
-                many0(one_of(" 　")),
+                take_while(is_padding),
             )),
             |v| {
                 // The counts come from the file, so they can add up past what a
@@ -498,7 +504,12 @@ fn information_value_preset(input: &str) -> IResult<&str, Information, VerboseEr
             (tail, Preset::PresetOther)
         }
     };
-    let (rest, _) = many0(one_of(" 　"))(rest)?;
+    // The padding after the name belongs to the name. `手合割：香落ち\t` left it
+    // to the key-value rule instead, and a handicap filed under `header` is a
+    // handicap the board never sees: the record falls back to 平手, where Black
+    // opens and the upper hand does not (R-HC-001 / R-RULE-006), so every side
+    // in the game is the wrong one.
+    let (rest, _) = take_while(is_padding)(rest)?;
     Ok((rest, Information::Preset(preset)))
 }
 
@@ -1167,6 +1178,41 @@ mod tests {
         for head in ["変化：ここから", "変化：", "変化：手", "変わり：2手"] {
             assert!(!opens_a_branch_header(head), "{head:?}");
             assert!(branch_header_ply(head).is_err(), "{head:?}");
+        }
+    }
+
+    // The padding after a value belongs to the value. R-KIF-014 is the shape
+    // the consumer's TS side also reads (tsshogi splits the hand on spaces and
+    // drops the empty pieces), so a record it opens has to open here too — and
+    // a `手合割` left to the key-value rule is a handicap the board never sees,
+    // which reads back as 平手 with every side reversed (R-HC-001 / R-RULE-006).
+    #[test]
+    fn padding_after_a_header_value_belongs_to_the_value() {
+        use crate::parser::parse_kif_str;
+        const BOARD: &str = "  ９ ８ ７ ６ ５ ４ ３ ２ １\n\
+            +---------------------------+\n\
+            | ・ ・ ・ ・ ・ ・ ・ ・ ・|一\n| ・ ・ ・ ・ ・ ・ ・ ・ ・|二\n\
+            | ・ ・ ・ ・ ・ ・ ・ ・ ・|三\n| ・ ・ ・ ・ ・ ・ ・ ・ ・|四\n\
+            | ・ ・ ・ ・ ・ ・ ・ ・ ・|五\n| ・ ・ ・ ・ ・ ・ ・ ・ ・|六\n\
+            | ・ ・ ・ ・ ・ ・ ・ ・ ・|七\n| ・ ・ ・ ・ ・ ・ ・ ・ ・|八\n\
+            | ・ ・ ・ ・ ・ ・ ・ ・ ・|九\n+---------------------------+\n\
+            先手の持駒：なし\n先手番\n手数----指手---------消費時間--\n";
+        for pad in ["", " ", "　", "\t", "\u{a0}"] {
+            for hand in ["なし", "歩", "歩二 角"] {
+                let jkf = parse_kif_str(&format!("後手の持駒：{hand}{pad}\n{BOARD}"))
+                    .unwrap_or_else(|e| panic!("{hand:?} + {pad:?}: {e}"));
+                assert!(jkf.initial.expect("a position").data.is_some());
+            }
+            let jkf = parse_kif_str(&format!(
+                "手合割：香落ち{pad}\n手数----指手---------消費時間--\n   1 ３四歩(33)\n"
+            ))
+            .unwrap_or_else(|e| panic!("手合割 + {pad:?}: {e}"));
+            assert_eq!(Preset::PresetKY, jkf.initial.expect("a position").preset);
+            assert_eq!(
+                Color::White,
+                jkf.moves[1].move_.expect("a move").color,
+                "{pad:?}: the handicap went, and the sides with it"
+            );
         }
     }
 
