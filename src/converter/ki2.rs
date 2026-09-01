@@ -516,8 +516,12 @@ mod tests {
     }
 
     // A game can be interrupted and resumed, so `中断` shows up in the middle of
-    // a move list. The reader takes the whole line after `まで` as the outcome
-    // phrase, so a run of moves continuing on that line disappears into it.
+    // a move list. KI2 records an outcome as a `まで…` line and nothing else
+    // (R-KI2-006 / D5), and the moves after it have to go on their own line: the
+    // reader treats a run of moves that fills the rest of a `まで…` line as the
+    // line below, whose newline is gone, and refuses the record (D17). So the
+    // writer's newline there is not cosmetic — without it the file it produces
+    // does not read back.
     #[test]
     fn an_outcome_in_the_middle_does_not_swallow_the_moves_after_it() {
         let kif = "手合割：平手
