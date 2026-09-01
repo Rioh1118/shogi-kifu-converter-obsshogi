@@ -1,8 +1,8 @@
 use super::kakinoki::{
-    blank_line, branch_header_ply, broken_line, comments_on_the_starting_position, ends_here,
-    is_padding, move_comment_line, move_to, not_move_line, opens_a_branch_header,
-    opens_a_numbered_line, opens_a_shared_line, padding, parse_without_moves, piece_kind,
-    LineShapes,
+    a_branch_header_is_all_the_line_says, blank_line, branch_header_ply, broken_line,
+    comments_on_the_starting_position, ends_here, is_padding, move_comment_line, move_to,
+    not_move_line, opens_a_branch_header, opens_a_numbered_line, opens_a_shared_line, padding,
+    parse_without_moves, piece_kind, LineShapes,
 };
 use crate::jkf::*;
 use nom::branch::alt;
@@ -489,7 +489,14 @@ fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Ver
                 // is; saying "no moves under it" instead would name a line that
                 // has moves under it and a cause that is not the one.
                 match header {
-                    Some(line) if rest.trim().is_empty() => {
+                    // `変化：2手を参照` is a note *about* a branch — nothing was
+                    // ever under it to lose — while `変化：2手` alone is a branch
+                    // that went missing. Both are declarations to this reader
+                    // and to tsshogi, so what tells them apart is whether the
+                    // line says anything else (D1, D17).
+                    Some(line)
+                        if rest.trim().is_empty() && a_branch_header_is_all_the_line_says(line) =>
+                    {
                         return Err(broken_line(line, "a 変化 block with no moves under it"));
                     }
                     // The lines just skipped are accounted for even though no run

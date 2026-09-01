@@ -212,21 +212,27 @@ pub(super) fn opens_a_shared_line(head: &str) -> bool {
 /// main line carrying on (R-JKF-004), and a read wider than the count refuses
 /// records the format has always allowed (D17).
 pub(super) fn opens_a_branch_header(head: &str) -> bool {
-    matches!(branch_header_ply(head), Ok((rest, _)) if a_number_ends_there(rest))
+    // `starts_with` first because this runs on nearly every line and
+    // `branch_header_ply` builds a `VerboseError` on each miss — the cost
+    // `kif::skip_interruptions` is hand-written to avoid.
+    head.trim_start_matches(is_padding).starts_with("変化") && branch_header_ply(head).is_ok()
 }
 
-/// Whether the number a branch header names is the last thing on the line
-/// rather than a word the sentence carries on from.
+/// Whether a `変化：<N>手` line says nothing but that.
 ///
-/// `変化：2手を参照` and `変化：2手が有力` are prose about a branch, and D17's
-/// table already fixes `変化：2手を参照` as an annotation where it turns up at
-/// the end of a line. Reading them as headers makes the block under them empty,
-/// and `a 変化 block with no moves under it` then refuses the whole record over
-/// a note (D1, D17).
-fn a_number_ends_there(rest: &str) -> bool {
-    rest.starts_with(|c: char| {
-        is_padding(c) || crate::notation::LINE_ENDS.contains(&c) || NOTE_MARKERS.contains(&c)
-    }) || rest.is_empty()
+/// Not what makes it a header — a number followed by a word is still a branch
+/// declaration, and tsshogi reads it as one (`変化：3手目`). What it decides is
+/// whether an **empty** block under it is worth reporting: `変化：2手` with
+/// nothing beneath it is a branch that went missing and D1 says so, while
+/// `変化：2手を参照` with nothing beneath it is a note about a branch and there
+/// was never anything to lose. D17's table already fixes the second spelling as
+/// an annotation where it lands at the end of a line.
+pub(super) fn a_branch_header_is_all_the_line_says(head: &str) -> bool {
+    matches!(branch_header_ply(head), Ok((rest, _)) if {
+        rest.starts_with(|c: char| {
+            is_padding(c) || crate::notation::LINE_ENDS.contains(&c) || NOTE_MARKERS.contains(&c)
+        }) || rest.is_empty()
+    })
 }
 
 /// Reads `変化：<N>手` and returns `N`.
@@ -248,6 +254,12 @@ fn a_number_ends_there(rest: &str) -> bool {
 /// difference this function exists to close. (Real records need three digits;
 /// the ceiling is here so that a damaged one is not fatal, not to support it.)
 ///
+/// Starts past the indentation, so that a `変化：` one column in is the same
+/// line as one at column 0 ([`padding`]). Every caller asks the question that
+/// way, and the one that consumed it did not — which left a `変化:` above the
+/// first move of a KI2 to be read as a branch of a main line that has no node
+/// to hang it on.
+///
 /// Ply 0 is read here and refused by the reader that uses it. Plies count from 1
 /// (R-JKF-001), so `変化：０手` names no move for a branch to be an alternative
 /// to — but only KI2 looks at the number (D3, D19), and refusing the line here
@@ -255,7 +267,7 @@ fn a_number_ends_there(rest: &str) -> bool {
 /// `ki2::branch_header`.
 pub(super) fn branch_header_ply(input: &str) -> IResult<&str, usize, VerboseError<&str>> {
     let unreadable = || nom::Err::Error(VerboseError::from_error_kind(input, ErrorKind::Digit));
-    let (rest, _) = preceded(tag("変化"), colon)(input)?;
+    let (rest, _) = preceded(pair(padding, tag("変化")), colon)(input)?;
     let rest = rest.trim_start_matches(is_padding);
     // Folded a digit at a time, so that the test for "is this a digit" and the
     // arithmetic that assumes it are the same expression. Split apart, widening
@@ -1511,13 +1523,15 @@ mod tests {
         const KIF: &str =
             "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n   2 ８四歩(83)\n";
         const KI2: &str = "手合割：平手\n▲７六歩 △８四歩\n";
+        // A note about a branch, with nothing under it: skipped, in both
+        // formats, as it was before this crate started reading the line at all.
         for note in [
             "変化：2手を参照",
             "変化：2手が有力",
             "変化：2手目以下は別途",
             "変化：ここから",
         ] {
-            assert!(!opens_a_branch_header(note), "{note:?}");
+            assert!(!a_branch_header_is_all_the_line_says(note), "{note:?}");
             let kif = parse_kif_str(&format!("{KIF}{note}\n"))
                 .unwrap_or_else(|e| panic!("{note:?} in a KIF: {e}"));
             assert_eq!(2, kif.moves.len() - 1, "{note:?}");
@@ -1525,12 +1539,18 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{note:?} in a KI2: {e}"));
             assert_eq!(2, ki2.moves.len() - 1, "{note:?}");
         }
-        // A header the number does end, with or without a note after it.
+        // And with a block under it, every one of those is the branch it says
+        // it is — the suffix is a note on the header, not a different kind of
+        // line. Reading it as prose lets the branch run on as the main line,
+        // which changes whose game it is (R-JKF-004).
         for header in [
             "変化：2手",
             "変化：2手 別案",
             "変化：2手（本命）",
             "変化：2",
+            "変化：2手目",
+            "変化：2手。",
+            "変化：2手/A",
         ] {
             assert!(opens_a_branch_header(header), "{header:?}");
             let jkf = parse_kif_str(&format!("{KIF}\n{header}\n   2 ３四歩(33)\n"))
@@ -1540,9 +1560,18 @@ mod tests {
                 jkf.moves.iter().filter(|m| m.forks.is_some()).count(),
                 "{header:?}"
             );
+            let ki2 = parse_ki2_str(&format!("{KI2}{header}\n△８四歩\n"))
+                .unwrap_or_else(|e| panic!("{header:?} in a KI2: {e}"));
+            assert_eq!(
+                1,
+                ki2.moves.iter().filter(|m| m.forks.is_some()).count(),
+                "{header:?} in a KI2"
+            );
         }
-        // And a header with nothing under it still says so (D1).
+        // A header that says nothing but its number, with nothing under it, is
+        // a branch that went missing and still says so (D1).
         assert!(parse_kif_str(&format!("{KIF}\n変化：2手\n")).is_err());
+        assert!(parse_ki2_str(&format!("{KI2}変化：2手\n")).is_err());
     }
 
     // Every line the header block is made of, at every indentation. The skip

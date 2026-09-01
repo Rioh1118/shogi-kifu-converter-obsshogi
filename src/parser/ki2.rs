@@ -1,7 +1,8 @@
 use super::kakinoki::{
-    branch_header_ply, broken_line, comments_on_the_starting_position, ends_here, is_padding,
-    move_comment_line, move_to, not_move_line, opens_a_numbered_line, opens_a_shared_line,
-    parse_without_moves, piece_kind, program_comment_line, LineShapes, NOTE_MARKERS, SIDE_MARKS,
+    a_branch_header_is_all_the_line_says, branch_header_ply, broken_line,
+    comments_on_the_starting_position, ends_here, is_padding, move_comment_line, move_to,
+    not_move_line, opens_a_numbered_line, opens_a_shared_line, parse_without_moves, piece_kind,
+    program_comment_line, LineShapes, NOTE_MARKERS, SIDE_MARKS,
 };
 use crate::jkf::*;
 use crate::notation::LINE_ENDS;
@@ -423,18 +424,44 @@ fn attach_branch(
 /// Reads the main line and every `変化：N手` block. `start` is whose turn ply 1
 /// is, which the outcome line needs and the ply parity cannot supply.
 fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
-    let (input, comments) = preceded(many0(line_ending), opt(many1(move_comment_line)))(input)?;
-    // A `変化：` above the first move names no move to be an alternative to, so
-    // there is nothing to act on and the line is read and dropped. KIF does the
-    // same (`kif::skippable_line`), and tsshogi does it deliberately: its
-    // `kakinoki.mjs` cites shogihome #570 for records whose header block holds
-    // one, and says a `変化：` before the moves start must be ignored.
+    // Everything above the first move, in one loop.
     //
-    // Left in place it reaches `moves`' branch loop below, which reads the whole
-    // game as a branch of a main line that has no node to hang it on —
-    // `attach_branch` finds nothing and returns, and the record comes back `Ok`
-    // with no moves at all (D1, R-JKF-004).
-    let (input, _) = many0(branch_header)(input)?;
+    // Comments belong to the starting position (R-KIF-010) and are kept; the
+    // rest is read and dropped. A `変化：` among them names no move to be an
+    // alternative to, so there is nothing to act on — KIF does the same
+    // (`kif::skippable_line`), and tsshogi does it deliberately: its
+    // `kakinoki.mjs` cites shogihome #570 for records whose header block holds
+    // one, and says a `変化：` before the moves start must be ignored. Left in
+    // place it reaches the branch loop below, which reads the whole game as a
+    // branch of a main line that has no node to hang it on — `attach_branch`
+    // finds nothing and returns, and the record comes back `Ok` with no moves
+    // at all (D1, R-JKF-004).
+    //
+    // One loop rather than a comment reader and then a gate: what a header block
+    // holds between its last keyword and the first move is prose, `#` notes,
+    // blank lines and comments in whatever order the writer left them, and a
+    // gate that fires in one place is a gate the next line walks around.
+    let mut input = input;
+    let mut comments = Vec::new();
+    loop {
+        if let Ok((rest, comment)) = move_comment_line(input) {
+            comments.push(comment);
+            input = rest;
+            continue;
+        }
+        match alt((
+            nom::combinator::recognize(branch_header),
+            nom::combinator::recognize(program_comment_line),
+            nom::combinator::recognize(a_line_only_prose_opens),
+            line_ending,
+        ))(input)
+        {
+            Ok((rest, _)) => input = rest,
+            Err(nom::Err::Failure(err)) => return Err(nom::Err::Failure(err)),
+            Err(_) => break,
+        }
+    }
+    let comments = (!comments.is_empty()).then_some(comments);
     let (mut input, main) = move_run(start, 1)(input)?;
     let mut out = vec![MoveFormat {
         comments,
@@ -470,7 +497,18 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
                     // The header says a branch follows. Reading nothing under it
                     // means the branch is gone, and carrying on returns a record
                     // that is a whole branch short without saying so.
-                    return Err(broken_line(header, "a 変化 block with no moves under it"));
+                    //
+                    // Unless the line says more than the number. `変化：2手を参照`
+                    // is a note *about* a branch — nothing was ever under it to
+                    // lose — while `変化：2手` alone is a branch that went
+                    // missing. Both are branch declarations to tsshogi and to
+                    // this reader, so what tells them apart is whether the line
+                    // says anything else (D1, D17).
+                    if a_branch_header_is_all_the_line_says(header) {
+                        return Err(broken_line(header, "a 変化 block with no moves under it"));
+                    }
+                    input = rest;
+                    continue;
                 }
                 attach_branch(&mut out[1..], &mut path, start_ply, branch);
                 input = rest;
@@ -816,17 +854,40 @@ mod tests {
     #[test]
     fn a_branch_header_above_the_first_move_is_read_and_dropped() {
         use crate::parser::parse_ki2_str;
+        // The header block holds whatever the writer left between its last
+        // keyword and the first move, in whatever order, at whatever column. A
+        // gate that fires in one place is a gate the next line walks around.
         for colon in ['：', ':'] {
-            for before in ["", "*まえがき\n", "先手番\n"] {
-                let src = format!("先手：A\n{before}変化{colon}2手\n▲７六歩 △３四歩 ▲２六歩\n");
-                let jkf = parse_ki2_str(&src).unwrap_or_else(|e| panic!("{src:?}: {e}"));
-                assert_eq!(
-                    3,
-                    jkf.moves.iter().filter(|m| m.move_.is_some()).count(),
-                    "{src:?}: the game was read as a branch and dropped"
-                );
+            for before in [
+                "",
+                "*まえがき\n",
+                "先手番\n",
+                "解説\n",
+                "*a\n解説\n",
+                "解説\n*a\n",
+                "# note\n",
+                "\n",
+            ] {
+                for pad in ["", " ", "　", "\t"] {
+                    let src =
+                        format!("先手：A\n{before}{pad}変化{colon}2手\n▲７六歩 △３四歩 ▲２六歩\n");
+                    let jkf = parse_ki2_str(&src).unwrap_or_else(|e| panic!("{src:?}: {e}"));
+                    assert_eq!(
+                        3,
+                        jkf.moves.iter().filter(|m| m.move_.is_some()).count(),
+                        "{src:?}: the game was read as a branch and dropped"
+                    );
+                }
             }
         }
+        // And the comments among them are still the starting position's, in the
+        // order the file wrote them (R-KIF-010).
+        let kept =
+            parse_ki2_str("先手：A\n*a\n解説\n*b\n変化：2手\n▲７六歩 △３四歩\n").expect("reads");
+        assert_eq!(
+            Some(&vec![String::from("a"), String::from("b")]),
+            kept.moves[0].comments.as_ref()
+        );
         // A branch that does name a move is still a branch, and one with an
         // empty block still says so (D1).
         let jkf = parse_ki2_str("手合割：平手\n▲７六歩 △８四歩 ▲２六歩\n変化：3手\n▲２五歩\n")
