@@ -1,7 +1,7 @@
 use super::kakinoki::{
     blank_line, branch_header_ply, broken_line, comments_on_the_starting_position, ends_here,
     is_padding, move_comment_line, move_to, not_move_line, opens_a_branch_header,
-    opens_a_shared_line, parse_without_moves, piece_kind, LineShapes,
+    opens_a_shared_line, padding, parse_without_moves, piece_kind, LineShapes,
 };
 use crate::jkf::*;
 use nom::branch::alt;
@@ -138,17 +138,6 @@ fn branch_header_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
 /// Only used before the main line, where a `変化：` is nothing to act on: a
 /// branch cannot come before the moves it is an alternative to, and one written
 /// there anyway is what tsshogi skips as well.
-/// The indentation and column padding a KIF line is written with.
-///
-/// `nom`'s `space0` in the shape this module needs it, but over [`is_padding`]
-/// rather than over ASCII: KIF pads its move lines into columns
-/// (`   1 ７六歩(77)   ( 0:01/00:00:01)`, R-KIF-005), and a file that reached
-/// the user through a web page or a word processor has those columns padded
-/// with whatever that tool uses.
-fn padding(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
-    nom::bytes::complete::take_while(is_padding)(input)
-}
-
 fn skippable_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
     alt((blank_line, branch_header_line, not_move_line))(input)
 }

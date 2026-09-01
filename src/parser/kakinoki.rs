@@ -125,6 +125,21 @@ pub(super) fn colon(input: &str) -> IResult<&str, char, VerboseError<&str>> {
     one_of("：:")(input)
 }
 
+/// The indentation and column padding a line is written with.
+///
+/// `nom`'s `space0` in the shape this crate needs it, but over [`is_padding`]:
+/// KIF pads its move lines into columns (`   1 ７六歩(77)   ( 0:01/00:00:01)`,
+/// R-KIF-008), and a file that reached the user through a web page or a word
+/// processor has those columns padded with whatever that tool uses.
+///
+/// **Every line parser starts with this**, the ones that read a line as much as
+/// the one that skips it. Widening only the skip is worse than widening
+/// neither: a line the readers can no longer take is then taken by the skip,
+/// and the record comes back `Ok` without it.
+pub(super) fn padding(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
+    take_while(is_padding)(input)
+}
+
 /// The shapes of the format being read.
 ///
 /// The header block, the board and the side-to-move line are the same in KIF
@@ -553,7 +568,7 @@ fn information_value_preset(input: &str) -> IResult<&str, Information, VerboseEr
 fn information_line_preset(input: &str) -> IResult<&str, Information, VerboseError<&str>> {
     terminated(
         preceded(
-            pair(tag(crate::handicap::KIF_KEYWORD), colon),
+            tuple((padding, tag(crate::handicap::KIF_KEYWORD), colon)),
             information_value_preset,
         ),
         line_ending,
@@ -562,7 +577,8 @@ fn information_line_preset(input: &str) -> IResult<&str, Information, VerboseErr
 
 fn information_line_hands(input: &str) -> IResult<&str, Information, VerboseError<&str>> {
     let line = input;
-    let (rest, color) = terminated(
+    let (rest, color) = delimited(
+        padding,
         alt((
             value(Color::Black, tag("先手")),
             value(Color::White, tag("後手")),
@@ -620,7 +636,10 @@ fn information_line_keyvalue(
             )));
         }
         let (rest, (key, value)) = terminated(
-            separated_pair(is_not("：\r\n"), tag("："), not_line_ending),
+            preceded(
+                padding,
+                separated_pair(is_not("：\r\n"), tag("："), not_line_ending),
+            ),
             line_ending,
         )(input)?;
         if (shapes.carries_a_line)(value) {
@@ -692,7 +711,9 @@ fn board_piece(input: &str) -> IResult<&str, Piece, VerboseError<&str>> {
 fn board_row(input: &str) -> IResult<&str, Vec<Piece>, VerboseError<&str>> {
     terminated(
         delimited(
-            tag("|"),
+            // Only in front of the frame. Inside a row a space is data — it is
+            // how `board_piece_color` spells Black (R-KIF-014 / D6).
+            pair(padding, tag("|")),
             count(board_piece, 9),
             preceded(tag("|"), one_of("一二三四五六七八九")),
         ),
@@ -703,8 +724,10 @@ fn board_row(input: &str) -> IResult<&str, Vec<Piece>, VerboseError<&str>> {
 fn board(input: &str) -> IResult<&str, [[Piece; 9]; 9], VerboseError<&str>> {
     delimited(
         tuple((
-            terminated(tag("  ９ ８ ７ ６ ５ ４ ３ ２ １"), line_ending),
-            terminated(tag("+---------------------------+"), line_ending),
+            // The two columns in front of `９` line the file numbers up with the
+            // frame below them, so they are padding and not part of the word.
+            delimited(padding, tag("９ ８ ７ ６ ５ ４ ３ ２ １"), line_ending),
+            delimited(padding, tag("+---------------------------+"), line_ending),
         )),
         map(count(board_row, 9), |v| {
             let mut ret = [[Piece::empty(); 9]; 9];
@@ -715,7 +738,7 @@ fn board(input: &str) -> IResult<&str, [[Piece; 9]; 9], VerboseError<&str>> {
             }
             ret
         }),
-        terminated(tag("+---------------------------+"), line_ending),
+        delimited(padding, tag("+---------------------------+"), line_ending),
     )(input)
 }
 
@@ -766,12 +789,15 @@ fn side_to_move_line(
 ) -> impl FnMut(&str) -> IResult<&str, Option<Color>, VerboseError<&str>> {
     move |input| {
         opt(|input| {
-            let (rest, color) = alt((
-                value(Color::Black, tag("先手番")),
-                value(Color::White, tag("後手番")),
-                value(Color::Black, tag("下手番")),
-                value(Color::White, tag("上手番")),
-            ))(input)?;
+            let (rest, color) = preceded(
+                padding,
+                alt((
+                    value(Color::Black, tag("先手番")),
+                    value(Color::White, tag("後手番")),
+                    value(Color::Black, tag("下手番")),
+                    value(Color::White, tag("上手番")),
+                )),
+            )(input)?;
             let (rest, _) = ends_here(shapes, input, rest)?;
             Ok((rest, color))
         })(input)
@@ -1251,6 +1277,71 @@ mod tests {
         let data = jkf.initial.expect("a position").data.expect("a board");
         assert_eq!(1, data.hands[0].KA);
         assert_eq!(1, data.hands[1].FU);
+    }
+
+    // Every line the header block is made of, at every indentation. The skip
+    // and the readers have to widen together: a line the readers can no longer
+    // take is taken by the skip, and the record comes back `Ok` without it —
+    // a tsume whose board is gone reads as an empty 平手, and a handicap that
+    // fell into `header` reverses every move's side (R-HC-001 / R-RULE-006).
+    //
+    // The board is the reason this matters at all: a record with one reaches
+    // the reader through no other path (`research/90-gaps.md` GAP-007).
+    #[test]
+    fn the_header_block_reads_at_any_indentation() {
+        use crate::parser::parse_kif_str;
+        const BOARD: &str = concat!(
+            "  ９ ８ ７ ６ ５ ４ ３ ２ １\n",
+            "+---------------------------+\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|一\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|二\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|三\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|四\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|五\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|六\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|七\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|八\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|九\n",
+            "+---------------------------+\n",
+        );
+        for pad in ["", " ", "   ", "\t", "　", "\u{a0}"] {
+            let indented = BOARD
+                .lines()
+                .map(|line| format!("{pad}{line}\n"))
+                .collect::<String>();
+            let jkf = parse_kif_str(&format!(
+                "{indented}{pad}後手の持駒：飛\n{pad}先手の持駒：なし\n{pad}後手番\n"
+            ))
+            .unwrap_or_else(|e| panic!("{pad:?} on a board: {e}"));
+            let data = jkf
+                .initial
+                .expect("a position")
+                .data
+                .unwrap_or_else(|| panic!("{pad:?}: the board went"));
+            assert_eq!(Color::White, data.color, "{pad:?}: the side to move went");
+            assert_eq!(1, data.hands[1].HI, "{pad:?}: the hand went");
+
+            let handicap = parse_kif_str(&format!(
+                "{pad}手合割：香落ち\n手数----指手---------消費時間--\n   1 ３四歩(33)\n"
+            ))
+            .unwrap_or_else(|e| panic!("{pad:?} on 手合割: {e}"));
+            assert_eq!(
+                Preset::PresetKY,
+                handicap.initial.expect("a position").preset,
+                "{pad:?}: the handicap went, and every side with it"
+            );
+
+            let header = parse_kif_str(&format!(
+                "{pad}棋戦：竜王戦\n手数----指手---------消費時間--\n   1 ７六歩(77)\n"
+            ))
+            .unwrap_or_else(|e| panic!("{pad:?} on a header: {e}"));
+            assert_eq!(
+                Some(&String::from("竜王戦")),
+                header.header.get("棋戦"),
+                "{pad:?}: the indentation went into the key: {:?}",
+                header.header
+            );
+        }
     }
 
     // R-KIF-014 / D5: tsshogi matches `[：:]` where a keyword names the line, so
