@@ -1034,36 +1034,46 @@ fn board_row(input: &str) -> IResult<&str, Vec<Piece>, VerboseError<&str>> {
 }
 
 fn board(input: &str) -> IResult<&str, [[Piece; 9]; 9], VerboseError<&str>> {
-    delimited(
-        tuple((
-            // The two columns in front of `９` line the file numbers up with the
-            // frame below them, so they are padding and not part of the word.
-            delimited(
-                padding,
-                tag("９ ８ ７ ６ ５ ４ ３ ２ １"),
-                pair(padding, line_ending),
-            ),
-            delimited(
-                padding,
-                tag("+---------------------------+"),
-                pair(padding, line_ending),
-            ),
-        )),
-        map(count(board_row, 9), |v| {
-            let mut ret = [[Piece::empty(); 9]; 9];
-            for (i, row) in v.into_iter().enumerate() {
-                for (j, p) in row.into_iter().enumerate() {
-                    ret[8 - j][i] = p;
-                }
-            }
-            ret
-        }),
+    let (mut rest, _) = tuple((
+        // The two columns in front of `９` line the file numbers up with the
+        // frame below them, so they are padding and not part of the word.
+        delimited(
+            padding,
+            tag("９ ８ ７ ６ ５ ４ ３ ２ １"),
+            pair(padding, line_ending),
+        ),
         delimited(
             padding,
             tag("+---------------------------+"),
-            pair(padding, end_of_line),
+            pair(padding, line_ending),
         ),
-    )(input)
+    ))(input)?;
+    // Past the file numbers and the frame under them this is a board diagram,
+    // whatever the rest of it says, so a rank that cannot be read names itself.
+    // A recoverable error here unwinds the whole diagram and the message comes
+    // out pointing at its first line — which is the one line known to be
+    // intact. D1 asks for the line that broke, and the reader is someone
+    // looking for it in their file.
+    let mut rows = Vec::with_capacity(9);
+    while rows.len() < 9 {
+        let (tail, row) = board_row(rest)
+            .map_err(|_| broken_line(rest, "this rank of the board cannot be read"))?;
+        rows.push(row);
+        rest = tail;
+    }
+    let mut ret = [[Piece::empty(); 9]; 9];
+    for (rank, row) in rows.into_iter().enumerate() {
+        for (file, piece) in row.into_iter().enumerate() {
+            ret[8 - file][rank] = piece;
+        }
+    }
+    let (rest, _) = delimited(
+        padding,
+        tag("+---------------------------+"),
+        pair(padding, end_of_line),
+    )(rest)
+    .map_err(|_| broken_line(rest, "the board has no frame under its last rank"))?;
+    Ok((rest, ret))
 }
 
 fn place_x(input: &str) -> IResult<&str, u8, VerboseError<&str>> {
@@ -1206,6 +1216,64 @@ pub(super) fn comments_on_the_starting_position(
 mod tests {
     use super::*;
     use crate::normalizer::HIRATE_BOARD;
+
+    // Which line the message names when a board diagram breaks. `opt(board)`
+    // unwinds the whole diagram on a recoverable error, so the position
+    // `convert_error` prints is the start of the diagram — a line that is
+    // intact, for a file whose fault is nine lines below it. D1 asks for the
+    // line that broke.
+    #[test]
+    fn a_broken_board_names_the_line_that_broke() {
+        const HEAD: &str = concat!(
+            "後手の持駒：なし\n",
+            "  ９ ８ ７ ６ ５ ４ ３ ２ １\n",
+            "+---------------------------+\n",
+        );
+        const ROWS: [&str; 9] = [
+            "| ・ ・ ・ ・v玉 ・ ・ ・ ・|一",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|二",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|三",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|四",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|五",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|六",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|七",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|八",
+            "| ・ ・ ・ ・ 玉 ・ ・ ・ ・|九",
+        ];
+        let build = |rows: [&str; 9], close: &str| {
+            format!("{HEAD}{}\n{close}\n先手の持駒：なし\n", rows.join("\n"))
+        };
+        const FRAME: &str = "+---------------------------+";
+        assert!(
+            crate::parser::parse_kif_str(&build(ROWS, FRAME)).is_ok(),
+            "the unbroken diagram must read"
+        );
+
+        // A rank heading that is not one (`九` → `1`), eight lines in.
+        let mut broken = ROWS;
+        broken[8] = "| ・ ・ ・ ・ 玉 ・ ・ ・ ・|1";
+        let message = match crate::parser::parse_kif_str(&build(broken, FRAME)) {
+            Err(crate::error::ParseError::Kif(message)) => message,
+            other => panic!("a broken rank must not read: {other:?}"),
+        };
+        assert!(
+            message.contains("this rank of the board cannot be read"),
+            "{message}"
+        );
+        // Line 12 of the file, not line 2 where the diagram opens.
+        assert!(message.contains("at line 12"), "{message}");
+
+        // The same for the frame the diagram never closes with.
+        let message = match crate::parser::parse_kif_str(&build(ROWS, "+-----+")) {
+            Err(crate::error::ParseError::Kif(message)) => message,
+            other => panic!("an unclosed board must not read: {other:?}"),
+        };
+        assert!(
+            message.contains("the board has no frame under its last rank"),
+            "{message}"
+        );
+        assert!(message.contains("at line 13"), "{message}");
+    }
 
     // A hand line whose count cannot be read must not fall through to the
     // key-value rule: that files the whole line under `header` and leaves the
