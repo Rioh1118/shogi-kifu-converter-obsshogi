@@ -156,24 +156,32 @@ fn a_move_run_fills_the_line(head: &str) -> bool {
 /// move, is still missed or refused (`research/90-gaps.md` GAP-020). Free text
 /// and a lost newline are the same characters; this is where the line is drawn.
 ///
-/// One place is asked, not every mark in the value. A run that reaches the end
-/// puts its last move at the last mark and the one before it at the mark before
-/// that, so if any run answers yes that one does. Asking at every mark reads the
-/// whole value once per mark, and the value this exists for is a record that put
-/// its whole game on one line: 41 KB of KI2 took 19.6 s, inside the scan the
-/// consumer runs over a whole directory at start-up (R-REQ-002).
+/// A run that reaches the end has to start at one of the marks, so the marks are
+/// asked from the last one backwards and the first answer of yes settles it. Not
+/// every mark: the value this check exists for is a record that put its whole
+/// game on one line, and reading the whole value once per mark made 41 KB of KI2
+/// take 19.6 s inside the scan the consumer runs over a whole directory at
+/// start-up (R-REQ-002).
+///
+/// [`ATTEMPTS`] of them, because the marks are not all move starts. A move reads
+/// the comments under it as its own ([`single_move`]), so the last move of a run
+/// swallows a `*` line and any mark inside it; a run of two then begins three
+/// marks from the end rather than two. It also means a value with a long enough
+/// note behind its moves is missed — `research/90-gaps.md` GAP-020 records what
+/// that costs.
 fn a_header_value_carrying_moves(value: &str) -> bool {
-    let (second_from_last, _) = value
+    /// Enough for the shapes that turn up: a run of two, and a note behind it
+    /// holding marks of its own.
+    const ATTEMPTS: usize = 8;
+    value
         .char_indices()
+        .rev()
         .filter(|(_, c)| SIDE_MARKS.iter().any(|(mark, _)| mark == c))
-        .fold((None, None), |(_, last), (i, _)| (last, Some(i)));
-    let Some(i) = second_from_last else {
-        return false;
-    };
-    matches!(
-        many1(single_move)(&value[i..]),
-        Ok((rest, moves)) if moves.len() >= 2 && rest.trim().is_empty()
-    )
+        .take(ATTEMPTS)
+        .any(|(i, _)| match many1(single_move)(&value[i..]) {
+            Ok((rest, moves)) => moves.len() >= 2 && rest.trim().is_empty(),
+            Err(_) => false,
+        })
 }
 
 /// Reads the `まで<N>手で…` line that KI2 uses instead of an outcome move.
@@ -778,6 +786,36 @@ mod tests {
     // and the record still came back `Ok` — nothing in a log to explain the
     // pause. The bound is loose on purpose: it is here to catch a quadratic
     // walk, not to measure the machine.
+    // A move reads the comments under it as its own, so the last mark in a
+    // value need not be a move start: a swallowed `*` line puts marks behind
+    // the run. Asking only the mark before the last one answers no there, and
+    // the record comes back `Ok` with the game inside `header["手合割"]`.
+    #[test]
+    fn a_swallowed_line_is_found_behind_the_comment_it_swallowed() {
+        use crate::parser::parse_ki2_str;
+        for value in [
+            "手合割：平手 ▲７六歩 △３四歩",
+            "手合割：平手 ▲７六歩 △３四歩 *よい将棋",
+            "手合割：平手 ▲７六歩 △３四歩 *▲２六歩は疑問",
+            "手合割：平手 ▲７六歩 △３四歩 &▲２六歩",
+        ] {
+            assert!(
+                parse_ki2_str(&format!("{value}\n▲７六歩 △３四歩\n")).is_err(),
+                "{value:?}: the game went into the header without a word"
+            );
+        }
+        // And the values that only quote moves still read (R-KIF-004).
+        for value in [
+            "消費時間：104▲379△380",
+            "note：序盤は▲７六歩 △３四歩 の出だし",
+            "戦型：▲居飛車",
+        ] {
+            let jkf = parse_ki2_str(&format!("{value}\n▲７六歩 △３四歩\n"))
+                .unwrap_or_else(|e| panic!("{value:?}: {e}"));
+            assert_eq!(2, jkf.moves.len() - 1, "{value:?}");
+        }
+    }
+
     #[test]
     fn a_header_value_holding_a_whole_game_is_read_in_one_pass() {
         use crate::parser::parse_ki2_str;
