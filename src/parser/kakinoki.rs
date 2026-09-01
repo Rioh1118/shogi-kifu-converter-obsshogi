@@ -312,17 +312,33 @@ fn a_branch_header_fills_the_line(head: &str) -> bool {
 ///
 /// The number on its own is not the shape. A `( 0:01)` this reader has no shape
 /// for, a bare `55`, and a note that opens `1図以下、先手優勢` all carry digits
-/// and none of them is a line — what makes one is a number, then padding, then
-/// something for the number to be about.
+/// and none of them is a line — what makes one is a number and then a move.
+///
+/// Padding after the number is enough to call it one, whatever follows: a ply
+/// number and then anything at all is the shape of a move line, and a word this
+/// reader has no meaning for (`   2 パス`) has to reach the leftover-input check
+/// rather than be skipped as prose (D1, D8). The cost is that a note written in
+/// the same shape — `　1 序盤の課題` — is refused too; the two cannot be told
+/// apart by what they say (`research/90-gaps.md` GAP-020).
+///
+/// Without padding the question has to be asked of the reader that would
+/// consume the line, because `35手目まで` is a note and `2８四歩(83)` is a move
+/// line a writer left unaligned. [`kif::move_line`](super::kif) takes any amount
+/// of padding including none, so a question that demanded some would call the
+/// second one prose and hand it to the skip, which drops the move.
 ///
 /// Shared, though only KIF writes such a line: a KI2 that holds one is a record
 /// something went wrong with, and skipping it as prose would take the move with
 /// it (D1).
 pub(super) fn opens_a_numbered_line(head: &str) -> bool {
     let after_digits = head.trim_start_matches(|c: char| c.is_ascii_digit());
-    after_digits.len() < head.len()
-        && after_digits.starts_with(is_padding)
-        && !after_digits.trim_start_matches(is_padding).is_empty()
+    if after_digits.len() == head.len() {
+        return false;
+    }
+    if after_digits.starts_with(is_padding) {
+        return !after_digits.trim_start_matches(is_padding).is_empty();
+    }
+    super::kif::a_move_follows_the_number(after_digits)
 }
 
 /// Whether `tail` — what is left of a line the reader has finished with —
@@ -727,8 +743,21 @@ fn information_line_keyvalue(
                 ErrorKind::Not,
             )));
         }
-        let (rest, key) = preceded(padding, is_not("：:\r\n"))(input)?;
-        let (rest, mark) = colon(rest)?;
+        // The full-width rule first, so that a key holding a half-width colon
+        // (`備考:あり：なし`) is still split at the colon the format uses. Asking
+        // the wider question first cuts such a key short, and the line then
+        // looks like "an unknown key with a half-width colon" and is dropped —
+        // including lines this crate's own writer produces from a `header` the
+        // consumer filled in.
+        let (rest, key, mark) =
+            match preceded(padding, terminated(is_not("：\r\n"), tag("：")))(input) {
+                Ok((rest, key)) => (rest, key, '：'),
+                Err(_) => {
+                    let (rest, key) = preceded(padding, is_not("：:\r\n"))(input)?;
+                    let (rest, mark) = colon(rest)?;
+                    (rest, key, mark)
+                }
+            };
         // Half-width only where the key is one this reader knows. A key can be
         // anything (R-KIF-004), so taking a half-width colon from every key
         // makes a header line out of every `key: value` in any text —
@@ -1429,6 +1458,99 @@ mod tests {
         // A key this reader does not know keeps the full-width colon, so that a
         // file which is not a kifu still says so.
         assert!(parse_kif_str("{\"header\":{},\"moves\":[{}]}\n").is_err());
+    }
+
+    // What a reader counts as a move line and what it can consume have to be the
+    // same set — the pairing `opens_a_branch_header` has with
+    // `branch_header_ply`. `kif::move_line` takes any amount of padding between
+    // the number and the move, including none, so a question that demanded some
+    // called `   2８四歩(83)` prose and handed it to the skip, which dropped the
+    // move.
+    #[test]
+    fn a_move_line_a_writer_left_unaligned_is_still_a_move_line() {
+        use crate::parser::parse_kif_str;
+        const KIF: &str = concat!(
+            "手合割：平手\n手数----指手---------消費時間--\n",
+            "   1 ７六歩(77)\n   2 ８四歩(83)\n   3 ２六歩(27)\n",
+        );
+        for first in [
+            "   2 ８四歩(83)",
+            "   2８四歩(83)",
+            "2 ８四歩(83)",
+            "2８四歩(83)",
+        ] {
+            let jkf = parse_kif_str(&format!("{KIF}\n変化：2手\n{first}\n"))
+                .unwrap_or_else(|e| panic!("{first:?}: {e}"));
+            assert_eq!(
+                1,
+                jkf.moves.iter().filter(|m| m.forks.is_some()).count(),
+                "{first:?}: the branch went"
+            );
+        }
+        // A number followed by something that is neither padding nor a move is
+        // prose, and a number followed by padding is a move line whatever comes
+        // after — including a word this reader has no meaning for, which the
+        // leftover-input check then names (D1, D8, GAP-020).
+        for prose in ["　35手目まで", "　1図以下、先手優勢", "  55"] {
+            assert!(
+                parse_kif_str(&format!("{KIF}{prose}\n")).is_ok(),
+                "{prose:?}"
+            );
+        }
+        for line in ["   2 パス", "   1 ７六歩(00)"] {
+            assert!(
+                parse_kif_str(&format!("{KIF}{line}\n")).is_err(),
+                "{line:?}"
+            );
+        }
+        // `   2A８四歩(83)` — a number and then neither padding nor a move — is
+        // read as prose, as it always has been. Nothing tells it apart from a
+        // note that opens with a digit (GAP-020).
+        assert!(parse_kif_str(&format!("{KIF}   2A８四歩(83)\n")).is_ok());
+    }
+
+    // The full-width colon is the one the format uses, so a key that holds a
+    // half-width one is still split at the full-width one. Asking the wider
+    // question first cuts the key short, and the line then looks like an
+    // unknown key with a half-width colon and is dropped — including lines this
+    // crate's own writer produces (R-KIF-004, D4).
+    #[test]
+    fn a_key_may_hold_a_half_width_colon_of_its_own() {
+        use crate::converter::ToKif;
+        use crate::parser::parse_kif_str;
+        const TAIL: &str = "手数----指手---------消費時間--\n   1 ７六歩(77)\n";
+        for (line, key, value) in [
+            ("備考:あり：なし", "備考:あり", "なし"),
+            (
+                "URL:http://example.com：メモ",
+                "URL:http://example.com",
+                "メモ",
+            ),
+            ("13:00：開始", "13:00", "開始"),
+            ("備考：a:b", "備考", "a:b"),
+        ] {
+            let jkf = parse_kif_str(&format!("{line}\n{TAIL}"))
+                .unwrap_or_else(|e| panic!("{line:?}: {e}"));
+            assert_eq!(
+                Some(&String::from(value)),
+                jkf.header.get(key),
+                "{line:?}: {:?}",
+                jkf.header
+            );
+        }
+        // And what the writer produces from such a key reads back.
+        let jkf: JsonKifuFormat = serde_json::from_str(
+            r#"{"header":{"a:b":"c"},"initial":{"preset":"HIRATE"},"moves":[{}]}"#,
+        )
+        .expect("reads the JKF");
+        let written = jkf.try_to_kif_owned().expect("writes KIF");
+        assert_eq!(
+            Some(&String::from("c")),
+            parse_kif_str(&written)
+                .unwrap_or_else(|e| panic!("{written:?}: {e}"))
+                .header
+                .get("a:b")
+        );
     }
 
     // A board diagram reaches the reader through no other path (GAP-007), so a

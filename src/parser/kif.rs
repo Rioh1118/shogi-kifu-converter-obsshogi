@@ -8,10 +8,10 @@ use crate::jkf::*;
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::character::complete::digit1;
-use nom::combinator::{map, map_res, opt, value};
+use nom::combinator::{map, map_res, opt, recognize, value};
 use nom::error::{ParseError, VerboseError};
 use nom::multi::{many0, many1};
-use nom::sequence::{delimited, preceded, separated_pair, terminated, tuple};
+use nom::sequence::{delimited, pair, preceded, separated_pair, terminated, tuple};
 use nom::IResult;
 
 fn move_from(input: &str) -> IResult<&str, Option<PlaceFormat>, VerboseError<&str>> {
@@ -176,6 +176,34 @@ fn skip_interruptions(mut input: &str) -> &str {
             None => return "",
         };
     }
+}
+
+/// Whether what follows a ply number is the move that number is about.
+///
+/// The other half of [`opens_a_numbered_line`], which is the question
+/// `not_move_line` asks before it skips a line. Both sides read the same
+/// padding — none of it, or any amount — so that a line the skip declines is a
+/// line [`move_line`] can take, and a line it takes is one nothing else wanted.
+/// A ply number followed by prose (`1図以下、先手優勢`) is a note; a ply number
+/// followed by a move is a move line however the two are spaced.
+///
+/// The destination and the piece, not the whole move: `   1 ７六歩(00)` is a
+/// move line with an origin no square answers to, and calling it prose would
+/// hand it to the skip — the reader would come back a move short instead of
+/// saying what it could not read (D1).
+///
+/// The outcome words are in it because a move line can hold one instead of a
+/// move (`   5 投了`, R-KIF-007). Which side 反則勝ち accuses does not change
+/// whether the line is one, so either colour will do to ask.
+pub(super) fn a_move_follows_the_number(after_digits: &str) -> bool {
+    preceded(
+        padding,
+        alt((
+            recognize(move_special(Color::Black)),
+            recognize(pair(move_to, piece_kind)),
+        )),
+    )(after_digits)
+    .is_ok()
 }
 
 fn move_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
