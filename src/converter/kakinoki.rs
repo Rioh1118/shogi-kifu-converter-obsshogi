@@ -162,7 +162,8 @@ pub(super) fn write_header<W: Write>(header: &HashMap<String, String>, sink: &mu
 /// because that is what a reader takes from a line it cannot read. Writing the
 /// even game under it makes the file say two different things about the one
 /// thing this is here to state, and the fallback is exactly what leaving the
-/// line out already means.
+/// line out already means. A `手合割` that *is* a name this crate knows did not
+/// come from that reader, so it does not get to speak for `initial` (D16).
 ///
 /// A `preset` that names a handicap is not dropped for a header, and neither is
 /// a board. Those say something the header does not, and a file that repeats
@@ -187,7 +188,17 @@ pub(super) fn write_initial<W: Write>(
         // R-JKF-001: `initial` is optional, and its absence is the even game.
         None => Preset::PresetHirate,
     };
-    if preset == Preset::PresetHirate && header.contains_key(crate::handicap::KIF_KEYWORD) {
+    // Only a `手合割` the reader could not fold into a `Preset` leaves `preset`
+    // at the even game by default. A name this table knows would have been
+    // folded, so finding one in `header` means the two came from different
+    // places — and then the record's own is the one to write, or a handicap
+    // turns into a hirate game where Black opens (R-HC-001) and the file no
+    // longer reads back.
+    if preset == Preset::PresetHirate
+        && header
+            .get(crate::handicap::KIF_KEYWORD)
+            .is_some_and(|name| !crate::handicap::is_a_known_name(name))
+    {
         return Ok(());
     }
     write_initial_preset(preset, sink)

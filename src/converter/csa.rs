@@ -100,24 +100,19 @@ fn write_place<W: Write>(place: &Option<PlaceFormat>, sink: &mut W) -> Result {
 
 fn write_header<W: Write>(header: &HashMap<String, String>, sink: &mut W) -> Result {
     sink.write_str("V2.2\n")?;
-    if let Some(s) = header.get("先手").or_else(|| header.get("下手")) {
-        if !s.is_empty() {
-            sink.write_fmt(format_args!("N+{}\n", s))?;
+    for (prefix, value) in [
+        ("N+", header.get("先手").or_else(|| header.get("下手"))),
+        ("N-", header.get("後手").or_else(|| header.get("上手"))),
+        ("$EVENT:", header.get("棋戦")),
+        ("$SITE:", header.get("場所")),
+        ("$OPENING:", header.get("戦型")),
+    ] {
+        // A player with no name is not written at all: `N+` on its own says the
+        // name is the empty string, which is not what the record means.
+        if let Some(value) = value.filter(|s| !s.is_empty()) {
+            sink.write_str(prefix)?;
+            write_header_value(value, sink)?;
         }
-    }
-    if let Some(s) = header.get("後手").or_else(|| header.get("上手")) {
-        if !s.is_empty() {
-            sink.write_fmt(format_args!("N-{}\n", s))?;
-        }
-    }
-    if let Some(s) = header.get("棋戦") {
-        sink.write_fmt(format_args!("$EVENT:{}\n", s))?;
-    }
-    if let Some(s) = header.get("場所") {
-        sink.write_fmt(format_args!("$SITE:{}\n", s))?;
-    }
-    if let Some(s) = header.get("戦型") {
-        sink.write_fmt(format_args!("$OPENING:{}\n", s))?;
     }
     Ok(())
 }
@@ -193,20 +188,40 @@ fn write_initial<W: Write>(initial: &Option<Initial>, sink: &mut W) -> Result {
 
 /// Writes one comment, as as many `'` lines as it takes.
 ///
-/// R-CSA-009 makes `,` the end of a statement, so a comment carrying one is read
-/// as a comment and then as something the reader has no shape for — and the
-/// `csa` crate drops the rest of the file from there without a word
-/// (`research/90-gaps.md` GAP-023: 33 of 609 records lose moves through this,
-/// one of them 168 down to 10, because the automatic notes shogi sites write
-/// look like `囲い：居飛車穴熊, 一枚穴熊`).
+/// A comment runs from the `'` to the end of the line (R-CSA-008), and `,` ends
+/// a statement as surely as a newline does (R-CSA-009). Either one inside a
+/// comment leaves the text after it outside the `'`, and this crate's reader
+/// drops the rest of the file from there without a word (`research/90-gaps.md`
+/// GAP-023).
 ///
-/// The comma is the one thing CSA cannot hold here. Everything either side of it
-/// can, so each piece becomes a line of its own rather than the record ending
-/// there.
+/// What ends a line is the only thing CSA has nowhere to put. What sits either
+/// side of it it does, so each piece becomes a line of its own rather than the
+/// record ending there.
 fn write_comment<W: Write>(comment: &str, sink: &mut W) -> Result {
-    for piece in comment.split(',') {
+    for piece in comment.split([',', '\n', '\r']) {
         sink.write_fmt(format_args!("'{piece}\n"))?;
     }
+    Ok(())
+}
+
+/// Writes a header value, which CSA gives one line and no more (R-CSA-002).
+///
+/// `,` ends a statement (R-CSA-009) and cannot be spelled in a value the way it
+/// can in a comment — `N+` and `$EVENT` have nowhere to continue onto — so it
+/// becomes the full-width form. A newline is dropped for the same reason: JKF
+/// puts no limit on a header value and the consumer builds its own
+/// (`converter::kakinoki::write_header`).
+///
+/// Altering a value is not nothing. It is less than the alternative: a `,` left
+/// in makes a file this crate's own reader cannot read at all, and D4 puts the
+/// record above its punctuation.
+fn write_header_value<W: Write>(value: &str, sink: &mut W) -> Result {
+    for line in value.lines() {
+        for c in line.chars() {
+            sink.write_char(if c == ',' { '，' } else { c })?;
+        }
+    }
+    sink.write_char('\n')?;
     Ok(())
 }
 
@@ -252,14 +267,13 @@ fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
 mod tests {
     use super::*;
 
-    // R-CSA-009: `,` ends a statement. A comment carrying one is written as a
-    // comment and then as a statement the reader has no shape for, and the `csa`
-    // crate drops the rest of the file there — silently, because it throws its
-    // leftover input away (GAP-012). The record comes back short with `Ok`.
+    // R-CSA-009: `,` ends a statement, and this crate's reader drops the rest of
+    // the file from there without a word (GAP-012). The notes shogi sites write
+    // carry one (`*▲囲い：居飛車穴熊, 一枚穴熊`), so a record saved as `.csa`
+    // came back short with `Ok` (GAP-023).
     //
-    // The notes shogi sites write look exactly like this
-    // (`*▲囲い：居飛車穴熊, 一枚穴熊`), so 33 of the 609 records in the corpus
-    // went through it, one of them losing 158 of its 168 moves.
+    // A header value cannot be split the way a comment can — `$EVENT` has
+    // nowhere to continue onto — so there the comma becomes the full-width form.
     #[test]
     fn a_comment_with_a_statement_separator_in_it_does_not_end_the_record() {
         let kif = "手合割：平手
@@ -278,6 +292,36 @@ mod tests {
         // crate drops `'` lines, so the round trip loses comments whatever this
         // writes.)
         assert!(csa.contains("'囲い：居飛車穴熊\n' 一枚穴熊\n"), "{csa}");
+
+        // A newline ends a line as surely as a comma does, and a JKF comment can
+        // hold one (nothing in JKF says otherwise, and the consumer builds its
+        // own).
+        let mut jkf = jkf;
+        jkf.moves[1].comments = Some(vec!["ひとつ\nふたつ".to_owned()]);
+        let csa = jkf.try_to_csa_owned().expect("writes CSA");
+        assert_eq!(
+            3,
+            crate::parser::parse_csa_str(&csa)
+                .expect("reads back")
+                .moves
+                .len()
+                - 1,
+            "{csa}"
+        );
+
+        // The same in a header value, which has no second line to move onto.
+        jkf.header
+            .insert("棋戦".to_owned(), "相掛かり, 横歩取り".to_owned());
+        let csa = jkf.try_to_csa_owned().expect("writes CSA");
+        assert!(csa.contains("$EVENT:相掛かり， 横歩取り\n"), "{csa}");
+        assert_eq!(
+            3,
+            crate::parser::parse_csa_str(&csa)
+                .expect("reads back")
+                .moves
+                .len()
+                - 1
+        );
     }
 
     #[test]

@@ -93,6 +93,9 @@ fn move_special(
 pub(super) const SHAPES: LineShapes = LineShapes {
     carries_a_line: |_| false,
     opens_a_line: opens_a_kif_line,
+    // Every KIF shape, because none of them is one a note opens with: a KIF
+    // numbers its move lines, so nothing here starts the way `※▲２六歩` does.
+    opens_a_line_behind_a_marker: opens_a_kif_line,
 };
 
 fn opens_a_kif_line(head: &str) -> bool {
@@ -449,16 +452,26 @@ fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Ver
     // goes missing without a word.
     loop {
         let (rest, _) = many0(skippable_line_except_a_branch_header)(input)?;
-        let (rest, header) = match branch_header_line(rest) {
-            Ok((after, line)) => (after, Some(line)),
-            // The header is there and cannot be read — it ran into the moves
-            // under it. That is the branch, gone.
-            Err(err @ nom::Err::Failure(_)) => return Err(err),
-            // Not a header. A run can still follow: the tree comes from the ply
-            // numbers, not from the declaration (D3).
-            Err(_) => (rest, None),
-        };
-        let (rest, _) = many0(skippable_line_except_a_branch_header)(rest)?;
+        // Headers in a row, taken as one. KIF does not read the declaration at
+        // all — the tree comes from the ply numbers (D3) — so a second `変化：`
+        // over the first is a spare line, not a branch that went missing.
+        let mut header = None;
+        let mut rest = rest;
+        loop {
+            match branch_header_line(rest) {
+                Ok((after, line)) => {
+                    header = Some(line);
+                    let (after, _) = many0(skippable_line_except_a_branch_header)(after)?;
+                    rest = after;
+                }
+                // The header is there and cannot be read — it ran into the moves
+                // under it. That is the branch, gone.
+                Err(err @ nom::Err::Failure(_)) => return Err(err),
+                // Not a header. A run can still follow: the tree comes from the
+                // ply numbers, not from the declaration (D3).
+                Err(_) => break,
+            }
+        }
         match moves_with_index(start, rest) {
             Ok((after_run, run)) => {
                 forks.push(run);
@@ -473,7 +486,7 @@ fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Ver
                 // is; saying "no moves under it" instead would name a line that
                 // has moves under it and a cause that is not the one.
                 match header {
-                    Some(line) if rest.trim().is_empty() || opens_a_branch_header(rest) => {
+                    Some(line) if rest.trim().is_empty() => {
                         return Err(broken_line(line, "a 変化 block with no moves under it"));
                     }
                     // The lines just skipped are accounted for even though no run

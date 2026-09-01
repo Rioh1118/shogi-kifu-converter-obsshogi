@@ -89,6 +89,12 @@ pub(super) struct LineShapes {
     pub(super) carries_a_line: fn(&str) -> bool,
     /// Whether text that starts where a line starts opens one.
     pub(super) opens_a_line: fn(&str) -> bool,
+    /// The same, one character further in — see [`begins_the_line_below`].
+    ///
+    /// The shapes a note can open with come out of this one. A marker (`※`,
+    /// `（`, `【`) is exactly the one character that gets skipped, so a shape a
+    /// marker precedes in ordinary prose cannot also be read as the line below.
+    pub(super) opens_a_line_behind_a_marker: fn(&str) -> bool,
 }
 
 /// The shapes both formats share: a comment, a bookmark, a `#` note, a `変化：`
@@ -133,17 +139,21 @@ pub(super) fn opens_a_numbered_line(head: &str) -> bool {
 /// record is missing something.
 ///
 /// What was lost is the newline itself, so whatever sits in its place belongs to
-/// neither line, and a numbered line is looked for once more past a single
-/// character. Only that one: the shapes a note opens with are exactly the ones a
-/// marker can precede — `※▲２六歩`, `（△の反撃）` — and reading the marker as the
-/// lost newline turns commentary into a record that will not open.
+/// neither line, and the shapes are looked for once more past a single
+/// character. Not all of them: the ones a note can open with are exactly the
+/// ones a marker precedes — `※▲２六歩`, `（△の反撃）` — and reading the marker as
+/// the lost newline turns commentary into a record that will not open. Which
+/// those are is the format's to say
+/// ([`LineShapes::opens_a_line_behind_a_marker`]).
 fn begins_the_line_below(shapes: LineShapes, tail: &str) -> bool {
     let head = tail.trim_start_matches(SPACES);
     if (shapes.opens_a_line)(head) {
         return true;
     }
     match head.chars().next() {
-        Some(c) => opens_a_numbered_line(head[c.len_utf8()..].trim_start_matches(SPACES)),
+        Some(c) => {
+            (shapes.opens_a_line_behind_a_marker)(head[c.len_utf8()..].trim_start_matches(SPACES))
+        }
         None => false,
     }
 }
@@ -775,12 +785,14 @@ mod tests {
     const NOTHING: LineShapes = LineShapes {
         carries_a_line: |_| false,
         opens_a_line: opens_a_shared_line,
+        opens_a_line_behind_a_marker: opens_a_shared_line,
     };
 
     /// One that finds a `▲` enough, for the case that has to be refused.
     const ANY_MOVE_MARK: LineShapes = LineShapes {
         carries_a_line: |value| value.contains('▲'),
         opens_a_line: opens_a_shared_line,
+        opens_a_line_behind_a_marker: opens_a_shared_line,
     };
 
     // What separates a line that lost its ending from a line that trails off
@@ -791,8 +803,16 @@ mod tests {
         use super::super::{ki2, kif};
         for (shapes, tail) in [
             (kif::SHAPES, "   5 ８八銀(79)   ( 0:01/00:00:05)"),
-            (kif::SHAPES, "\u{0}   5 ８八銀(79)"), // the newline arrived as another byte
+            // The newline arrived as another byte, so the shapes are looked for
+            // past it as well.
+            (kif::SHAPES, "\u{0}   5 ８八銀(79)"),
             (kif::SHAPES, ",   5 ８八銀(79)"),
+            (kif::SHAPES, "\u{0}*コメント"),
+            (kif::SHAPES, ",&しおり"),
+            (kif::SHAPES, "\u{0}変化：2手"),
+            (kif::SHAPES, "x まで82手で先手の勝ち"),
+            (ki2::SHAPES, "\u{0}*コメント"),
+            (ki2::SHAPES, "\u{0}変化：2手"),
             (kif::SHAPES, "*コメント"),
             (kif::SHAPES, "&しおり"),
             (kif::SHAPES, "# メモ"),

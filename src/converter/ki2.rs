@@ -857,9 +857,10 @@ mod tests {
             ki2.contains("△５八金 ") || ki2.ends_with("△５八金\n"),
             "a gold has no 成 and no 不成: {ki2:?}"
         );
-        // The pawn on the line after it does get one: it moves out of the enemy
-        // camp, which is a move R-NOT-005 asks to be spelled either way.
-        assert!(ki2.contains("▲３四歩不成"), "{ki2:?}");
+        // What the pawn on the line after it gets is not fixed here. The side it
+        // is written on comes out wrong past an outcome (`research/90-gaps.md`
+        // GAP-025), and which end of the move the enemy camp is at follows from
+        // the side — so pinning it would pin the wrong turn as correct.
 
         // A drop has an origin at neither end (R-JKF-003), so there is no move for
         // R-NOT-005 to be asked about and the enemy camp under it changes nothing.
