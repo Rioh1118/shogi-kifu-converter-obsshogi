@@ -81,7 +81,10 @@ pub(super) const SIDE_MARKS: [(char, Color); 2] = [('▲', Color::Black), ('△'
 
 /// The spaces a line can be padded with. Full-width among them: KI2 is a record
 /// people read (R-KI2-001), and what people paste is padded either way.
-const SPACES: [char; 3] = [' ', '\t', '　'];
+///
+/// One table, for the same reason [`SIDE_MARKS`] is one: a reader that pads with
+/// a narrower set than the one that wrote the file reads the padding as content.
+pub(super) const SPACES: [char; 3] = [' ', '\t', '　'];
 
 /// The shapes of the format being read.
 ///

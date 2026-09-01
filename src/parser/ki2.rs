@@ -1,6 +1,7 @@
 use super::kakinoki::{
     broken_line, ends_here, move_comment_line, move_to, not_move_line, opens_a_shared_line,
     parse_without_moves, piece_kind, program_comment_line, LineShapes, NOTE_MARKERS, SIDE_MARKS,
+    SPACES,
 };
 use crate::jkf::*;
 use crate::notation::LINE_ENDS;
@@ -171,7 +172,7 @@ fn end_of_game_line(
             Some((head, rest)) if !head.contains(LINE_ENDS) => rest,
             _ => input,
         };
-        let phrase = phrase.trim_start_matches([' ', '　']);
+        let phrase = phrase.trim_start_matches(SPACES);
         // The outcome word owns the line up to the first space or note marker.
         // KIF reads `まで2手で中断 （▲有利）` — the word is the line and the note
         // is skipped — and the same record spelled as KI2 has to read the same
@@ -179,7 +180,7 @@ fn end_of_game_line(
         // line-end rule uses.
         let end = phrase
             .find(|c: char| {
-                c == ' ' || c == '　' || LINE_ENDS.contains(&c) || NOTE_MARKERS.contains(&c)
+                SPACES.contains(&c) || LINE_ENDS.contains(&c) || NOTE_MARKERS.contains(&c)
             })
             .unwrap_or(phrase.len());
         let side_to_move = crate::handicap::side_to_move_at_ply(start, ply);
@@ -656,6 +657,27 @@ mod tests {
                 assert!(
                     parse_ki2_str(&format!("{MOVES}{header}\n{block}")).is_err(),
                     "{header:?} + {block:?}: skipped, and what it said went with it"
+                );
+            }
+        }
+    }
+
+    // R-KI2-001: KI2 is a record people read, and what people paste is padded
+    // with whatever their editor put there. A separator table narrower than
+    // `SPACES` leaves the padding inside the outcome word, and the record comes
+    // back as an error naming a word that is in the vocabulary.
+    #[test]
+    fn padding_after_the_outcome_word_is_padding_whichever_space_it_is() {
+        use crate::parser::parse_ki2_str;
+        for pad in super::SPACES {
+            for src in [
+                format!("手合割：平手\n▲７六歩 △３四歩\nまで2手で投了{pad}\n"),
+                format!("手合割：平手\n▲７六歩 △３四歩\nまで2手で{pad}投了\n"),
+            ] {
+                let jkf = parse_ki2_str(&src).unwrap_or_else(|e| panic!("{src:?}: {e}"));
+                assert!(
+                    jkf.moves.last().expect("a node").special.is_some(),
+                    "{src:?}: the outcome is gone"
                 );
             }
         }
