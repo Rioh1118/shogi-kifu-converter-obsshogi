@@ -290,15 +290,29 @@ fn move_run(
     }
 }
 
-/// A line KI2 has no shape for, skipped whole.
+/// A line the reader has no shape for — prose, and nothing else.
 ///
-/// Narrower than the KIF version. KIF puts every move at the head of its own
-/// numbered line, so a line that does not start with a digit holds no move. KI2
-/// writes moves anywhere along a line (R-KI2-001), so skipping a whole line can
-/// throw moves away — which is the silent loss D1 exists to remove. A line
+/// **The only skip in this reader.** Every shape the reader does have belongs to
+/// whoever reads it, not to this skip. A `まで…` is the outcome and [`move_run`]
+/// reads it; a `変化：` says a branch starts and [`moves`] reads it; `*` and `&`
+/// are comments. Skipping one takes what it said with it, and the record comes
+/// back `Ok` without it — an outcome that never happened, or a branch whose
+/// moves are read as the main line carrying on (R-JKF-004). Two skips is how
+/// that happens: one of them learns a shape and the other goes on swallowing it.
+///
+/// Narrower than the KIF skip in one more way. KIF puts every move at the head
+/// of its own numbered line, so a line that does not start with a digit holds no
+/// move. KI2 writes moves anywhere along a line (R-KI2-001), so skipping a whole
+/// line can throw moves away — the silent loss D1 exists to remove. A line
 /// carrying `▲` or `△` is therefore never skippable, and the leftover-input
 /// check reports it instead.
-fn not_readable_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
+fn a_line_only_prose_opens(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
+    if opens_a_shared_line(input) {
+        return Err(nom::Err::Error(VerboseError::from_error_kind(
+            input,
+            nom::error::ErrorKind::Not,
+        )));
+    }
     let (rest, line) = not_move_line(input)?;
     if line.contains(|c| SIDE_MARKS.iter().any(|(mark, _)| *mark == c)) {
         return Err(nom::Err::Error(VerboseError::from_error_kind(
@@ -307,24 +321,6 @@ fn not_readable_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
         )));
     }
     Ok((rest, line))
-}
-
-/// A line the reader has no shape for — prose, and nothing else.
-///
-/// Every shape the reader does have belongs to whoever reads it, not to this
-/// skip. A `まで…` is the outcome and this run is what reads it; a `変化：` says
-/// a branch starts and [`moves`] is what reads it; `*` and `&` are comments.
-/// Skipping one takes what it said with it, and the record comes back `Ok`
-/// without it — an outcome that never happened, or a branch whose moves are
-/// read as the main line carrying on (R-JKF-004).
-fn a_line_only_prose_opens(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
-    if opens_a_shared_line(input) {
-        return Err(nom::Err::Error(VerboseError::from_error_kind(
-            input,
-            nom::error::ErrorKind::Not,
-        )));
-    }
-    not_readable_line(input)
 }
 
 /// Attaches `branch` as an alternative to the move at ply `start_ply`.
@@ -422,11 +418,17 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
         }
         // A line the format has no shape for — a note after the record, a
         // closing remark — is skipped rather than left behind for the
-        // leftover-input check. KIF has always done this; doing it in only one
-        // of the two made the same content readable as `.kif` and an error as
-        // `.ki2` (D10). `not_move_line` consumes a line at a time, so this
+        // leftover-input check, the same as KIF does: a record readable as
+        // `.kif` is readable as `.ki2` (D10). The skip is the one `move_run`
+        // uses, so a shape only one of them knows cannot exist. `#` is read
+        // here rather than skipped because it is a shape (R-KIF-002).
+        // `not_move_line` under the skip consumes a line at a time, so this
         // cannot spin.
-        match not_readable_line(input) {
+        match alt((
+            nom::combinator::recognize(program_comment_line),
+            a_line_only_prose_opens,
+        ))(input)
+        {
             Ok((rest, _)) => input = rest,
             Err(_) => break,
         }
@@ -645,12 +647,17 @@ mod tests {
                 "{before:?}: the outcome is gone"
             );
         }
-        // A `変化：` the reader cannot read is still a `変化：`.
+        // A `変化：` the reader cannot read is still a `変化：`. Both of the
+        // blocks below have to say so: one runs into the leftover-input check
+        // through the moves under the header, and the other only through the
+        // header itself.
         for header in ["変化：２手", "変化： 2手"] {
-            assert!(
-                parse_ki2_str(&format!("{MOVES}{header}\n▲２六歩\n")).is_err(),
-                "{header}: read as the main line carrying on"
-            );
+            for block in ["▲２六歩\n", "まで2手で投了\n"] {
+                assert!(
+                    parse_ki2_str(&format!("{MOVES}{header}\n{block}")).is_err(),
+                    "{header:?} + {block:?}: skipped, and what it said went with it"
+                );
+            }
         }
     }
 

@@ -70,9 +70,9 @@ pub(super) fn end_of_line(input: &str) -> IResult<&str, &str, VerboseError<&str>
 ///
 /// One table. The KI2 reader spells its moves with them, and both readers have
 /// to agree about which characters those are: `not_move_line` below and
-/// `ki2::not_readable_line` each decide whether to skip a line by looking for
-/// one, and a mark only one of them knows makes a line that is skipped by one
-/// reader and kept by the other.
+/// `ki2::a_line_only_prose_opens` each decide whether to skip a line by looking
+/// for one, and a mark only one of them knows makes a line that is skipped by
+/// one reader and kept by the other.
 ///
 /// The variants R-NOT-001 also lists (`☗`/`☖`, `⛊`/`⛉`, `▼`/`▽`) are not read yet:
 /// `research/90-gaps.md` GAP-024, which names the three places that have to
