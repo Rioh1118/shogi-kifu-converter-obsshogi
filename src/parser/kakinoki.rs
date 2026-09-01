@@ -343,7 +343,10 @@ fn information_value_preset(input: &str) -> IResult<&str, Information, VerboseEr
 /// still not the fix — the fix is a table with an entry for what the file says.
 fn information_line_preset(input: &str) -> IResult<&str, Information, VerboseError<&str>> {
     terminated(
-        preceded(tag("手合割："), information_value_preset),
+        preceded(
+            pair(tag(crate::handicap::KIF_KEYWORD), tag("：")),
+            information_value_preset,
+        ),
         line_ending,
     )(input)
 }

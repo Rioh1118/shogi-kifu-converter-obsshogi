@@ -494,6 +494,13 @@ fn normalize_move(
 /// disagrees with the board — `７五と` on a square holding a pawn — into a `成`
 /// the record does not have.
 ///
+/// A JKF read in from outside is not told apart from a CSA here, so the piece
+/// name is read for it too. It only says anything where `piece` is the promoted
+/// form of what stands on `from`, which in a JKF means the record and the board
+/// disagree — and D12 answers that with the board. The reading is inconsistent
+/// there; what it costs is one more wrong field in a record that is already
+/// wrong (D12).
+///
 /// What the position decides is the other direction — whether a move that did
 /// *not* promote is one where promoting was on the table, and so worth recording
 /// as `false` at all. R-NOT-005: a promotable piece with the enemy camp at one

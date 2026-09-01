@@ -15,6 +15,15 @@
 use crate::jkf::{Color, Initial, Kind, Piece, Preset};
 use crate::normalizer::HIRATE_BOARD;
 
+/// The keyword a KIF line names a handicap with, and the key it is kept under
+/// in `header` when the name is not one of these.
+///
+/// One spelling, because two sides of the crate depend on it being the same
+/// one: the reader files a `手合割` it cannot fold into a [`Preset`] under this
+/// key, and the writer looks for it there before deciding whether to name the
+/// starting position itself (D16).
+pub(crate) const KIF_KEYWORD: &str = "手合割";
+
 /// A handicap: the name KIF gives it and what the upper hand takes off.
 pub(crate) struct Handicap {
     pub(crate) preset: Preset,

@@ -68,7 +68,10 @@ fn write_hand<W: Write>(hand: &Hand, sink: &mut W) -> Result {
 }
 
 fn write_initial_data<W: Write>(data: &StateFormat, sink: &mut W) -> Result {
-    sink.write_str("手合割：その他\n")?;
+    // `その他` is the one name the table has no entry for — it is not a
+    // handicap, it is "the board says it" (`handicap::lookup`).
+    sink.write_str(crate::handicap::KIF_KEYWORD)?;
+    sink.write_str("：その他\n")?;
     sink.write_str("後手の持駒：")?;
     if data.hands[1] != Hand::default() {
         write_hand(&data.hands[1], sink)?;
@@ -120,7 +123,8 @@ fn write_initial_preset<W: Write>(preset: Preset, sink: &mut W) -> Result {
         Some(handicap) => handicap.kif_name,
         None => return Err(ConvertError::UnknownPreset(preset)),
     };
-    sink.write_str("手合割：")?;
+    sink.write_str(crate::handicap::KIF_KEYWORD)?;
+    sink.write_char('：')?;
     sink.write_str(name)?;
     sink.write_char('\n')?;
     Ok(())
@@ -183,7 +187,7 @@ pub(super) fn write_initial<W: Write>(
         // R-JKF-001: `initial` is optional, and its absence is the even game.
         None => Preset::PresetHirate,
     };
-    if preset == Preset::PresetHirate && header.contains_key("手合割") {
+    if preset == Preset::PresetHirate && header.contains_key(crate::handicap::KIF_KEYWORD) {
         return Ok(());
     }
     write_initial_preset(preset, sink)
