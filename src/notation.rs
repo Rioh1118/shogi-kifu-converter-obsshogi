@@ -13,6 +13,14 @@
 //! What the notation can and cannot say about a move lives here too, for the
 //! same reason: the normalizer and the writers have to answer it the same way.
 
+/// What ends a line, whichever of them a file or a value carries.
+///
+/// R-CSA-001 leaves the newline to the environment, and a JKF built elsewhere
+/// carries whatever that environment used — a lone `\r` among them. Both sides
+/// of the crate need the same answer: a reader deciding where a line stopped and
+/// a writer deciding what it cannot put on one.
+pub(crate) const LINE_ENDS: [char; 2] = ['\n', '\r'];
+
 /// Whether the notation has a `成` / `不成` for this move at all (R-NOT-005).
 ///
 /// A promotable piece, with the enemy camp at one end of the move. A gold, a

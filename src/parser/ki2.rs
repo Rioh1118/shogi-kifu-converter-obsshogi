@@ -1,16 +1,17 @@
 use super::kakinoki::{
     broken_line, ends_here, move_comment_line, move_to, not_move_line, opens_a_branch_header,
     opens_a_shared_line, parse_without_moves, piece_kind, program_comment_line, LineShapes,
-    SIDE_MARKS,
+    NOTE_MARKERS, SIDE_MARKS,
 };
 use crate::jkf::*;
+use crate::notation::LINE_ENDS;
 use nom::branch::alt;
 use nom::bytes::complete::tag;
-use nom::character::complete::{digit1, line_ending, not_line_ending, space0};
+use nom::character::complete::{digit1, line_ending, space0};
 use nom::combinator::{map, map_res, opt, value};
 use nom::error::{ParseError, VerboseError};
 use nom::multi::{many0, many1};
-use nom::sequence::{preceded, terminated, tuple};
+use nom::sequence::{preceded, tuple};
 use nom::IResult;
 
 fn side_mark(input: &str) -> IResult<&str, Color, VerboseError<&str>> {
@@ -157,33 +158,40 @@ fn end_of_game_line(
         // position, so an error built after the line is consumed points at the
         // *next* one and shows a blank caret.
         let (input, _) = tag("まで")(line)?;
-        let (input, phrase): (&str, &str) = terminated(not_line_ending, opt(line_ending))(input)?;
         // `まで` may be followed by `<N>手で`; the ply is already known from the
-        // moves that were read, so the number is not needed.
-        let phrase = phrase
-            .split_once("手で")
-            .map_or(phrase, |(_, rest)| rest)
-            .trim();
+        // moves that were read, so the number is not needed. Only when it is on
+        // this line — `split_once` would otherwise reach into the next one.
+        let phrase = match input.split_once("手で") {
+            Some((head, rest)) if !head.contains(LINE_ENDS) => rest,
+            _ => input,
+        };
+        let phrase = phrase.trim_start_matches([' ', '　']);
+        // The outcome word owns the line up to the first space or note marker.
+        // KIF reads `まで2手で中断 （▲有利）` — the word is the line and the note
+        // is skipped — and the same record spelled as KI2 has to read the same
+        // way (D18). What opens a note is D17's table, the same one the
+        // line-end rule uses.
+        let end = phrase
+            .find(|c: char| {
+                c == ' ' || c == '　' || LINE_ENDS.contains(&c) || NOTE_MARKERS.contains(&c)
+            })
+            .unwrap_or(phrase.len());
         let side_to_move = crate::handicap::side_to_move_at_ply(start, ply);
-        // The outcome word, and then whatever the writer put after it. KIF reads
-        // `まで2手で中断 （▲有利）` — the word owns the line and the note is
-        // skipped — and the same record spelled as KI2 has to read the same way
-        // (D10, D17).
-        let word = MoveSpecial::from_ki2_phrase(phrase, side_to_move).or_else(|| {
-            phrase
-                .split([' ', '　', '（', '(', '※', '【'])
-                .next()
-                .filter(|word| !word.is_empty())
-                .and_then(|word| MoveSpecial::from_ki2_phrase(word, side_to_move))
-        });
-        match word {
-            Some(special) => Ok((
-                input,
-                MoveFormat {
-                    special: Some(special),
-                    ..Default::default()
-                },
-            )),
+        match MoveSpecial::from_ki2_phrase(&phrase[..end], side_to_move) {
+            // What follows the word goes through the same check as any other
+            // line end (D17): a note is skipped, and the line below it — a
+            // `変化：` header, more moves, a comment — is the record telling us
+            // its newline is gone.
+            Some(special) => {
+                let (input, _) = ends_here(SHAPES, line, &phrase[end..])?;
+                Ok((
+                    input,
+                    MoveFormat {
+                        special: Some(special),
+                        ..Default::default()
+                    },
+                ))
+            }
             // `まで` matched, so this line *is* the outcome line whatever it
             // says. Reporting a recoverable error would leave the line
             // unconsumed, which ends the move list and drops the `変化：`
@@ -197,7 +205,8 @@ fn end_of_game_line(
     }
 }
 
-/// Reads a `変化：N手` header and returns `N`.
+/// Reads a `変化：N手` header and returns the ply it names, with the line itself
+/// — which is where an error about the block under it has to point (`moves`).
 ///
 /// The declaration `N` is read here and used, unlike in KIF where the tree comes
 /// from the ply numbers alone (D3): tsshogi reads this line in KI2 and not in
@@ -243,9 +252,9 @@ fn move_run(
                 nom::combinator::recognize(program_comment_line),
                 // A line the format has no shape for — a note between the
                 // header and the moves under it. KIF skips one here as well, and
-                // a record that reads as `.kif` has to read as `.ki2` (D10,
-                // D17). `not_readable_line` keeps the lines that carry moves,
-                // and a `変化：` header belongs to the loop above, not here.
+                // a record that reads as `.kif` has to read as `.ki2` (D18).
+                // `not_readable_line` keeps the lines that carry moves, and a
+                // `変化：` header belongs to the loop above, not here.
                 nom::combinator::recognize(a_line_no_branch_opens_with),
             )))(input)?;
             // A comment before any move of a run belongs to a node of its own:

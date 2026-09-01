@@ -74,7 +74,7 @@ pub(super) fn end_of_line(input: &str) -> IResult<&str, &str, VerboseError<&str>
 /// one, and a mark only one of them knows makes a line that is skipped by one
 /// reader and kept by the other.
 ///
-/// The variants R-NOT-001 also lists (`☗`/`☖`, `▼`/`▽`) are not read yet:
+/// The variants R-NOT-001 also lists (`☗`/`☖`, `⛊`/`⛉`, `▼`/`▽`) are not read yet:
 /// `research/90-gaps.md` GAP-024, which names the three places that have to
 /// learn a new one together.
 pub(super) const SIDE_MARKS: [(char, Color); 2] = [('▲', Color::Black), ('△', Color::White)];
@@ -110,7 +110,7 @@ pub(super) struct LineShapes {
 /// `（まで先手良し）`, `【変化】` — which is exactly where
 /// [`begins_the_line_below`] would otherwise look for the newline that was
 /// lost. Whatever replaced a newline, it is not one of these.
-const NOTE_MARKERS: [char; 8] = ['※', '（', '(', '【', '[', '「', '〈', '＜'];
+pub(super) const NOTE_MARKERS: [char; 8] = ['※', '（', '(', '【', '[', '「', '〈', '＜'];
 
 /// The shapes both formats share: a comment, a bookmark, a `#` note, a `変化：`
 /// header, a `まで…` outcome.
@@ -239,20 +239,27 @@ fn comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
 
 /// A line that is none of the shapes the move list is made of, skipped whole.
 ///
-/// The excluded set is every character a line the reader *does* understand can
-/// start with. `&` is one of them: a bookmark is kept as a comment
-/// (R-KIF-011), and letting this parser take the line instead drops it without
-/// a word — which is what happened to a bookmark at the head of a `変化：`
-/// block that `to_kif` had just written.
+/// What it declines to start on is not every shape the reader knows — it is the
+/// ones that mean something else at the head of a line: a space or a line ending
+/// (a blank line belongs to the caller), a digit (a KIF move line), `*` and `&`
+/// (a comment and a bookmark, R-KIF-010 / R-KIF-011), and [`SIDE_MARKS`] (a KI2
+/// move). `#`, `変化：` and `まで…` are **not** among them, so a caller that
+/// wants one of those read as itself has to try it before this
+/// (`kif::skippable_line`).
+///
+/// `&` is there because a bookmark is kept as a comment (R-KIF-011), and letting
+/// this parser take the line instead drops it without a word — which is how a
+/// bookmark at the head of a `変化：` block that `to_kif` had just written went
+/// missing.
 ///
 /// The line endings have to be excluded too. Without them the parser starts on
 /// the newline of a *blank* line, takes the line after it as this line's
 /// content, and swallows two lines where one was meant — so a blank line in the
 /// middle of a record destroys the move that follows it.
 pub(super) fn not_move_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
-    // The excluded set is [`SIDE_MARKS`] and the characters the other line
-    // shapes open with, spelled out because `none_of` takes a pattern rather
-    // than a table.
+    // Spelled out rather than built from [`SIDE_MARKS`] because `none_of` takes
+    // a pattern, not a table. GAP-024 names this as one of the three places a
+    // new mark has to be added to.
     delimited(none_of(" \r\n0123456789*&▲△"), not_line_ending, end_of_line)(input)
 }
 

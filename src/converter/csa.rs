@@ -1,7 +1,8 @@
-use super::kakinoki::{on_one_line, LINE_ENDS};
+use super::on_one_line;
 use super::WriteResult as Result;
 use crate::error::ConvertError;
 use crate::jkf::*;
+use crate::notation::LINE_ENDS;
 use std::collections::HashMap;
 use std::fmt::Write;
 

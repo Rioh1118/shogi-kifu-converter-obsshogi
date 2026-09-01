@@ -1,7 +1,8 @@
+use super::on_one_line;
 use super::WriteResult as Result;
 use crate::error::ConvertError;
 use crate::jkf::*;
-use crate::notation::{board_word, KANSUJI, SANYOU_SUJI};
+use crate::notation::{board_word, KANSUJI, LINE_ENDS, SANYOU_SUJI};
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -130,23 +131,6 @@ fn write_initial_preset<W: Write>(preset: Preset, sink: &mut W) -> Result {
     sink.write_str(name)?;
     sink.write_char('\n')?;
     Ok(())
-}
-
-/// What ends a line, whichever of them a value carries.
-///
-/// R-CSA-001 leaves the newline to the environment, and a JKF built elsewhere
-/// carries whatever that environment used — a lone `\r` among them. A value with
-/// one inside it, written as it came, splits the line it was supposed to be on.
-pub(super) const LINE_ENDS: [char; 2] = ['\n', '\r'];
-
-/// `value` with everything that ends a line taken out.
-///
-/// For the places a format gives one line and no more: a header value in KIF
-/// and KI2 (R-KIF-004) and in CSA (R-CSA-004). What is left of the line after a
-/// newline inside the value is read as a line of its own, and the reader makes
-/// of it whatever its shapes say — none of which is "the rest of that header".
-pub(super) fn on_one_line(value: &str) -> String {
-    value.split(LINE_ENDS).collect()
 }
 
 /// Writes one comment, as as many lines as it takes.

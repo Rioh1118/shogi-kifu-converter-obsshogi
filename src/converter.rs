@@ -24,6 +24,16 @@ use shogi_core::{PartialPosition, Position, ToUsi};
 /// cannot tell apart. Each of those is a different thing to tell the user.
 type WriteResult = std::result::Result<(), ConvertError>;
 
+/// `value` with everything that ends a line taken out.
+///
+/// For the places a format gives one line and no more: a header value in KIF
+/// and KI2 (R-KIF-004) and in CSA (R-CSA-004). What is left of the line after a
+/// newline inside the value is read as a line of its own, and the reader makes
+/// of it whatever its shapes say — none of which is "the rest of that header".
+fn on_one_line(value: &str) -> String {
+    value.split(crate::notation::LINE_ENDS).collect()
+}
+
 /// Spells `pos` as USI: the starting position, then the moves played from it.
 fn write_usi<W: std::fmt::Write>(pos: &Position, sink: &mut W) -> std::fmt::Result {
     if pos.initial_position() == &PartialPosition::startpos() {

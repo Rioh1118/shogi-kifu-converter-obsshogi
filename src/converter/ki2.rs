@@ -96,13 +96,18 @@ fn promotion_was_on_the_table(mv: &MoveMoveFormat) -> bool {
         shogi_core::Square::try_from(&mv.to),
     ) {
         (Ok(from), Ok(to)) => crate::notation::promotion_is_spellable(piece, from, to, color),
-        // An origin off the board is `normalizer::ORIGIN_UNSTATED`: the record
-        // never stated one (KI2 has no origins, R-KI2-003) and the position could
-        // not supply it. The rule needs both squares, so it cannot be asked — and
-        // between dropping a `不成` the record wrote and writing one a known
-        // position would not have, the first loses something and the second does
-        // not (D4).
-        _ => piece.promote().is_some(),
+        // A destination off the board is a `同` nothing resolved: past an
+        // outcome the position stops being tracked and `to` stays at (0, 0)
+        // (`research/90-gaps.md` GAP-025). R-NOT-005 asks which end of the move
+        // the enemy camp is at, and this move has no end to name.
+        (_, Err(_)) => false,
+        // Only the origin is off the board — `normalizer::ORIGIN_UNSTATED`, the
+        // record never stated one (KI2 has no origins, R-KI2-003) and the
+        // position could not supply it. The rule cannot be asked either, but
+        // here the record may have written the word itself: between dropping a
+        // `不成` it wrote and writing one a known position would not have, the
+        // first loses something and the second does not (D4).
+        (Err(_), Ok(_)) => piece.promote().is_some(),
     }
 }
 
@@ -867,6 +872,21 @@ mod tests {
         let unstated =
             r#"{"color":0,"from":{"x":0,"y":0},"to":{"x":5,"y":6},"piece":"FU","promote":false}"#;
         assert!(written(unstated).contains("不成"), "{}", written(unstated));
+
+        // A destination nothing resolved is not the same question. There is no
+        // square to say which end of the move the camp is at, and `同` is how
+        // the move is spelled — the word would be about nowhere.
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77)
+   2 中断
+   3 ２二角成(88)
+   4 同　銀(31)
+";
+        let jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
+        assert!(ki2.contains("▲同銀"), "{ki2:?}");
+        assert!(!ki2.contains("不成"), "{ki2:?}");
     }
 
     /// The KI2 for a record of one move, spelled as JKF.
