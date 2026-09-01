@@ -1,6 +1,7 @@
 use super::kakinoki::{
     blank_line, broken_line, ends_here, move_comment_line, move_to, not_move_line,
-    parse_without_moves, piece_kind,
+    opens_a_branch_header, opens_a_numbered_line, opens_a_shared_line, parse_without_moves,
+    piece_kind, LineShapes,
 };
 use crate::jkf::*;
 use nom::branch::alt;
@@ -78,14 +79,24 @@ fn move_special(
     }
 }
 
-/// Whether a header value carries a KIF move line. It never does.
+/// What a KIF line looks like.
 ///
-/// Not because one cannot be joined to a header, but because nothing tells the
-/// two apart: a KIF move line opens with a number and a space, and so does
-/// `棋戦：第 3 回`. Refusing the one to catch the other rejects records nothing
-/// is wrong with (`research/90-gaps.md` GAP-020).
-fn a_header_value_carrying_moves(_: &str) -> bool {
-    false
+/// `carries_a_line` is always false. Not because a move line cannot be joined to
+/// a header, but because nothing tells the two apart: a KIF move line opens with
+/// a number and a space, and so does `棋戦：第 3 回`. Refusing the one to catch
+/// the other rejects records nothing is wrong with (`research/90-gaps.md`
+/// GAP-020).
+///
+/// `▲`/`△` is not among the shapes either. KIF numbers its move lines, so a
+/// `▲` in a KIF is prose — `※▲２六歩が本筋` after a move, `（▲７六歩まで）` — and
+/// reading it as a line refuses records that are whole.
+pub(super) const SHAPES: LineShapes = LineShapes {
+    carries_a_line: |_| false,
+    opens_a_line: opens_a_kif_line,
+};
+
+fn opens_a_kif_line(head: &str) -> bool {
+    opens_a_shared_line(head) || opens_a_numbered_line(head)
 }
 
 /// The `変化：<N>手` line that opens a branch.
@@ -101,7 +112,7 @@ fn branch_header_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
     // `手` is what the writers put after the number, but nothing requires it of
     // a reader — tsshogi's `branchRegExp` reads the number and stops.
     let (rest, _) = tuple((tag("変化："), digit1, opt(tag("手"))))(input)?;
-    let (rest, _) = ends_here(input, rest)?;
+    let (rest, _) = ends_here(SHAPES, input, rest)?;
     Ok((rest, input))
 }
 
@@ -123,7 +134,7 @@ fn skippable_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
 /// declined too: a header the reader refuses ([`branch_header_line`]) has to
 /// reach that loop to be refused, not be skipped as unreadable prose.
 fn skippable_line_except_a_branch_header(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
-    if input.starts_with("変化：") {
+    if opens_a_branch_header(input) {
         return Err(nom::Err::Error(VerboseError::from_error_kind(
             input,
             nom::error::ErrorKind::Not,
@@ -258,7 +269,7 @@ fn move_line(
     // to the end and throwing it away takes the line underneath with it when the
     // newline between them is lost, and a move goes missing from a record that
     // still comes back `Ok`. `ends_here` draws that line.
-    let (input, _) = ends_here(line, input)?;
+    let (input, _) = ends_here(SHAPES, line, input)?;
     if let Some(mmf) = &mut mf.move_ {
         mmf.color = side_to_move;
     }
@@ -462,7 +473,7 @@ fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Ver
                 // is; saying "no moves under it" instead would name a line that
                 // has moves under it and a cause that is not the one.
                 match header {
-                    Some(line) if rest.trim().is_empty() || rest.starts_with("変化：") => {
+                    Some(line) if rest.trim().is_empty() || opens_a_branch_header(rest) => {
                         return Err(broken_line(line, "a 変化 block with no moves under it"));
                     }
                     // The lines just skipped are accounted for even though no run
@@ -489,7 +500,7 @@ fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Ver
 /// else is set. Only the reader knows the difference — one consumed a line and
 /// the other did not — so it has to say so here (D1, `parse_kif_str`).
 pub(crate) fn parse(input: &str) -> IResult<&str, (JsonKifuFormat, bool), VerboseError<&str>> {
-    let (rest, mut jkf) = parse_without_moves(input, a_header_value_carrying_moves)?;
+    let (rest, mut jkf) = parse_without_moves(SHAPES, input)?;
     let read_header = rest.len() < input.len();
     // The side has to come from the starting position, not the ply parity: a
     // handicap record has White at every odd ply (R-HC-001).

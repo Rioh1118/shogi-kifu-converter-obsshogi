@@ -70,31 +70,31 @@ pub(super) fn end_of_line(input: &str) -> IResult<&str, &str, VerboseError<&str>
 /// people read (R-KI2-001), and what people paste is padded either way.
 const SPACES: [char; 3] = [' ', '\t', '　'];
 
-/// Whether `head` is the beginning of a line the reader has a shape for: a
-/// numbered KIF line, a KI2 run, a comment, a bookmark, a `#` note, a `変化：`
-/// header, a `まで…` outcome.
-fn opens_a_line(head: &str) -> bool {
-    head.starts_with(['*', '&', '#'])
-        || opens_a_ki2_move(head)
-        || opens_a_branch_header(head)
-        || head.starts_with("まで")
-        || opens_a_numbered_line(head)
+/// The shapes of the format being read.
+///
+/// The header block, the board and the side-to-move line are the same in KIF
+/// and KI2, but what a line of one of them can have swallowed is not: KIF puts
+/// its moves on numbered lines, KI2 on `▲`/`△` runs. A reader that looks for
+/// both finds the other format's shape in this one's prose — `※▲２六歩が本筋`
+/// after a KIF move, which is a note and not a line — and refuses records with
+/// nothing wrong with them.
+///
+/// So each reader says what its own lines look like, and this module holds only
+/// what they share.
+#[derive(Clone, Copy)]
+pub(super) struct LineShapes {
+    /// Whether a header value carries a line of this format. A header value is
+    /// free text (R-KIF-004), so this is about what the text carries rather than
+    /// where it stops — see [`information_line_keyvalue`].
+    pub(super) carries_a_line: fn(&str) -> bool,
+    /// Whether text that starts where a line starts opens one.
+    pub(super) opens_a_line: fn(&str) -> bool,
 }
 
-/// Whether `head` is the beginning of a KI2 move.
-///
-/// The whole shape of one, not just the `▲`. Those two characters are how a
-/// commentary marks a side — `▲有利`, `（△の反撃）` — and how the standard
-/// `消費時間` header spells each side's clock. A reader that takes them for a
-/// move refuses records with nothing wrong with them.
-///
-/// [`super::ki2::a_header_value_carrying_moves`] asks a stronger question of a
-/// header value, where one move is not enough to conclude anything.
-fn opens_a_ki2_move(head: &str) -> bool {
-    match head.chars().next() {
-        Some(c @ ('▲' | '△')) => pair(move_to, piece_kind)(&head[c.len_utf8()..]).is_ok(),
-        _ => false,
-    }
+/// The shapes both formats share: a comment, a bookmark, a `#` note, a `変化：`
+/// header, a `まで…` outcome.
+pub(super) fn opens_a_shared_line(head: &str) -> bool {
+    head.starts_with(['*', '&', '#']) || opens_a_branch_header(head) || head.starts_with("まで")
 }
 
 /// Whether `head` is the beginning of a `変化：<N>手` header.
@@ -112,7 +112,7 @@ pub(super) fn opens_a_branch_header(head: &str) -> bool {
 /// The number on its own is not the shape. A `( 0:01)` this reader has no shape
 /// for and a bare `55` both carry digits and neither is a line — what makes one
 /// is a number, then space, then something for the number to be about.
-fn opens_a_numbered_line(head: &str) -> bool {
+pub(super) fn opens_a_numbered_line(head: &str) -> bool {
     let after_digits = head.trim_start_matches(|c: char| c.is_ascii_digit());
     after_digits.len() < head.len()
         && after_digits.starts_with(SPACES)
@@ -122,7 +122,7 @@ fn opens_a_numbered_line(head: &str) -> bool {
 /// Whether `tail` — what is left of a line the reader has finished with —
 /// begins the line that should have been underneath it.
 ///
-/// [`opens_a_line`] asks the same question of text that starts where a line
+/// `shapes.opens_a_line` asks the same question of text that starts where a line
 /// starts; this one asks it of text that starts where a line ends.
 ///
 /// What follows a finished line is one of two things. Either the line below,
@@ -133,14 +133,17 @@ fn opens_a_numbered_line(head: &str) -> bool {
 /// record is missing something.
 ///
 /// What was lost is the newline itself, so whatever sits in its place belongs to
-/// neither line: the shapes are tried once more past a single character.
-fn begins_the_line_below(tail: &str) -> bool {
+/// neither line, and a numbered line is looked for once more past a single
+/// character. Only that one: the shapes a note opens with are exactly the ones a
+/// marker can precede — `※▲２六歩`, `（△の反撃）` — and reading the marker as the
+/// lost newline turns commentary into a record that will not open.
+fn begins_the_line_below(shapes: LineShapes, tail: &str) -> bool {
     let head = tail.trim_start_matches(SPACES);
-    if opens_a_line(head) {
+    if (shapes.opens_a_line)(head) {
         return true;
     }
     match head.chars().next() {
-        Some(c) => opens_a_line(head[c.len_utf8()..].trim_start_matches(SPACES)),
+        Some(c) => opens_a_numbered_line(head[c.len_utf8()..].trim_start_matches(SPACES)),
         None => false,
     }
 }
@@ -162,13 +165,14 @@ fn begins_the_line_below(tail: &str) -> bool {
 /// `alt` that swallows a recoverable error and skips the line whole — which is
 /// the silence this exists to break.
 pub(super) fn ends_here<'a>(
+    shapes: LineShapes,
     line: &'a str,
     rest: &'a str,
 ) -> IResult<&'a str, &'a str, VerboseError<&'a str>> {
     if let Ok(ended) = preceded(space0, end_of_line)(rest) {
         return Ok(ended);
     }
-    if begins_the_line_below(rest) {
+    if begins_the_line_below(shapes, rest) {
         return Err(broken_line(line, "this line runs into the one below it"));
     }
     preceded(not_line_ending, end_of_line)(rest)
@@ -391,14 +395,14 @@ fn information_line_hands(input: &str) -> IResult<&str, Information, VerboseErro
 /// line joined to a header is the same shape as `棋戦：第 3 回` and cannot be
 /// told from it (`research/90-gaps.md` GAP-020).
 fn information_line_keyvalue(
-    carries_a_line: fn(&str) -> bool,
+    shapes: LineShapes,
 ) -> impl FnMut(&str) -> IResult<&str, Information, VerboseError<&str>> {
     move |input| {
         let (rest, (key, value)) = terminated(
             separated_pair(is_not("：\r\n"), tag("："), not_line_ending),
             line_ending,
         )(input)?;
-        if carries_a_line(value) {
+        if (shapes.carries_a_line)(value) {
             return Err(broken_line(input, "this line runs into the one below it"));
         }
         Ok((
@@ -409,13 +413,13 @@ fn information_line_keyvalue(
 }
 
 fn informations(
-    carries_a_line: fn(&str) -> bool,
+    shapes: LineShapes,
 ) -> impl FnMut(&str) -> IResult<&str, InformationData, VerboseError<&str>> {
-    move |input| information_lines(carries_a_line, input)
+    move |input| information_lines(shapes, input)
 }
 
 fn information_lines(
-    carries_a_line: fn(&str) -> bool,
+    shapes: LineShapes,
     input: &str,
 ) -> IResult<&str, InformationData, VerboseError<&str>> {
     map(
@@ -424,7 +428,7 @@ fn information_lines(
             alt((
                 information_line_preset,
                 information_line_hands,
-                information_line_keyvalue(carries_a_line),
+                information_line_keyvalue(shapes),
             )),
         )),
         |v| {
@@ -529,32 +533,38 @@ pub(super) fn move_to(input: &str) -> IResult<&str, Option<PlaceFormat>, Verbose
 /// `opt`, so a line it merely declines is read as one the format has no shape
 /// for and skipped — taking a `後手番` joined with the moves under it with it,
 /// and leaving a tsume that starts from the wrong side and has no moves.
-fn side_to_move_line(input: &str) -> IResult<&str, Color, VerboseError<&str>> {
-    let (rest, color) = alt((
-        value(Color::Black, tag("先手番")),
-        value(Color::White, tag("後手番")),
-        value(Color::Black, tag("下手番")),
-        value(Color::White, tag("上手番")),
-    ))(input)?;
-    let (rest, _) = ends_here(input, rest)?;
-    Ok((rest, color))
+fn side_to_move_line(
+    shapes: LineShapes,
+) -> impl FnMut(&str) -> IResult<&str, Option<Color>, VerboseError<&str>> {
+    move |input| {
+        opt(|input| {
+            let (rest, color) = alt((
+                value(Color::Black, tag("先手番")),
+                value(Color::White, tag("後手番")),
+                value(Color::Black, tag("下手番")),
+                value(Color::White, tag("上手番")),
+            ))(input)?;
+            let (rest, _) = ends_here(shapes, input, rest)?;
+            Ok((rest, color))
+        })(input)
+    }
 }
 
 /// Reads the header block, the board and the side-to-move line.
 ///
-/// `carries_a_line` is how the reader says a header value has swallowed a line
-/// of its own format; see [`information_line_keyvalue`]. The block itself is the
-/// same in KIF and KI2, and this is the one place where they differ in it.
+/// `shapes` is how the reader says what its own lines look like; see
+/// [`LineShapes`]. The block itself is the same in KIF and KI2, and the shapes
+/// are the only thing that differs inside it.
 pub(super) fn parse_without_moves(
+    shapes: LineShapes,
     input: &str,
-    carries_a_line: fn(&str) -> bool,
 ) -> IResult<&str, JsonKifuFormat, VerboseError<&str>> {
     map(
         tuple((
-            informations(carries_a_line),
+            informations(shapes),
             opt(board),
-            informations(carries_a_line),
-            opt(side_to_move_line),
+            informations(shapes),
+            side_to_move_line(shapes),
         )),
         |(info1, opt_board, info2, side_to_move)| {
             let info = InformationData::merged(info1, info2);
@@ -762,40 +772,60 @@ mod tests {
 
     /// A reader that finds no line of its own in any header value — what the
     /// KIF side passes, and what these cases are about.
-    fn nothing(_: &str) -> bool {
-        false
-    }
+    const NOTHING: LineShapes = LineShapes {
+        carries_a_line: |_| false,
+        opens_a_line: opens_a_shared_line,
+    };
+
+    /// One that finds a `▲` enough, for the case that has to be refused.
+    const ANY_MOVE_MARK: LineShapes = LineShapes {
+        carries_a_line: |value| value.contains('▲'),
+        opens_a_line: opens_a_shared_line,
+    };
 
     // What separates a line that lost its ending from a line that trails off
     // into something the formats do not define. The right-hand column is what
     // `ends_here` does with it: refuse the record, or skip the rest of the line.
     #[test]
     fn what_counts_as_the_line_below() {
-        for tail in [
-            "   5 ８八銀(79)   ( 0:01/00:00:05)",
-            "\u{0}   5 ８八銀(79)", // the newline arrived as another byte
-            ",   5 ８八銀(79)",
-            " ▲７六歩 △３四歩",
-            "*コメント",
-            "&しおり",
-            "# メモ",
-            "変化：3手",
-            "まで82手で先手の勝ち",
-        ] {
-            assert!(begins_the_line_below(tail), "{tail:?} is a line of its own");
-        }
-        for tail in [
-            "+", // Kifu for Windows marks moves with it
-            "!?",
-            " 評価値+120",
-            "( 0:01)", // a consumed time this reader cannot read
-            "（ 0:01/00:00:01）",
-            " 55",
-            "　※好手",
-            "",
+        use super::super::{ki2, kif};
+        for (shapes, tail) in [
+            (kif::SHAPES, "   5 ８八銀(79)   ( 0:01/00:00:05)"),
+            (kif::SHAPES, "\u{0}   5 ８八銀(79)"), // the newline arrived as another byte
+            (kif::SHAPES, ",   5 ８八銀(79)"),
+            (kif::SHAPES, "*コメント"),
+            (kif::SHAPES, "&しおり"),
+            (kif::SHAPES, "# メモ"),
+            (kif::SHAPES, "変化：3手"),
+            (kif::SHAPES, "まで82手で先手の勝ち"),
+            (ki2::SHAPES, " ▲７六歩 △３四歩"),
+            (ki2::SHAPES, "△８四歩"),
         ] {
             assert!(
-                !begins_the_line_below(tail),
+                begins_the_line_below(shapes, tail),
+                "{tail:?} is a line of its own"
+            );
+        }
+        for (shapes, tail) in [
+            (kif::SHAPES, "+"), // Kifu for Windows marks moves with it
+            (kif::SHAPES, "!?"),
+            (kif::SHAPES, " 評価値+120"),
+            (kif::SHAPES, "( 0:01)"), // a consumed time this reader cannot read
+            (kif::SHAPES, "（ 0:01/00:00:01）"),
+            (kif::SHAPES, " 55"),
+            (kif::SHAPES, "　※好手"),
+            (kif::SHAPES, ""),
+            // A KIF numbers its move lines, so a `▲` in one is prose.
+            (kif::SHAPES, " ※▲２六歩が本筋"),
+            (kif::SHAPES, " （▲７六歩まで）"),
+            // And in KI2 a move behind a marker is prose too: what the marker
+            // stands in for is a newline, and a note is not one.
+            (ki2::SHAPES, " ※△８四歩の変化"),
+            (ki2::SHAPES, "（△８四歩）"),
+            (ki2::SHAPES, "▲有利"),
+        ] {
+            assert!(
+                !begins_the_line_below(shapes, tail),
                 "{tail:?} is an annotation, and dropping it loses nothing"
             );
         }
@@ -803,31 +833,26 @@ mod tests {
 
     #[test]
     fn parse_information_keyvalue() {
-        assert!(information_line_keyvalue(nothing)("").is_err());
-        assert!(information_line_keyvalue(nothing)("# comment\n").is_err());
-        assert!(information_line_keyvalue(nothing)("key：value with not line ending").is_err());
+        assert!(information_line_keyvalue(NOTHING)("").is_err());
+        assert!(information_line_keyvalue(NOTHING)("# comment\n").is_err());
+        assert!(information_line_keyvalue(NOTHING)("key：value with not line ending").is_err());
         assert_eq!(
             Ok((
                 "",
                 Information::KeyValue(String::from("key"), String::from("value"))
             )),
-            information_line_keyvalue(nothing)("key：value\n")
+            information_line_keyvalue(NOTHING)("key：value\n")
         );
         // And a value the reader does find one in: the line under it was read as
         // part of it, so the record is short by however much that line held.
-        assert!(
-            information_line_keyvalue(|value: &str| value.contains('▲'))(
-                "手合割：平手 ▲７六歩\n"
-            )
-            .is_err()
-        );
+        assert!(information_line_keyvalue(ANY_MOVE_MARK)("手合割：平手 ▲７六歩\n").is_err());
     }
 
     #[test]
     fn parse_informations() {
         assert_eq!(
             Ok(("", InformationData::default())),
-            informations(nothing)("")
+            informations(NOTHING)("")
         );
         assert_eq!(
             Ok((
@@ -839,7 +864,7 @@ mod tests {
                     ..Default::default()
                 }
             )),
-            informations(nothing)("# comment\n# comment：comment\nkey：value\n")
+            informations(NOTHING)("# comment\n# comment：comment\nkey：value\n")
         );
     }
 

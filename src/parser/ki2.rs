@@ -1,6 +1,6 @@
 use super::kakinoki::{
-    broken_line, ends_here, move_comment_line, move_to, not_move_line, parse_without_moves,
-    piece_kind, program_comment_line,
+    broken_line, ends_here, move_comment_line, move_to, not_move_line, opens_a_shared_line,
+    parse_without_moves, piece_kind, program_comment_line, LineShapes,
 };
 use crate::jkf::*;
 use nom::branch::alt;
@@ -93,6 +93,29 @@ fn single_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
 /// opening. A record of a single move that also lost that newline is missed
 /// (`research/90-gaps.md` GAP-020) — the alternative is refusing files with
 /// nothing wrong with them.
+pub(super) const SHAPES: LineShapes = LineShapes {
+    carries_a_line: a_header_value_carrying_moves,
+    opens_a_line: opens_a_ki2_line,
+};
+
+/// What a KI2 line looks like: the shapes both formats have, or a move.
+///
+/// One move is enough here, unlike in a header value: the lines this is asked
+/// about — a `変化：N手` header, a `後手番` — have no free-text role in KI2, so a
+/// move after one is the line below it and not a note about it.
+fn opens_a_ki2_line(head: &str) -> bool {
+    opens_a_shared_line(head) || a_move_starts_here(head)
+}
+
+/// Whether `head` is the beginning of a move.
+///
+/// The whole shape of one, not just the `▲`. Those two characters are how
+/// commentary marks a side — `▲有利`, `（△の反撃）` — and how the standard
+/// `消費時間` header spells each side's clock.
+fn a_move_starts_here(head: &str) -> bool {
+    head.starts_with(['▲', '△']) && single_move(head).is_ok()
+}
+
 fn a_header_value_carrying_moves(value: &str) -> bool {
     value
         .char_indices()
@@ -162,7 +185,7 @@ fn branch_header(input: &str) -> IResult<&str, usize, VerboseError<&str>> {
     // `手` is what the writers put after the number, but nothing requires it of
     // a reader — tsshogi's `branchRegExp` reads the number and stops.
     let (rest, _) = opt(tag("手"))(rest)?;
-    let (rest, _) = ends_here(line, rest)?;
+    let (rest, _) = ends_here(SHAPES, line, rest)?;
     Ok((rest, ply))
 }
 
@@ -334,7 +357,7 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
 /// else is set. Only the reader knows the difference — one consumed a line and
 /// the other did not — so it has to say so here (D1, `parse_kif_str`).
 pub(crate) fn parse(input: &str) -> IResult<&str, (JsonKifuFormat, bool), VerboseError<&str>> {
-    let (rest, mut jkf) = parse_without_moves(input, a_header_value_carrying_moves)?;
+    let (rest, mut jkf) = parse_without_moves(SHAPES, input)?;
     let read_header = rest.len() < input.len();
     // The side has to come from the starting position, not the ply parity: a
     // handicap record has White at every odd ply (R-HC-001).
