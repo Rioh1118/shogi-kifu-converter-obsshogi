@@ -274,8 +274,8 @@ fn a_branch_header_fills_the_line(head: &str) -> bool {
 /// Nor is that character ever a newline. A newline still there is one that was
 /// never lost, and stepping over it reads the line below as this line's
 /// overflow: a record whose only fault is a full-width space before the newline
-/// — which [`space0`] does not take and [`SPACES`] does — is refused whole, with
-/// an error naming a line it does not run into.
+/// — which `nom`'s `space0` does not take and [`is_padding`] does — is refused
+/// whole, with an error naming a line it does not run into.
 fn begins_the_line_below(shapes: LineShapes, tail: &str) -> bool {
     // A `変化：` here has to be the whole of the line it would begin. Everywhere
     // else the question is asked at the head of a line, where a header followed

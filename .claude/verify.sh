@@ -28,4 +28,10 @@ step "cargo fmt" cargo fmt --all --check
 step "cargo clippy" cargo clippy --all-targets --all-features -- -D warnings
 step "cargo test" cargo test --all-features
 
+# rustdoc も警告を落とす。`-D warnings` は clippy にしか掛かっておらず、
+# 消した項目を指し続ける doc リンクが3回コミットゲートを素通りした
+# （`[SPACES]` は R7-05 で消えた定数を R8 まで指していた）。
+# `--document-private-items` が要る。壊れるのはほぼ private 項目へのリンク。
+step "cargo doc" env RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items --all-features
+
 exit "$failed"

@@ -135,7 +135,7 @@ fn a_move_run_fills_the_line(head: &str) -> bool {
 /// the line under it.
 ///
 /// A header value is free text a user can put anything in (R-KIF-004), so unlike
-/// [`ends_here`](super::kakinoki::ends_here) there is no point at which the line
+/// [`ends_here`] there is no point at which the line
 /// ought to have ended: the question is what the text carries, not where it
 /// stops. A KI2 record whose starting position lost its newline puts the whole
 /// game in one.
@@ -163,7 +163,7 @@ fn a_move_run_fills_the_line(head: &str) -> bool {
 /// take 19.6 s inside the scan the consumer runs over a whole directory at
 /// start-up (R-REQ-002).
 ///
-/// [`ATTEMPTS`] of them, because the marks are not all move starts. A move reads
+/// A bounded number of them (`ATTEMPTS` below), because the marks are not all move starts. A move reads
 /// the comments under it as its own ([`single_move`]), so the last move of a run
 /// swallows a `*` line and any mark inside it; a run of two then begins three
 /// marks from the end rather than two. It also means a value with a long enough

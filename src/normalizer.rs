@@ -190,7 +190,7 @@ impl JsonKifuFormat {
     /// (R-NOT-005).
     ///
     /// `from` is worked out from the position only where the record wrote an
-    /// origin it could not read — [`ORIGIN_UNSTATED`], the square off the board.
+    /// origin it could not read — `ORIGIN_UNSTATED`, the square off the board.
     /// A `from` that is simply absent is a drop (R-JKF-003) and stays absent.
     ///
     /// `relative` is filled in only when `infer_relative` is set, which

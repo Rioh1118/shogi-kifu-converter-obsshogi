@@ -1,4 +1,4 @@
-//! [`JsonKifuFormat`](crate::jkf::JsonKifuFormat) types
+//! [`JsonKifuFormat`] types
 //!
 //! Reference: [https://apps.81.la/json-kifu-format/docs/modules/Formats.html](https://apps.81.la/json-kifu-format/docs/modules/Formats.html)
 
