@@ -108,7 +108,7 @@ pub(super) const SIDE_MARKS: [(char, Color); 2] = [('▲', Color::Black), ('△'
 /// Line endings are not padding. Whatever else this takes, it must not take
 /// those: [`begins_the_line_below`] steps over one character looking for the
 /// newline that was lost, and a newline that is still there was never lost.
-pub(super) fn is_padding(c: char) -> bool {
+pub(crate) fn is_padding(c: char) -> bool {
     c.is_whitespace() && !crate::notation::LINE_ENDS.contains(&c)
 }
 
@@ -464,6 +464,20 @@ fn comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
     )(input)
 }
 
+/// Where in the record a skip is being asked to run.
+///
+/// The board is read once, by `parse_without_moves`, so the shapes it is made of
+/// only have to be protected until the first move is read. Asking the same
+/// question everywhere would refuse `|先手|後手|` and `+123` after the moves,
+/// where they cannot be a board and the format has always allowed them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Position {
+    /// Before the first move: the opening block may still be arriving.
+    WhereABoardCouldStill,
+    /// Past it.
+    PastTheOpeningBlock,
+}
+
 /// A line that is none of the shapes the move list is made of, skipped whole.
 ///
 /// Asked past the indentation ([`padding`]), because what a line is does not
@@ -487,7 +501,10 @@ fn comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
 /// the newline of a *blank* line, takes the line after it as this line's
 /// content, and swallows two lines where one was meant — so a blank line in the
 /// middle of a record destroys the move that follows it.
-pub(super) fn not_move_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
+pub(super) fn not_move_line(
+    where_it_is: Position,
+    input: &str,
+) -> IResult<&str, &str, VerboseError<&str>> {
     // Asked past the indentation. What a line *is* does not change with how far
     // in it starts (R-KIF-008 writes its move lines three columns in), so a
     // reader that looks only at column 0 takes an indented `*` comment or
@@ -499,16 +516,27 @@ pub(super) fn not_move_line(input: &str) -> IResult<&str, &str, VerboseError<&st
     // would make a line one reader skips and the other keeps.
     let head = input.trim_start_matches(is_padding);
     satisfy(|c| {
-        // `|` and `+` open the rows and the frame of a board diagram
-        // (R-KIF-014 / D6). A record with a board reaches the reader through no
-        // other path (`research/90-gaps.md` GAP-007), so skipping one of its
-        // lines takes the whole position — the reader comes back with an empty
-        // 平手 and the writer saves that over the original (D4). Left here, the
-        // leftover-input check names the line that could not be read (D1).
-        !matches!(c, '*' | '&' | '|' | '+')
+        !matches!(c, '*' | '&')
             && !crate::notation::LINE_ENDS.contains(&c)
             && !SIDE_MARKS.iter().any(|(mark, _)| *mark == c)
     })(head)?;
+    // `|` and `+` open the rows and the frame of a board diagram
+    // (R-KIF-014 / D6), and a record with a board reaches the reader through no
+    // other path (`research/90-gaps.md` GAP-007) — so skipping one of its lines
+    // takes the whole position, and the writer saves an empty 平手 over the
+    // original (D4). Left where the board could still be, the leftover-input
+    // check names the line that could not be read (D1).
+    //
+    // Only there. The board is read by `parse_without_moves`, so once a move has
+    // been read no `|` or `+` line can be a piece of one, and refusing them
+    // buys nothing — it just drops `|先手|後手|` and `+123` from records the
+    // format has always allowed.
+    if where_it_is == Position::WhereABoardCouldStill && head.starts_with(['|', '+']) {
+        return Err(nom::Err::Error(VerboseError::from_error_kind(
+            input,
+            ErrorKind::Not,
+        )));
+    }
     if opens_a_numbered_line(head) {
         return Err(nom::Err::Error(VerboseError::from_error_kind(
             input,
@@ -631,6 +659,12 @@ fn information_value_hand(input: &str) -> IResult<&str, Hand, VerboseError<&str>
 }
 
 fn information_value_preset(input: &str) -> IResult<&str, Information, VerboseError<&str>> {
+    // The padding in front of the value belongs to the value, the same as the
+    // padding behind it and the padding around the key. Left out, `手合割： 香落ち`
+    // falls to the key-value rule and the board is 平手 — where Black opens and
+    // the upper hand does not (R-HC-001 / R-RULE-006), so every side in the game
+    // is the wrong one. tsshogi's `readHandicap` trims the value.
+    let (input, _) = padding(input)?;
     // Longest name first, or `香落ち` would swallow the tail of `右香落ち`.
     let named = crate::handicap::names_longest_first()
         .into_iter()
@@ -1104,13 +1138,13 @@ mod tests {
     fn a_skipped_line_never_swallows_the_line_after_it() {
         assert_eq!(
             Ok(("   2 ３四歩(33)\n", "変化：2")),
-            not_move_line("変化：2\n   2 ３四歩(33)\n")
+            not_move_line(Position::PastTheOpeningBlock, "変化：2\n   2 ３四歩(33)\n")
         );
-        assert!(not_move_line("\n   2 ３四歩(33)\n").is_err());
-        assert!(not_move_line("\r\n   2 ３四歩(33)\n").is_err());
+        assert!(not_move_line(Position::PastTheOpeningBlock, "\n   2 ３四歩(33)\n").is_err());
+        assert!(not_move_line(Position::PastTheOpeningBlock, "\r\n   2 ３四歩(33)\n").is_err());
         // Padding in front of a blank line does not make it a line with
         // something on it.
-        assert!(not_move_line("　\t \n   2 ３四歩(33)\n").is_err());
+        assert!(not_move_line(Position::PastTheOpeningBlock, "　\t \n   2 ３四歩(33)\n").is_err());
     }
 
     // What a line is does not change with how far in it starts. KIF writes its
@@ -1172,10 +1206,18 @@ mod tests {
 
     #[test]
     fn parse_not_move_line() {
-        assert!(not_move_line("").is_err());
-        assert!(not_move_line("* comment line\n").is_err());
-        assert!(not_move_line("手数----指手---------消費時間--\n").is_ok());
-        assert!(not_move_line("1 ７六歩(77) ( 0:16/00:00:16)").is_err());
+        assert!(not_move_line(Position::PastTheOpeningBlock, "").is_err());
+        assert!(not_move_line(Position::PastTheOpeningBlock, "* comment line\n").is_err());
+        assert!(not_move_line(
+            Position::PastTheOpeningBlock,
+            "手数----指手---------消費時間--\n"
+        )
+        .is_ok());
+        assert!(not_move_line(
+            Position::PastTheOpeningBlock,
+            "1 ７六歩(77) ( 0:16/00:00:16)"
+        )
+        .is_err());
     }
 
     #[test]
@@ -1586,7 +1628,7 @@ mod tests {
     // anything else broken about the diagram is reported (D1).
     #[test]
     fn a_board_is_read_or_reported_but_never_skipped() {
-        use crate::parser::parse_kif_str;
+        use crate::parser::{parse_ki2_str, parse_kif_str};
         const ROWS: [&str; 12] = [
             "  ９ ８ ７ ６ ５ ４ ３ ２ １",
             "+---------------------------+",
@@ -1651,6 +1693,31 @@ mod tests {
         // Including one that stops in the middle of the file.
         let cut: Vec<String> = ROWS[..6].iter().map(|l| format!("{l}\n")).collect();
         assert!(parse_kif_str(&record(&cut)).is_err(), "a diagram cut short");
+
+        // Past the first move a `|` or `+` line cannot be a piece of a board —
+        // the board is read once, before them — so refusing one there buys
+        // nothing and drops records the format has always allowed.
+        const PLAYED: &str = concat!(
+            "手合割：平手\n手数----指手---------消費時間--\n",
+            "   1 ７六歩(77)\n   2 ８四歩(83)\n",
+        );
+        for line in ["|先手|後手|", "+123", "+-+-+", "+7776FU"] {
+            assert!(
+                parse_kif_str(&format!("{PLAYED}{line}\n")).is_ok(),
+                "{line:?} after the moves"
+            );
+            assert!(
+                parse_kif_str(&format!(
+                    "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n{line}\n   2 ８四歩(83)\n"
+                ))
+                .is_ok(),
+                "{line:?} between the moves"
+            );
+            assert!(
+                parse_ki2_str(&format!("手合割：平手\n▲７六歩 △８四歩\n{line}\n")).is_ok(),
+                "{line:?} in a KI2"
+            );
+        }
     }
 
     // R-KIF-014 asks a *writer* to spell an empty hand `なし`. A reader that
@@ -1895,6 +1962,27 @@ mod tests {
                 Preset::PresetKY,
                 before_colon.initial.expect("a position").preset,
                 "手合割{pad:?}："
+            );
+            // And on the value's side of the colon. A handicap that falls to
+            // the key-value rule leaves the board at 平手, where Black opens and
+            // the upper hand does not (R-HC-001 / R-RULE-006).
+            let after_colon = parse_kif_str(&format!(
+                "手合割：{pad}香落ち\n手数----指手---------消費時間--\n   1 ３四歩(33)\n"
+            ))
+            .unwrap_or_else(|e| panic!("手合割：{pad:?}香落ち: {e}"));
+            assert_eq!(
+                Preset::PresetKY,
+                after_colon.initial.expect("a position").preset,
+                "手合割：{pad:?}香落ち"
+            );
+            assert_eq!(
+                Color::White,
+                after_colon.moves[1].move_.expect("a move").color,
+                "手合割：{pad:?}香落ち: the handicap went, and the sides with it"
+            );
+            assert!(
+                crate::handicap::is_a_known_name(&format!("{pad}香落ち")),
+                "{pad:?}: the writer would drop the preset line the reader read (D16)"
             );
             let key_padded = parse_kif_str(&format!(
                 "棋戦{pad}：竜王戦\n手数----指手---------消費時間--\n   1 ７六歩(77)\n"

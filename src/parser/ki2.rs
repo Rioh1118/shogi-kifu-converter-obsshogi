@@ -2,7 +2,7 @@ use super::kakinoki::{
     a_branch_header_is_all_the_line_says, branch_header_ply, broken_line,
     comments_on_the_starting_position, ends_here, is_padding, move_comment_line, move_to,
     not_move_line, opens_a_shared_line, parse_without_moves, piece_kind, program_comment_line,
-    LineShapes, NOTE_MARKERS, SIDE_MARKS,
+    LineShapes, Position, NOTE_MARKERS, SIDE_MARKS,
 };
 use crate::jkf::*;
 use crate::notation::LINE_ENDS;
@@ -303,7 +303,9 @@ fn move_run(
                 // one here as well, and a record that reads as `.kif` has to
                 // read as `.ki2` (D18). Everything the reader has a shape for
                 // is left where it is.
-                nom::combinator::recognize(a_line_only_prose_opens),
+                nom::combinator::recognize(|input| {
+                    a_line_only_prose_opens(Position::PastTheOpeningBlock, input)
+                }),
             )))(input)?;
             // A comment before any move of a run belongs to a node of its own:
             // that is what `write_line` produces for a JKF node carrying only
@@ -355,7 +357,10 @@ fn move_run(
 /// line can throw moves away — the silent loss D1 exists to remove. A line
 /// carrying `▲` or `△` is therefore never skippable, and the leftover-input
 /// check reports it instead.
-fn a_line_only_prose_opens(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
+fn a_line_only_prose_opens(
+    where_it_is: Position,
+    input: &str,
+) -> IResult<&str, &str, VerboseError<&str>> {
     // Past the padding, the same as `begins_the_line_below` looks past it. A
     // `変化：` one tab in is still a `変化：`, and asking from the raw start
     // hands it to the skip below — the branch is gone and its moves carry on as
@@ -366,7 +371,7 @@ fn a_line_only_prose_opens(input: &str) -> IResult<&str, &str, VerboseError<&str
             nom::error::ErrorKind::Not,
         )));
     }
-    let (rest, line) = not_move_line(input)?;
+    let (rest, line) = not_move_line(where_it_is, input)?;
     if line.contains(|c| SIDE_MARKS.iter().any(|(mark, _)| *mark == c)) {
         return Err(nom::Err::Error(VerboseError::from_error_kind(
             input,
@@ -448,7 +453,9 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
         match alt((
             nom::combinator::recognize(branch_header),
             nom::combinator::recognize(program_comment_line),
-            nom::combinator::recognize(a_line_only_prose_opens),
+            nom::combinator::recognize(|input| {
+                a_line_only_prose_opens(Position::WhereABoardCouldStill, input)
+            }),
             line_ending,
         ))(input)
         {
@@ -525,10 +532,9 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
         // read here rather than skipped because it is a shape (R-KIF-002).
         // `not_move_line` under the skip consumes a line at a time, so this
         // cannot spin.
-        match alt((
-            nom::combinator::recognize(program_comment_line),
-            a_line_only_prose_opens,
-        ))(input)
+        match alt((nom::combinator::recognize(program_comment_line), |input| {
+            a_line_only_prose_opens(Position::PastTheOpeningBlock, input)
+        }))(input)
         {
             Ok((rest, _)) => input = rest,
             Err(_) => break,

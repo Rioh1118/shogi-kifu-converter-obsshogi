@@ -158,6 +158,11 @@ pub(crate) const OTHER_NAME: &str = "その他";
 /// other than that reader, which leaves `header` alone for the names it folds —
 /// and then the record's own `initial` is the one to write (D16).
 pub(crate) fn is_a_known_name(name: &str) -> bool {
+    // Trimmed, because the reader folds a padded value too: `手合割： 香落ち`
+    // reaches `initial` as `PresetKY`, and a gate that answers `false` for the
+    // string `header` happens to hold would drop the preset line from a record
+    // whose preset the reader *did* read (D16).
+    let name = name.trim_matches(crate::parser::is_padding);
     name == OTHER_NAME || HANDICAPS.iter().any(|h| h.kif_name == name)
 }
 

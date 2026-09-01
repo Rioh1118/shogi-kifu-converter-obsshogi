@@ -2,7 +2,7 @@ use super::kakinoki::{
     a_branch_header_is_all_the_line_says, blank_line, branch_header_ply, broken_line,
     comments_on_the_starting_position, ends_here, is_padding, move_comment_line, move_to,
     not_move_line, opens_a_branch_header, opens_a_numbered_line, opens_a_shared_line, padding,
-    parse_without_moves, piece_kind, LineShapes,
+    parse_without_moves, piece_kind, LineShapes, Position,
 };
 use crate::jkf::*;
 use nom::branch::alt;
@@ -127,7 +127,9 @@ fn branch_header_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
 /// branch cannot come before the moves it is an alternative to, and one written
 /// there anyway is what tsshogi skips as well.
 fn skippable_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
-    alt((blank_line, branch_header_line, |input| not_move_line(input)))(input)
+    alt((blank_line, branch_header_line, |input| {
+        not_move_line(Position::WhereABoardCouldStill, input)
+    }))(input)
 }
 
 /// The same, except that a `変化：` line is left where it is.
@@ -136,14 +138,17 @@ fn skippable_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
 /// that knows whether a run follows. A line that merely looks like one is
 /// declined too: a header the reader refuses ([`branch_header_line`]) has to
 /// reach that loop to be refused, not be skipped as unreadable prose.
-fn skippable_line_except_a_branch_header(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
+fn skippable_line_except_a_branch_header(
+    where_it_is: Position,
+    input: &str,
+) -> IResult<&str, &str, VerboseError<&str>> {
     if opens_a_branch_header(input.trim_start_matches(is_padding)) {
         return Err(nom::Err::Error(VerboseError::from_error_kind(
             input,
             nom::error::ErrorKind::Not,
         )));
     }
-    alt((blank_line, not_move_line))(input)
+    alt((blank_line, |input| not_move_line(where_it_is, input)))(input)
 }
 
 /// Skips the blank lines and `#` lines that may sit between two moves of a run
@@ -398,7 +403,14 @@ fn moves_with_index(
             Err(err) => return Err(err),
         }
     }
-    let (input, _) = opt(skippable_line_except_a_branch_header)(input)?;
+    // A run that read nothing has not passed the opening block yet, so the
+    // shapes a board is made of are still worth keeping (`not_move_line`).
+    let where_it_is = if out.is_empty() {
+        Position::WhereABoardCouldStill
+    } else {
+        Position::PastTheOpeningBlock
+    };
+    let (input, _) = opt(|input| skippable_line_except_a_branch_header(where_it_is, input))(input)?;
     Ok((input, (first_ply, out)))
 }
 
@@ -488,13 +500,27 @@ fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Ver
 
     let (input, _) = many0(skippable_line)(input)?;
     let (mut input, main) = main_moves(start, input)?;
+    // Where the record is, for the skips below. A board is read once, by
+    // `parse_without_moves`, and until a move has been read the lines it is made
+    // of may still be arriving — so a `|` or `+` line before the first move is
+    // a board this reader could not take, and one after it cannot be (D1,
+    // GAP-007). See `not_move_line`.
+    let where_it_is = if main
+        .iter()
+        .any(|mf| mf.move_.is_some() || mf.special.is_some())
+    {
+        Position::PastTheOpeningBlock
+    } else {
+        Position::WhereABoardCouldStill
+    };
     let mut forks = Vec::new();
     // One `変化：N手` header and the run under it per turn. Reading them one at a
     // time is what makes "this header has no moves under it" answerable: a skip
     // that takes headers along the way leaves nothing to ask about, and a branch
     // goes missing without a word.
     loop {
-        let (rest, _) = many0(skippable_line_except_a_branch_header)(input)?;
+        let (rest, _) =
+            many0(|input| skippable_line_except_a_branch_header(where_it_is, input))(input)?;
         // Headers in a row, taken as one. KIF does not read the declaration at
         // all — the tree comes from the ply numbers (D3) — so a second `変化：`
         // over the first is a spare line, not a branch that went missing.
@@ -504,7 +530,10 @@ fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Ver
             match branch_header_line(rest) {
                 Ok((after, line)) => {
                     header = Some(line);
-                    let (after, _) = many0(skippable_line_except_a_branch_header)(after)?;
+                    let (after, _) =
+                        many0(|input| skippable_line_except_a_branch_header(where_it_is, input))(
+                            after,
+                        )?;
                     rest = after;
                 }
                 // The header is there and cannot be read — it ran into the moves
