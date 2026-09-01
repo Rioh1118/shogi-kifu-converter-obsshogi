@@ -155,14 +155,25 @@ fn a_move_run_fills_the_line(head: &str) -> bool {
 /// A record whose whole game is one move, or a note that ends on its second
 /// move, is still missed or refused (`research/90-gaps.md` GAP-020). Free text
 /// and a lost newline are the same characters; this is where the line is drawn.
+///
+/// One place is asked, not every mark in the value. A run that reaches the end
+/// puts its last move at the last mark and the one before it at the mark before
+/// that, so if any run answers yes that one does. Asking at every mark reads the
+/// whole value once per mark, and the value this exists for is a record that put
+/// its whole game on one line: 41 KB of KI2 took 19.6 s, inside the scan the
+/// consumer runs over a whole directory at start-up (R-REQ-002).
 fn a_header_value_carrying_moves(value: &str) -> bool {
-    value
+    let (second_from_last, _) = value
         .char_indices()
         .filter(|(_, c)| SIDE_MARKS.iter().any(|(mark, _)| mark == c))
-        .any(|(i, _)| match many1(single_move)(&value[i..]) {
-            Ok((rest, moves)) => moves.len() >= 2 && rest.trim().is_empty(),
-            Err(_) => false,
-        })
+        .fold((None, None), |(_, last), (i, _)| (last, Some(i)));
+    let Some(i) = second_from_last else {
+        return false;
+    };
+    matches!(
+        many1(single_move)(&value[i..]),
+        Ok((rest, moves)) if moves.len() >= 2 && rest.trim().is_empty()
+    )
 }
 
 /// Reads the `まで<N>手で…` line that KI2 uses instead of an outcome move.
@@ -733,6 +744,31 @@ mod tests {
                 "{line:?} was read as a note, and what it held is gone"
             );
         }
+    }
+
+    // The value this check exists for is a whole game on one line, and the
+    // consumer meets it inside a scan of a whole directory at start-up
+    // (R-REQ-002). Asking the question once per mark made that 19.6 s for 41 KB,
+    // and the record still came back `Ok` — nothing in a log to explain the
+    // pause. The bound is loose on purpose: it is here to catch a quadratic
+    // walk, not to measure the machine.
+    #[test]
+    fn a_header_value_holding_a_whole_game_is_read_in_one_pass() {
+        use crate::parser::parse_ki2_str;
+        let mut src = String::from("手合割：平手 ");
+        for i in 0..3200 {
+            src.push_str(if i % 2 == 0 {
+                "▲７六歩 "
+            } else {
+                "△３四歩 "
+            });
+        }
+        src.push_str("まで3200手で投了\n");
+        let started = std::time::Instant::now();
+        let read = parse_ki2_str(&src);
+        let took = started.elapsed();
+        assert!(read.is_ok(), "{:?}", read.err());
+        assert!(took < std::time::Duration::from_secs(1), "{took:?}");
     }
 
     #[test]
