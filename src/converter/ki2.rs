@@ -96,18 +96,24 @@ fn promotion_was_on_the_table(mv: &MoveMoveFormat) -> bool {
         shogi_core::Square::try_from(&mv.to),
     ) {
         (Ok(from), Ok(to)) => crate::notation::promotion_is_spellable(piece, from, to, color),
-        // A destination off the board is a `同` nothing resolved: past an
-        // outcome the position stops being tracked and `to` stays at (0, 0)
+        // The record stated an origin and the destination is the one that went
+        // missing: a `同` nothing resolved, because past an outcome the position
+        // stops being tracked and `to` stays at (0, 0)
         // (`research/90-gaps.md` GAP-025). R-NOT-005 asks which end of the move
-        // the enemy camp is at, and this move has no end to name.
-        (_, Err(_)) => false,
-        // Only the origin is off the board — `normalizer::ORIGIN_UNSTATED`, the
+        // the enemy camp is at, and this move has no end to name. Nothing is
+        // lost by leaving the word out — the origin the record did state is not
+        // a word, so there is no wording of the record's to keep.
+        (Ok(_), Err(_)) => false,
+        // The origin is off the board — `normalizer::ORIGIN_UNSTATED`, the
         // record never stated one (KI2 has no origins, R-KI2-003) and the
-        // position could not supply it. The rule cannot be asked either, but
-        // here the record may have written the word itself: between dropping a
-        // `不成` it wrote and writing one a known position would not have, the
-        // first loses something and the second does not (D4).
-        (Err(_), Ok(_)) => piece.promote().is_some(),
+        // position could not supply it. The rule cannot be asked either way, but
+        // here the record may have written `不成` itself, and that word is all
+        // there is: between dropping one it wrote and writing one a known
+        // position would not have, the first loses something and the second does
+        // not (D4). Both arms, because a `同` read from KI2 has neither end —
+        // asking about the destination alone drops the word this reader's own
+        // output put there.
+        (Err(_), Ok(_)) | (Err(_), Err(_)) => piece.promote().is_some(),
     }
 }
 
@@ -887,6 +893,22 @@ mod tests {
         let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
         assert!(ki2.contains("▲同銀"), "{ki2:?}");
         assert!(!ki2.contains("不成"), "{ki2:?}");
+    }
+
+    // A `同` read from KI2 has neither end: KI2 states no origin (R-KI2-003) and
+    // past an outcome nothing resolves the destination either (GAP-025). The
+    // record's own `不成` is then the only thing that says what the move did
+    // (D4), so a writer that asks only about the destination writes a file
+    // shorter than the one it read — and the consumer saves over the original
+    // (R-REQ-002).
+    #[test]
+    fn a_同不成_read_from_ki2_keeps_the_word_the_record_wrote() {
+        let ki2 = "手合割：平手\n▲７六歩 △３四歩\nまで2手で中断\n▲９九角 △同銀不成\n";
+        let jkf = crate::parser::parse_ki2_str(ki2).expect("parses");
+        let written = jkf.try_to_ki2_owned().expect("writes KI2");
+        assert!(written.contains("△同銀不成"), "{written:?}");
+        let back = crate::parser::parse_ki2_str(&written).expect("reads back");
+        assert_eq!(jkf, back, "{written:?}");
     }
 
     /// The KI2 for a record of one move, spelled as JKF.
