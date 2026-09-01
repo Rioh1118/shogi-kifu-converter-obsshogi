@@ -1,7 +1,7 @@
 use super::kakinoki::{
-    blank_line, broken_line, ends_here, move_comment_line, move_to, not_move_line,
-    opens_a_branch_header, opens_a_shared_line, parse_without_moves, piece_kind, LineShapes,
-    SPACES,
+    blank_line, broken_line, comments_on_the_starting_position, ends_here, move_comment_line,
+    move_to, not_move_line, opens_a_branch_header, opens_a_shared_line, parse_without_moves,
+    piece_kind, LineShapes, SPACES,
 };
 use crate::jkf::*;
 use nom::branch::alt;
@@ -523,13 +523,14 @@ fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Ver
 /// else is set. Only the reader knows the difference — one consumed a line and
 /// the other did not — so it has to say so here (D1, `parse_kif_str`).
 pub(crate) fn parse(input: &str) -> IResult<&str, (JsonKifuFormat, bool), VerboseError<&str>> {
-    let (rest, mut jkf) = parse_without_moves(SHAPES, input)?;
+    let (rest, (mut jkf, header_comments)) = parse_without_moves(SHAPES, input)?;
     let read_header = rest.len() < input.len();
     // The side has to come from the starting position, not the ply parity: a
     // handicap record has White at every odd ply (R-HC-001).
     let start = crate::handicap::starting_side(jkf.initial.as_ref());
     let (input, moves) = entire_moves(start, rest)?;
     jkf.moves.extend(moves);
+    comments_on_the_starting_position(header_comments, &mut jkf.moves);
     Ok((input, (jkf, read_header)))
 }
 

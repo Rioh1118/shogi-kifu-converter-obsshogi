@@ -15,6 +15,9 @@ enum Information {
     HandBlack(Hand),
     HandWhite(Hand),
     KeyValue(String, String),
+    /// A comment or a bookmark standing among the header lines
+    /// (R-KIF-010 / R-KIF-011).
+    Comment(String),
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -22,6 +25,7 @@ struct InformationData {
     preset: Option<Preset>,
     hands: [Hand; 2],
     map: HashMap<String, String>,
+    comments: Vec<String>,
 }
 
 impl InformationData {
@@ -30,6 +34,7 @@ impl InformationData {
             preset: lhs.preset.or(rhs.preset),
             hands: Self::merged_hands(lhs.hands, rhs.hands),
             map: lhs.map.into_iter().chain(rhs.map).collect(),
+            comments: lhs.comments.into_iter().chain(rhs.comments).collect(),
         }
     }
     fn merged_hands(lhs: [Hand; 2], rhs: [Hand; 2]) -> [Hand; 2] {
@@ -458,6 +463,9 @@ fn information_line_keyvalue(
     shapes: LineShapes,
 ) -> impl FnMut(&str) -> IResult<&str, Information, VerboseError<&str>> {
     move |input| {
+        // Belt and braces: `information_lines` reads these as comments before it
+        // gets here, and a reordering of that `alt` would otherwise put them
+        // back into `header` without a word.
         if input.starts_with(['*', '&']) {
             return Err(nom::Err::Error(VerboseError::from_error_kind(
                 input,
@@ -492,6 +500,12 @@ fn information_lines(
         many0(preceded(
             many0(comment_line),
             alt((
+                // Before the key-value rule, which would file the line under a
+                // key nobody wrote, and *as one of the alternatives* rather than
+                // as a guard: a guard that refuses ends `many0`, and everything
+                // below the comment — the rest of the header, the board, the
+                // `手合割` — is then read by nobody (R-KIF-004, R-HC-001).
+                map(move_comment_line, Information::Comment),
                 information_line_preset,
                 information_line_hands,
                 information_line_keyvalue(shapes),
@@ -506,6 +520,7 @@ fn information_lines(
                     Information::KeyValue(k, v) => {
                         acc.map.insert(k.to_owned(), v.to_owned());
                     }
+                    Information::Comment(c) => acc.comments.push(c.to_owned()),
                 }
                 acc
             })
@@ -621,10 +636,13 @@ fn side_to_move_line(
 /// `shapes` is how the reader says what its own lines look like; see
 /// [`LineShapes`]. The block itself is the same in KIF and KI2, and the shapes
 /// are the only thing that differs inside it.
+///
+/// Returns the comments that stood among those lines as well — see
+/// [`comments_on_the_starting_position`].
 pub(super) fn parse_without_moves(
     shapes: LineShapes,
     input: &str,
-) -> IResult<&str, JsonKifuFormat, VerboseError<&str>> {
+) -> IResult<&str, (JsonKifuFormat, Vec<String>), VerboseError<&str>> {
     map(
         tuple((
             informations(shapes),
@@ -649,13 +667,37 @@ pub(super) fn parse_without_moves(
                     data: None,
                 })
             };
-            JsonKifuFormat {
-                header: info.map,
-                initial,
-                moves: Vec::new(),
-            }
+            (
+                JsonKifuFormat {
+                    header: info.map,
+                    initial,
+                    moves: Vec::new(),
+                },
+                // R-KIF-010: a comment above the first move belongs to the
+                // starting position. The caller owns `moves`, so it puts them
+                // there.
+                info.comments,
+            )
         },
     )(input)
+}
+
+/// Puts the comments that stood among the header lines in front of the ones the
+/// move reader found above the first move — they are all comments on the
+/// starting position (R-KIF-010), and the file's order is the order they were
+/// written in.
+pub(super) fn comments_on_the_starting_position(
+    from_the_header: Vec<String>,
+    moves: &mut [MoveFormat],
+) {
+    if from_the_header.is_empty() {
+        return;
+    }
+    let Some(first) = moves.first_mut() else {
+        return;
+    };
+    let rest = first.comments.take().unwrap_or_default();
+    first.comments = Some(from_the_header.into_iter().chain(rest).collect());
 }
 
 #[cfg(test)]
@@ -973,6 +1015,42 @@ mod tests {
             .expect("reads");
         assert_eq!(ki2.moves[0].comments, kif.moves[0].comments);
         assert!(kif.header.is_empty(), "{:?}", kif.header);
+    }
+
+    // And it does not end the header block either. A rule that refuses the line
+    // instead of reading it stops `many0`, and everything under the comment —
+    // the rest of the header, the board, the `手合割` — is read by nobody. A
+    // handicap lost that way defaults to 平手, and 平手 has Black moving first
+    // where the record has White (R-HC-001 / R-RULE-006): every side flips.
+    #[test]
+    fn a_comment_among_the_header_lines_does_not_end_the_header() {
+        use crate::parser::{parse_ki2_str, parse_kif_str};
+        for opener in ["*メモ：あ", "&しおり：あ", "# Kifu for Windows"] {
+            let kif = parse_kif_str(&format!(
+                "先手：山田\n{opener}\n後手：田中\n手合割：香落ち\n\
+                 手数----指手---------消費時間--\n   1 ３四歩(33)\n"
+            ))
+            .unwrap_or_else(|e| panic!("{opener}: {e}"));
+            assert_eq!(
+                Some(&String::from("田中")),
+                kif.header.get("後手"),
+                "{opener}: the header under the comment is gone: {:?}",
+                kif.header
+            );
+            let initial = kif.initial.as_ref().expect("a starting position");
+            assert_eq!(Preset::PresetKY, initial.preset, "{opener}");
+            assert_eq!(
+                Color::White,
+                kif.moves[1].move_.as_ref().expect("a move").color,
+                "{opener}: the handicap went, and the sides with it"
+            );
+        }
+        // KI2 has no `手数----` line to end the block with (R-KI2-002), so this
+        // is the only thing standing between a note in its header and the rest
+        // of the record.
+        let ki2 = parse_ki2_str("開始日時：2021\n*（主催：…）\n先手：藤井\n後手：豊島\n▲７六歩\n")
+            .expect("reads");
+        assert_eq!(3, ki2.header.len(), "{:?}", ki2.header);
     }
 
     #[test]
