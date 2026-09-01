@@ -53,22 +53,7 @@ pub trait ToKi2 {
 }
 
 fn write_move_kind<W: Write>(kind: Kind, sink: &mut W) -> Result {
-    match kind {
-        Kind::FU => sink.write_str("歩"),
-        Kind::KY => sink.write_str("香"),
-        Kind::KE => sink.write_str("桂"),
-        Kind::GI => sink.write_str("銀"),
-        Kind::KI => sink.write_str("金"),
-        Kind::KA => sink.write_str("角"),
-        Kind::HI => sink.write_str("飛"),
-        Kind::OU => sink.write_str("玉"),
-        Kind::TO => sink.write_str("と"),
-        Kind::NY => sink.write_str("成香"),
-        Kind::NK => sink.write_str("成桂"),
-        Kind::NG => sink.write_str("成銀"),
-        Kind::UM => sink.write_str("馬"),
-        Kind::RY => sink.write_str("竜"),
-    }?;
+    sink.write_str(crate::notation::move_word(kind))?;
     Ok(())
 }
 

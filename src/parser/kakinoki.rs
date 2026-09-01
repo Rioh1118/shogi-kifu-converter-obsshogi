@@ -1000,6 +1000,37 @@ mod tests {
         );
     }
 
+    // R-NOT-006: a writer uses the standard form only, and both writers are
+    // writing the same notation — so one table, and every entry in it has to be
+    // one the reader takes back. Two hand-written tables is how `to_kif` came to
+    // spell a dragon `龍` and `to_ki2` `竜`; the reader takes both, so only a
+    // round trip through the reader catches a table that drifted.
+    #[test]
+    fn every_move_word_reads_back_as_the_piece_it_names() {
+        for kind in [
+            Kind::FU,
+            Kind::KY,
+            Kind::KE,
+            Kind::GI,
+            Kind::KI,
+            Kind::KA,
+            Kind::HI,
+            Kind::OU,
+            Kind::TO,
+            Kind::NY,
+            Kind::NK,
+            Kind::NG,
+            Kind::UM,
+            Kind::RY,
+        ] {
+            let word = crate::notation::move_word(kind);
+            let (rest, read) =
+                piece_kind(word).unwrap_or_else(|e| panic!("{kind:?} spelled {word:?}: {e:?}"));
+            assert_eq!(kind, read, "{word:?}");
+            assert!(rest.is_empty(), "{word:?} left {rest:?}");
+        }
+    }
+
     #[test]
     fn parse_piece_kind() {
         assert!(piece_kind("").is_err());
