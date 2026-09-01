@@ -204,14 +204,25 @@ fn write_initial<W: Write>(initial: &Option<Initial>, sink: &mut W) -> Result {
 /// things CSA has nowhere to put here. What sits either side of one it does, so
 /// each piece becomes a line of its own rather than the record ending there.
 fn write_comment<W: Write>(comment: &str, sink: &mut W) -> Result {
-    for piece in comment.split(|c| c == ',' || LINE_ENDS.contains(&c)) {
+    // A piece with nothing in it gets no line. A bare `'` is a comment CSA
+    // cannot read back — the reader stops there and the rest of the record goes
+    // with it — and a comment that ends in a newline, which is what a text box
+    // gives you, has one at the end. An empty comment says nothing; the moves
+    // after it do (D4).
+    //
+    // KIF and KI2 write the bare marker instead, because there `*` on its own
+    // reads back as the empty comment it was.
+    for piece in comment
+        .split(|c| c == ',' || LINE_ENDS.contains(&c))
+        .filter(|piece| !piece.is_empty())
+    {
         sink.write_fmt(format_args!("'{piece}\n"))?;
     }
     Ok(())
 }
 
 /// Writes `prefix` and a header value, which CSA gives one line and no more
-/// (R-CSA-004). Returns whether anything was written.
+/// (R-CSA-004), or nothing at all when the value flattens to nothing.
 ///
 /// `,` ends a statement (R-CSA-009) and cannot be spelled in a value the way it
 /// can in a comment — `N+` and `$EVENT` have nowhere to continue onto — so it
@@ -225,22 +236,18 @@ fn write_comment<W: Write>(comment: &str, sink: &mut W) -> Result {
 /// Altering a value is not nothing. It is less than the alternative: a `,` left
 /// in makes that same unreadable file, and D4 puts the record above its
 /// punctuation.
-fn write_header_value<W: Write>(
-    prefix: &str,
-    value: &str,
-    sink: &mut W,
-) -> std::result::Result<bool, ConvertError> {
+fn write_header_value<W: Write>(prefix: &str, value: &str, sink: &mut W) -> Result {
     let value: String = on_one_line(value)
         .chars()
         .map(|c| if c == ',' { '，' } else { c })
         .collect();
     if value.is_empty() {
-        return Ok(false);
+        return Ok(());
     }
     sink.write_str(prefix)?;
     sink.write_str(&value)?;
     sink.write_char('\n')?;
-    Ok(true)
+    Ok(())
 }
 
 fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
@@ -313,19 +320,31 @@ mod tests {
 
         // A newline ends a line as surely as a comma does, and a JKF comment can
         // hold one (nothing in JKF says otherwise, and the consumer builds its
-        // own).
+        // own). A piece with nothing in it gets no line at all: a bare `'` is
+        // what the reader stops on, and a comment out of a text box ends in a
+        // newline.
         let mut jkf = jkf;
-        jkf.moves[1].comments = Some(vec!["ひとつ\nふたつ".to_owned()]);
-        let csa = jkf.try_to_csa_owned().expect("writes CSA");
-        assert_eq!(
-            3,
-            crate::parser::parse_csa_str(&csa)
-                .expect("reads back")
-                .moves
-                .len()
-                - 1,
-            "{csa}"
-        );
+        for comment in [
+            "ひとつ\nふたつ",
+            "感想\n",
+            "\r\n感想",
+            "ひとつ,,ふたつ",
+            ",",
+            "",
+        ] {
+            jkf.moves[1].comments = Some(vec![comment.to_owned()]);
+            let csa = jkf.try_to_csa_owned().expect("writes CSA");
+            assert_eq!(
+                3,
+                crate::parser::parse_csa_str(&csa)
+                    .expect("reads back")
+                    .moves
+                    .len()
+                    - 1,
+                "{comment:?} -> {csa}"
+            );
+        }
+        jkf.moves[1].comments = None;
 
         // A lone `\r` ends a line too, and a value that is nothing but line ends
         // has no line to write at all: `N+` with nothing after it is a file this

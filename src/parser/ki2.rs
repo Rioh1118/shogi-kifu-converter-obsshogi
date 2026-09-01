@@ -1,6 +1,7 @@
 use super::kakinoki::{
-    broken_line, ends_here, move_comment_line, move_to, not_move_line, opens_a_shared_line,
-    parse_without_moves, piece_kind, program_comment_line, LineShapes, SIDE_MARKS,
+    broken_line, ends_here, move_comment_line, move_to, not_move_line, opens_a_branch_header,
+    opens_a_shared_line, parse_without_moves, piece_kind, program_comment_line, LineShapes,
+    SIDE_MARKS,
 };
 use crate::jkf::*;
 use nom::branch::alt;
@@ -164,7 +165,18 @@ fn end_of_game_line(
             .map_or(phrase, |(_, rest)| rest)
             .trim();
         let side_to_move = crate::handicap::side_to_move_at_ply(start, ply);
-        match MoveSpecial::from_ki2_phrase(phrase, side_to_move) {
+        // The outcome word, and then whatever the writer put after it. KIF reads
+        // `まで2手で中断 （▲有利）` — the word owns the line and the note is
+        // skipped — and the same record spelled as KI2 has to read the same way
+        // (D10, D17).
+        let word = MoveSpecial::from_ki2_phrase(phrase, side_to_move).or_else(|| {
+            phrase
+                .split([' ', '　', '（', '(', '※', '【'])
+                .next()
+                .filter(|word| !word.is_empty())
+                .and_then(|word| MoveSpecial::from_ki2_phrase(word, side_to_move))
+        });
+        match word {
             Some(special) => Ok((
                 input,
                 MoveFormat {
@@ -177,10 +189,10 @@ fn end_of_game_line(
             // unconsumed, which ends the move list and drops the `変化：`
             // blocks after it without a word (D1: a record we cannot read has
             // to say so). `Failure` is what `opt` does not swallow.
-            None => Err(nom::Err::Failure(VerboseError::from_error_kind(
+            None => Err(broken_line(
                 line,
-                nom::error::ErrorKind::Tag,
-            ))),
+                "this outcome is not one of the words KI2 has",
+            )),
         }
     }
 }
@@ -194,14 +206,14 @@ fn end_of_game_line(
 /// The header owns the rest of its line. Reading to the end of the line and
 /// dropping what was there takes the first move of the branch with it whenever
 /// the newline between them is lost.
-fn branch_header(input: &str) -> IResult<&str, usize, VerboseError<&str>> {
+fn branch_header(input: &str) -> IResult<&str, (usize, &str), VerboseError<&str>> {
     let (line, _) = many0(line_ending)(input)?;
     let (rest, ply) = preceded(tag("変化："), map_res(digit1, str::parse::<usize>))(line)?;
     // `手` is what the writers put after the number, but nothing requires it of
     // a reader — tsshogi's `branchRegExp` reads the number and stops.
     let (rest, _) = opt(tag("手"))(rest)?;
     let (rest, _) = ends_here(SHAPES, line, rest)?;
-    Ok((rest, ply))
+    Ok((rest, (ply, line)))
 }
 
 /// Reads one line of the record: the moves and any outcome lines among them.
@@ -229,6 +241,12 @@ fn move_run(
                 tag(" "),
                 tag("　"),
                 nom::combinator::recognize(program_comment_line),
+                // A line the format has no shape for — a note between the
+                // header and the moves under it. KIF skips one here as well, and
+                // a record that reads as `.kif` has to read as `.ki2` (D10,
+                // D17). `not_readable_line` keeps the lines that carry moves,
+                // and a `変化：` header belongs to the loop above, not here.
+                nom::combinator::recognize(a_line_no_branch_opens_with),
             )))(input)?;
             // A comment before any move of a run belongs to a node of its own:
             // that is what `write_line` produces for a JKF node carrying only
@@ -275,6 +293,20 @@ fn not_readable_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
         )));
     }
     Ok((rest, line))
+}
+
+/// A line the reader has no shape for, other than a `変化：<N>手` header.
+///
+/// The header is the one line [`moves`] reads for itself: it is what says a
+/// branch starts, and skipping one here would take the branch with it.
+fn a_line_no_branch_opens_with(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
+    if opens_a_branch_header(input) {
+        return Err(nom::Err::Error(VerboseError::from_error_kind(
+            input,
+            nom::error::ErrorKind::Not,
+        )));
+    }
+    not_readable_line(input)
 }
 
 /// Attaches `branch` as an alternative to the move at ply `start_ply`.
@@ -332,15 +364,16 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
     let mut path = Vec::new();
     loop {
         match branch_header(input) {
-            Ok((mut rest, mut start_ply)) => {
+            Ok((mut rest, (mut start_ply, mut header))) => {
                 // Headers in a row are one declaration: the last of them says
                 // which ply the branch leaves, and the ones over it are spare
                 // lines rather than branches that went missing.
                 loop {
                     match branch_header(rest) {
-                        Ok((after, ply)) => {
+                        Ok((after, (ply, line))) => {
                             rest = after;
                             start_ply = ply;
+                            header = line;
                         }
                         // The same as at the top of the loop: a header that ran
                         // into the moves under it is the branch, gone. Taking it
@@ -356,7 +389,7 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
                     // The header says a branch follows. Reading nothing under it
                     // means the branch is gone, and carrying on returns a record
                     // that is a whole branch short without saying so.
-                    return Err(broken_line(input, "a 変化 block with no moves under it"));
+                    return Err(broken_line(header, "a 変化 block with no moves under it"));
                 }
                 attach_branch(&mut out[1..], &mut path, start_ply, branch);
                 input = rest;
