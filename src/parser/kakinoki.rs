@@ -1,7 +1,7 @@
 use crate::jkf::*;
 use nom::branch::alt;
 use nom::bytes::complete::{is_not, tag};
-use nom::character::complete::{line_ending, not_line_ending, one_of, satisfy, space0};
+use nom::character::complete::{line_ending, not_line_ending, one_of, satisfy};
 use nom::combinator::{eof, map, map_res, opt, value};
 use nom::error::{ErrorKind, ParseError, VerboseError};
 use nom::multi::{count, many0, many1};
@@ -110,8 +110,17 @@ pub(super) fn is_padding(c: char) -> bool {
 /// after a KIF move, which is a note and not a line — and refuses records with
 /// nothing wrong with them.
 ///
-/// So each reader says what its own lines look like, and this module holds only
-/// what they share.
+/// So each reader says what its own lines look like, and this module holds what
+/// they share: the header block, the board, the shapes above, and the line
+/// parsers both formats define the same way.
+///
+/// Two of those parsers have one reader each today — `blank_line` (KIF) and
+/// `program_comment_line` (KI2) — because the other format spells the same rule
+/// somewhere else: KIF reads `#` by hand inside `skip_interruptions`, and KI2
+/// skips its blank lines inside `move_run`. They are here because the rule is
+/// shared (R-KIF-002), not because one format owns it. A rule only one format
+/// has does not belong here: reading for both is what refuses records with
+/// nothing wrong with them.
 #[derive(Clone, Copy)]
 pub(super) struct LineShapes {
     /// Whether a header value carries a line of this format. A header value is
@@ -319,12 +328,15 @@ pub(super) fn broken_line<'a>(at: &'a str, what: &'static str) -> nom::Err<Verbo
     })
 }
 
-/// A line with nothing on it but spaces.
+/// A line with nothing on it but padding.
 ///
 /// KIF puts one before each `変化：` block, and R-KIF-002 lets one sit anywhere
-/// in the move list.
+/// in the move list. [`is_padding`] rather than `space0`, so that "nothing on
+/// it" means the same here as everywhere else: a line holding one full-width
+/// space is blank to a person reading it.
 pub(super) fn blank_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
-    terminated(space0, line_ending)(input)
+    let (rest, _) = line_ending(input.trim_start_matches(is_padding))?;
+    Ok((rest, ""))
 }
 
 /// A `#` line: a note from the program that wrote the file (R-KIF-002).
@@ -1193,9 +1205,9 @@ mod tests {
 
     // R-NOT-006: a writer uses the standard form only, and both writers are
     // writing the same notation — so one table, and every entry in it has to be
-    // one the reader takes back. Two hand-written tables is how `to_kif` came to
-    // spell a dragon `龍` and `to_ki2` `竜`; the reader takes both, so only a
-    // round trip through the reader catches a table that drifted.
+    // one the reader takes back. The reader takes the variants too (R-KI2-005),
+    // so a table that drifted still produces readable files; only a round trip
+    // that checks *which* piece comes back says the two writers disagree.
     #[test]
     fn every_move_word_reads_back_as_the_piece_it_names() {
         for kind in [

@@ -59,18 +59,18 @@ pub(crate) const SANYOU_SUJI: [char; 9] = ['１', '２', '３', '４', '５', '�
 /// Numbers 1-10 in kanji. Ranks use 1-9; hand counts reach 18 via `十`.
 pub(crate) const KANSUJI: [char; 10] = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
 
-/// The word a move gives `kind` (R-NOT-006).
+/// The word a move gives `kind` — the standard form of it (R-NOT-006).
 ///
 /// The *move* spelling, in which a promoted minor piece is written out
-/// (`成香` `成桂` `成銀`) rather than squeezed into the one character a board
-/// diagram has room for — see [`board_word`], which is the other table and not
-/// this one (R-KI2-005).
+/// (`成香` `成桂` `成銀`). A board diagram has room for one character per piece
+/// and squeezes it ([`board_word`], R-KIF-014 / D6); nothing else does.
 ///
-/// R-NOT-006 says a writer uses the standard form only and a reader takes every
-/// variant, so this is one table for both writers. Two of them, hand-written,
-/// is how `to_kif` came to write `龍` and `to_ki2` `竜` for the same move: the
-/// reader takes either, so nothing catches it, and the consumer saving one game
-/// as `.kif` and as `.ki2` gets two different files (R-REQ-002).
+/// One table for both writers, because they are writing the same notation.
+/// Two would not be caught by reading the files back: the reader takes every
+/// variant R-NOT-006 lists (R-KI2-005), so a writer that drifted to `竜` where
+/// the other writes `龍` still produces something readable — and the consumer
+/// saving one game as `.kif` and as `.ki2` gets two different files
+/// (R-REQ-002).
 pub(crate) const fn move_word(kind: Kind) -> &'static str {
     match kind {
         Kind::FU => "歩",
@@ -90,11 +90,13 @@ pub(crate) const fn move_word(kind: Kind) -> &'static str {
     }
 }
 
-/// The character a board diagram gives `kind` (R-NOT-006).
+/// The character a board diagram gives `kind`.
 ///
-/// This is the *board* spelling, in which a promoted piece is one character
-/// (`杏` `圭` `全`). A move writes it out instead — [`move_word`], which is a
-/// different table (R-KI2-005).
+/// The *board* spelling, in which a promoted piece is one character
+/// (`杏` `圭` `全`) — not because those are the standard forms (R-NOT-006 has
+/// them the other way round) but because a KIF board diagram is two characters
+/// per square and nine squares per line (R-KIF-014, D6). A move has room for
+/// the standard form and writes it: [`move_word`], the other table.
 pub(crate) const fn board_word(kind: Kind) -> char {
     match kind {
         Kind::FU => '歩',
@@ -183,7 +185,7 @@ impl fmt::Display for MoveText {
                     f,
                     "{}{}打",
                     Coordinate(to),
-                    board_word(pk2k(piece.piece_kind()))
+                    move_word(pk2k(piece.piece_kind()))
                 )
             }
         }
