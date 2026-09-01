@@ -122,9 +122,21 @@ pub(super) fn opens_a_shared_line(head: &str) -> bool {
 ///
 /// The number is what makes it one. `変化：` on its own is two characters a
 /// sentence can open with.
+///
+/// A number this reader cannot use is still a number. The parsers want a
+/// half-width digit right after the colon, but a line spelled `変化：２手` says a
+/// branch starts just as plainly, and this question is asked where the answer
+/// decides whether the line is *kept* — by the line-end rule (D17) and by the
+/// KI2 skip. Reading the narrower shape here is what turns a branch the reader
+/// cannot parse into a branch it never saw: the header is skipped and its moves
+/// carry on as the main line (R-JKF-004). Whether the number can be used is the
+/// parsers' question, and they ask it themselves.
 pub(super) fn opens_a_branch_header(head: &str) -> bool {
     head.strip_prefix("変化：")
-        .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+        .map(|rest| rest.trim_start_matches(SPACES))
+        .is_some_and(|rest| {
+            rest.starts_with(|c: char| c.is_ascii_digit() || ('０'..='９').contains(&c))
+        })
 }
 
 /// Whether `head` is the beginning of a `<手数> <指し手>` line
@@ -842,6 +854,12 @@ mod tests {
             (kif::SHAPES, "まで82手で先手の勝ち"),
             (ki2::SHAPES, " ▲７六歩 △３四歩"),
             (ki2::SHAPES, "△８四歩"),
+            // A branch header this reader cannot parse is still one. Reading
+            // only the half-width spelling here let `変化：２手` through as an
+            // annotation, and the branch under it carried on as the main line.
+            (kif::SHAPES, "変化：２手"),
+            (ki2::SHAPES, "変化：２手"),
+            (kif::SHAPES, "変化： 2手"),
         ] {
             assert!(
                 begins_the_line_below(shapes, tail),

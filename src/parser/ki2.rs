@@ -317,13 +317,8 @@ fn not_readable_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
 /// Skipping one takes what it said with it, and the record comes back `Ok`
 /// without it — an outcome that never happened, or a branch whose moves are
 /// read as the main line carrying on (R-JKF-004).
-///
-/// `変化：` counts here whatever follows it. A spelling this reader cannot read
-/// (`変化：２手` in full-width digits) is still a line saying a branch starts,
-/// and leaving it for the leftover-input check (D1) says so; skipping it hides
-/// a branch inside the main line.
 fn a_line_only_prose_opens(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
-    if input.starts_with("変化：") || opens_a_shared_line(input) {
+    if opens_a_shared_line(input) {
         return Err(nom::Err::Error(VerboseError::from_error_kind(
             input,
             nom::error::ErrorKind::Not,
@@ -670,6 +665,9 @@ mod tests {
             ),
             ("手合割：平手\n▲７六歩\n# メモ\n△３四歩\n", 2),
             ("手合割：平手\n▲７六歩 △３四歩\n解説A\n解説B\n", 2),
+            // `変化：` with no number is a sentence opening with two
+            // characters, which is what KIF makes of it too (D18).
+            ("手合割：平手\n▲７六歩\n変化：ここから\n△３四歩\n", 2),
         ] {
             let jkf = parse_ki2_str(src).unwrap_or_else(|e| panic!("{src:?}: {e}"));
             assert_eq!(moves, jkf.moves.len() - 1, "{src:?}");
