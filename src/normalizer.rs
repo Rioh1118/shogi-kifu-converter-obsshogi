@@ -202,8 +202,13 @@ impl JsonKifuFormat {
     ///
     /// # Errors
     ///
-    /// Returns [`NormalizeError`] if a move cannot be resolved against the
-    /// position it is played from.
+    /// Returns [`NormalizeError`] if a move before the record's first outcome
+    /// cannot be resolved against the position it is played from.
+    ///
+    /// Past an outcome it does not: a record need not continue the position
+    /// before it (R-RULE-002), so the first move the board cannot explain ends
+    /// the tracking, and every field from there on is left as the input had it.
+    /// **Whatever the parser accepted, this accepts.**
     pub fn normalize_with_options(
         &mut self,
         correct_color: bool,
@@ -517,13 +522,30 @@ fn decide_promote(
     });
     if promoted {
         Some(true)
-    } else if from_piece_kind.promote().is_some()
-        && (from.relative_rank(side) <= 3 || to.relative_rank(side) <= 3)
-    {
+    } else if promotion_is_spellable(from_piece_kind, from, to, side) {
         Some(false)
     } else {
         None
     }
+}
+
+/// Whether the notation has a `成` / `不成` for this move at all (R-NOT-005).
+///
+/// A promotable piece, with the enemy camp at one end of the move. A gold, a
+/// king or an already-promoted piece has neither word, and neither has a move
+/// that goes nowhere near the camp.
+///
+/// One home, because both directions need it: [`decide_promote`] to know whether
+/// a move that did not promote is worth recording as `false`, and the KI2 writer
+/// to know whether a `false` in the record has a word to be written with. Two
+/// copies is how `△６八玉不成` reached a file once already.
+pub(crate) fn promotion_is_spellable(
+    piece: shogi_core::PieceKind,
+    from: shogi_core::Square,
+    to: shogi_core::Square,
+    side: shogi_core::Color,
+) -> bool {
+    piece.promote().is_some() && (from.relative_rank(side) <= 3 || to.relative_rank(side) <= 3)
 }
 
 /// The squares a piece of the same kind could have moved to `to` from.

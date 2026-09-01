@@ -70,33 +70,38 @@ fn write_move_kind<W: Write>(kind: Kind, sink: &mut W) -> Result {
     Ok(())
 }
 
-/// Whether R-NOT-005 has a `不成` for this move: a promotable piece, with the
-/// enemy camp at one end of it.
+/// Whether this move has a `不成` to write (R-NOT-005,
+/// [`promotion_is_spellable`](crate::normalizer::promotion_is_spellable)).
 ///
-/// A gold, a king or an already-promoted piece has no such word, and neither
-/// has a move that goes nowhere near the camp. Writing one anyway produces
-/// `△６八玉不成`, which is not something the notation can say.
-///
-/// The gate is here and not left to the normalizer because a record reaches a
-/// writer without having been through it: past an outcome the position is no
-/// longer tracked (R-RULE-002), a branch that could not be normalized is kept as
-/// it was, and a JKF the consumer built never went through it at all
-/// (R-REQ-002). What the record says a move did is `promote` (D12); whether the
-/// notation has a word for it is what the piece and the squares say.
+/// The rule is asked here, and not left to the normalizer, because a record
+/// reaches a writer without having been through it: past an outcome the first
+/// move the board cannot explain ends the tracking (R-RULE-002), a branch that
+/// could not be normalized is kept as it was, and a JKF the consumer built never
+/// went through it at all (R-REQ-002). What the record says a move did is
+/// `promote` (D12); whether the notation has a word for it is what the piece and
+/// the squares say.
 fn promotion_was_on_the_table(mv: &MoveMoveFormat) -> bool {
-    // Both ends have to be squares on the board. A move with no origin is a drop
-    // (R-JKF-003), which enters the board unpromoted and has neither word; an
-    // origin the record stated and the reader could not place
-    // (`normalizer::ORIGIN_UNSTATED`) is off the board, not in the camp.
-    let (Some(Ok(from)), Ok(to)) = (
-        mv.from.as_ref().map(shogi_core::Square::try_from),
-        shogi_core::Square::try_from(&mv.to),
-    ) else {
+    // A drop enters the board unpromoted, and R-NOT-005 has no word for one
+    // whichever end of it the camp is at (R-JKF-003: no origin is what says a
+    // move is a drop).
+    let Some(from) = &mv.from else {
         return false;
     };
+    let piece = shogi_core::PieceKind::from(mv.piece);
     let color = shogi_core::Color::from(mv.color);
-    shogi_core::PieceKind::from(mv.piece).promote().is_some()
-        && (from.relative_rank(color) <= 3 || to.relative_rank(color) <= 3)
+    match (
+        shogi_core::Square::try_from(from),
+        shogi_core::Square::try_from(&mv.to),
+    ) {
+        (Ok(from), Ok(to)) => crate::normalizer::promotion_is_spellable(piece, from, to, color),
+        // An origin off the board is `normalizer::ORIGIN_UNSTATED`: the record
+        // never stated one (KI2 has no origins, R-KI2-003) and the position could
+        // not supply it. The rule needs both squares, so it cannot be asked — and
+        // between dropping a `不成` the record wrote and writing one a known
+        // position would not have, the first loses something and the second does
+        // not (D4).
+        _ => piece.promote().is_some(),
+    }
 }
 
 /// Writes the KI2 notation for `moves`, deriving the disambiguating suffix from
@@ -831,10 +836,12 @@ mod tests {
     // R-NOT-005: `不成` exists only for a promotable piece with the enemy camp at
     // one end of the move. `△６八玉不成` is not something the notation can say.
     //
-    // The moves after an outcome are where this shows: the position is no longer
-    // tracked past one (R-RULE-002), so nothing rewrites what the record said,
-    // and a KIF states `不成` by leaving `成` off (R-KIF-006) — which the reader
-    // records as `promote: false` on every move that did not promote.
+    // The moves after an outcome are where this shows. `中断` takes a ply without
+    // taking a turn, so ply 3 is read as White's while its gold is Black's: the
+    // board cannot explain that move, tracking ends there (R-RULE-002), and
+    // nothing rewrites what the record said from then on. What the record said is
+    // `promote: false`, because a KIF states 不成 by leaving `成` off
+    // (R-KIF-006).
     #[test]
     fn no_不成_where_the_notation_has_no_word_for_it() {
         let kif = "手合割：平手
@@ -854,20 +861,26 @@ mod tests {
         // camp, which is a move R-NOT-005 asks to be spelled either way.
         assert!(ki2.contains("▲３四歩不成"), "{ki2:?}");
 
-        // Neither end of a drop is an origin, and an origin the reader could not
-        // place is off the board rather than deep in the camp. Both used to read
-        // as "the enemy camp is involved" through a raw `y`.
-        for mv in [
-            r#"{"color":0,"to":{"x":2,"y":2},"piece":"GI","promote":false}"#,
-            r#"{"color":0,"from":{"x":0,"y":0},"to":{"x":5,"y":6},"piece":"FU","promote":false}"#,
-        ] {
-            let json = format!(
-                r#"{{"header":{{}},"initial":{{"preset":"HIRATE"}},"moves":[{{}},{{"move":{mv}}}]}}"#
-            );
-            let jkf: JsonKifuFormat = serde_json::from_str(&json).expect("reads the JKF");
-            let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
-            assert!(!ki2.contains("不成"), "{mv} -> {ki2:?}");
-        }
+        // A drop has an origin at neither end (R-JKF-003), so there is no move for
+        // R-NOT-005 to be asked about and the enemy camp under it changes nothing.
+        let drop = r#"{"color":0,"to":{"x":2,"y":2},"piece":"GI","promote":false}"#;
+        assert!(!written(drop).contains("不成"), "{}", written(drop));
+
+        // An origin the record never stated is the other end of the same
+        // question, and it goes the other way: the rule cannot be asked, so the
+        // record's own word is kept rather than dropped.
+        let unstated =
+            r#"{"color":0,"from":{"x":0,"y":0},"to":{"x":5,"y":6},"piece":"FU","promote":false}"#;
+        assert!(written(unstated).contains("不成"), "{}", written(unstated));
+    }
+
+    /// The KI2 for a record of one move, spelled as JKF.
+    fn written(mv: &str) -> String {
+        let json = format!(
+            r#"{{"header":{{}},"initial":{{"preset":"HIRATE"}},"moves":[{{}},{{"move":{mv}}}]}}"#
+        );
+        let jkf: JsonKifuFormat = serde_json::from_str(&json).expect("reads the JKF");
+        jkf.try_to_ki2_owned().expect("writes KI2")
     }
 
     // A record with no header, no starting position and no moves has the
