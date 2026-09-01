@@ -169,7 +169,7 @@ BLOCK の1件は**5本中4本**が独立に指摘した。
 - 機械化: `#![warn(clippy::missing_docs_in_private_items)]` は**いま入れると103件出る**
   （`parser/kakinoki.rs` だけで29件）。ファイル単位で埋めてから `deny` にすれば、
   **この故障だけは確実に落ちる**。`cargo doc -D warnings`（R8-06）は素通しする
-- **結果**: 直した（`0b0f55c`）: `information_line_keyvalue` の17行を持ち主へ戻した。`parser.rs` 側も同様
+- **結果**: 直した（`0b0f55c`）: `information_line_keyvalue` の17行を持ち主へ戻した。**`src/parser.rs` 側はこのコミットでは動かしていない**（ラウンド11 の R11-12 で指摘され、`the_extension_chooses_which_encoding_is_tried_first` の頭へ移した）
 
 ### R10-08 [MEDIUM] `LineShapes::opens_a_move_line` の doc が「共有の形ではない」と言うが、4つの実体すべてが同じ関数
 

@@ -652,13 +652,6 @@ mod tests {
         path
     }
 
-    // `.kifu` and `.ki2u` are the UTF-8 spellings of `.kif` and `.ki2`. The
-    // extension chooses which encoding is *tried first* — the bytes decide the
-    // rest (R-REQ-003 / D14, and `either_encoding_is_read_whatever_the_extension_says`
-    // below) — but it is the extension alone that decides whether a file is
-    // offered at all. Nothing under `data/tests/` carries either UTF-8 spelling,
-    // so that arm went unrun, as did the rejection of an extension neither
-    // reader claims.
     // Which encoding is tried *first*, for bytes both of them read cleanly.
     // `竜王戦` in UTF-8 is also a run of valid Shift-JIS, so the same file has
     // two readings and the extension picks between them. Nothing else in the
@@ -688,6 +681,13 @@ mod tests {
         );
     }
 
+    // `.kifu` and `.ki2u` are the UTF-8 spellings of `.kif` and `.ki2`. The
+    // extension chooses which encoding is *tried first* — the bytes decide the
+    // rest (R-REQ-003 / D14, and `either_encoding_is_read_whatever_the_extension_says`
+    // below) — but it is the extension alone that decides whether a file is
+    // offered at all. Nothing under `data/tests/` carries either UTF-8 spelling,
+    // so that arm went unrun, as did the rejection of an extension neither
+    // reader claims.
     #[test]
     fn the_extension_chooses_which_encoding_is_tried_first() {
         const KIF: &str = "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n";
