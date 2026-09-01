@@ -1,7 +1,6 @@
 use super::kakinoki::{
-    broken_line, ends_here, move_comment_line, move_to, not_move_line, opens_a_branch_header,
-    opens_a_shared_line, parse_without_moves, piece_kind, program_comment_line, LineShapes,
-    NOTE_MARKERS, SIDE_MARKS,
+    broken_line, ends_here, move_comment_line, move_to, not_move_line, opens_a_shared_line,
+    parse_without_moves, piece_kind, program_comment_line, LineShapes, NOTE_MARKERS, SIDE_MARKS,
 };
 use crate::jkf::*;
 use crate::notation::LINE_ENDS;
@@ -126,21 +125,28 @@ fn a_move_starts_here(head: &str) -> bool {
 /// stops. A KI2 record whose starting position lost its newline puts the whole
 /// game in one.
 ///
-/// Two moves in a row, because either one alone is something a header says of
-/// its own accord. `▲` and `△` are how the standard `消費時間` header spells
-/// each side's clock (`消費時間：104▲379△380`,
-/// `data/tests/kif/oui202106290101.kif`), and one move is how a `戦型` names an
-/// opening. A record of a single move that also lost that newline is missed
-/// (`research/90-gaps.md` GAP-020) — the alternative is refusing files with
-/// nothing wrong with them.
+/// Two moves in a row that run to the end of the value, because that is what a
+/// swallowed line looks like: the header took the rest of its line, and the rest
+/// of that line was the moves.
+///
+/// Neither half of that is enough on its own. `▲` and `△` are how the standard
+/// `消費時間` header spells each side's clock (`消費時間：104▲379△380`,
+/// `data/tests/kif/oui202106290101.kif`) and one move is how a `戦型` names an
+/// opening; and a note that quotes an opening and then says something about it
+/// (`序盤は▲７六歩 △３四歩 の出だし`) is a value this crate's own writer produces
+/// from a `header` the consumer filled in — refusing it would mean writing files
+/// this reader rejects.
+///
+/// A record whose whole game is one move, or a note that ends on its second
+/// move, is still missed or refused (`research/90-gaps.md` GAP-020). Free text
+/// and a lost newline are the same characters; this is where the line is drawn.
 fn a_header_value_carrying_moves(value: &str) -> bool {
     value
         .char_indices()
         .filter(|(_, c)| SIDE_MARKS.iter().any(|(mark, _)| mark == c))
-        .any(|(i, _)| {
-            single_move(&value[i..])
-                .map(|(rest, _)| single_move(rest).is_ok())
-                .unwrap_or(false)
+        .any(|(i, _)| match many1(single_move)(&value[i..]) {
+            Ok((rest, moves)) => moves.len() >= 2 && rest.trim().is_empty(),
+            Err(_) => false,
         })
 }
 
@@ -250,12 +256,11 @@ fn move_run(
                 tag(" "),
                 tag("　"),
                 nom::combinator::recognize(program_comment_line),
-                // A line the format has no shape for — a note between the
-                // header and the moves under it. KIF skips one here as well, and
-                // a record that reads as `.kif` has to read as `.ki2` (D18).
-                // `not_readable_line` keeps the lines that carry moves, and a
-                // `変化：` header belongs to the loop above, not here.
-                nom::combinator::recognize(a_line_no_branch_opens_with),
+                // Prose between the header and the moves under it. KIF skips
+                // one here as well, and a record that reads as `.kif` has to
+                // read as `.ki2` (D18). Everything the reader has a shape for
+                // is left where it is.
+                nom::combinator::recognize(a_line_only_prose_opens),
             )))(input)?;
             // A comment before any move of a run belongs to a node of its own:
             // that is what `write_line` produces for a JKF node carrying only
@@ -304,12 +309,21 @@ fn not_readable_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
     Ok((rest, line))
 }
 
-/// A line the reader has no shape for, other than a `変化：<N>手` header.
+/// A line the reader has no shape for — prose, and nothing else.
 ///
-/// The header is the one line [`moves`] reads for itself: it is what says a
-/// branch starts, and skipping one here would take the branch with it.
-fn a_line_no_branch_opens_with(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
-    if opens_a_branch_header(input) {
+/// Every shape the reader does have belongs to whoever reads it, not to this
+/// skip. A `まで…` is the outcome and this run is what reads it; a `変化：` says
+/// a branch starts and [`moves`] is what reads it; `*` and `&` are comments.
+/// Skipping one takes what it said with it, and the record comes back `Ok`
+/// without it — an outcome that never happened, or a branch whose moves are
+/// read as the main line carrying on (R-JKF-004).
+///
+/// `変化：` counts here whatever follows it. A spelling this reader cannot read
+/// (`変化：２手` in full-width digits) is still a line saying a branch starts,
+/// and leaving it for the leftover-input check (D1) says so; skipping it hides
+/// a branch inside the main line.
+fn a_line_only_prose_opens(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
+    if input.starts_with("変化：") || opens_a_shared_line(input) {
         return Err(nom::Err::Error(VerboseError::from_error_kind(
             input,
             nom::error::ErrorKind::Not,
@@ -619,6 +633,32 @@ mod tests {
     // throws nothing away. KI2 writes moves anywhere along a line, so a line
     // holding `▲` or `△` is never skipped: swallowing it would drop those moves
     // without a word, which is the silent loss D1 exists to remove.
+    // Only prose is skipped. A line this reader has a shape for belongs to
+    // whoever reads it: a `まで…` is the outcome (KI2 has no other way to record
+    // one, R-KI2-006 / D5), and a `変化：` says a branch starts — including a
+    // spelling this reader cannot read, which the leftover-input check then
+    // reports (D1) rather than hiding a branch inside the main line (R-JKF-004).
+    #[test]
+    fn a_line_the_reader_has_a_shape_for_is_never_skipped() {
+        use crate::parser::parse_ki2_str;
+        const MOVES: &str = "手合割：平手\n▲７六歩 △３四歩\n";
+        for before in ["# Kifu for Windows V7.30\n", "感想戦\n", "\n"] {
+            let jkf = parse_ki2_str(&format!("{MOVES}{before}まで2手で投了\n"))
+                .unwrap_or_else(|e| panic!("{before:?}: {e}"));
+            assert!(
+                jkf.moves.last().expect("a node").special.is_some(),
+                "{before:?}: the outcome is gone"
+            );
+        }
+        // A `変化：` the reader cannot read is still a `変化：`.
+        for header in ["変化：２手", "変化： 2手"] {
+            assert!(
+                parse_ki2_str(&format!("{MOVES}{header}\n▲２六歩\n")).is_err(),
+                "{header}: read as the main line carrying on"
+            );
+        }
+    }
+
     #[test]
     fn ki2_skips_the_same_lines_kif_does_and_no_more() {
         use crate::parser::parse_ki2_str;

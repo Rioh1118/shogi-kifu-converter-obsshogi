@@ -898,6 +898,24 @@ mod tests {
         jkf.try_to_ki2_owned().expect("writes KI2")
     }
 
+    // A header value the consumer filled in can hold anything (R-KIF-004), moves
+    // among them. What this crate writes, this crate has to be able to read:
+    // refusing the file it just produced is the one thing a round trip cannot
+    // survive.
+    #[test]
+    fn a_header_value_that_quotes_moves_is_written_and_read_back() {
+        let mut jkf =
+            crate::parser::parse_ki2_str("手合割：平手\n▲７六歩 △３四歩\n").expect("parses");
+        jkf.header.insert(
+            "note".to_owned(),
+            "序盤は▲７六歩 △３四歩 の出だし".to_owned(),
+        );
+        let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
+        let back = crate::parser::parse_ki2_str(&ki2).expect("reads its own file back");
+        assert_eq!(2, back.moves.len() - 1, "{ki2}");
+        assert_eq!(jkf.header, back.header, "{ki2}");
+    }
+
     // A record with no header, no starting position and no moves has the
     // starting position as the only thing left to write. Without it the file is
     // zero bytes and the `Ok` says nothing is wrong, which no caller can tell
