@@ -174,13 +174,19 @@ pub(super) fn opens_a_numbered_line(head: &str) -> bool {
 /// ([`NOTE_MARKERS`]). `※ 3 分の1` and `（まで先手良し）` are prose, and looking
 /// past the marker reads them as the line below and refuses a whole record over
 /// a note.
+///
+/// Nor is that character ever a newline. A newline still there is one that was
+/// never lost, and stepping over it reads the line below as this line's
+/// overflow: a record whose only fault is a full-width space before the newline
+/// — which [`space0`] does not take and [`SPACES`] does — is refused whole, with
+/// an error naming a line it does not run into.
 fn begins_the_line_below(shapes: LineShapes, tail: &str) -> bool {
     let head = tail.trim_start_matches(SPACES);
     if (shapes.opens_a_line)(head) {
         return true;
     }
     match head.chars().next() {
-        Some(c) if !NOTE_MARKERS.contains(&c) => {
+        Some(c) if !NOTE_MARKERS.contains(&c) && !crate::notation::LINE_ENDS.contains(&c) => {
             (shapes.opens_a_line)(head[c.len_utf8()..].trim_start_matches(SPACES))
         }
         _ => false,
@@ -208,7 +214,10 @@ pub(super) fn ends_here<'a>(
     line: &'a str,
     rest: &'a str,
 ) -> IResult<&'a str, &'a str, VerboseError<&'a str>> {
-    if let Ok(ended) = preceded(space0, end_of_line)(rest) {
+    // [`SPACES`] rather than `space0`, which takes neither a full-width space
+    // nor anything else outside ASCII: padding it does not recognise is padding
+    // the rest of this function then has to explain as something else.
+    if let Ok(ended) = end_of_line(rest.trim_start_matches(SPACES)) {
         return Ok(ended);
     }
     if begins_the_line_below(shapes, rest) {
@@ -905,6 +914,13 @@ mod tests {
             (ki2::SHAPES, " ※△８四歩の変化"),
             (ki2::SHAPES, "（△８四歩）"),
             (ki2::SHAPES, "▲有利"),
+            // A newline that is still there was never lost, whatever padding
+            // sits before it. Stepping over one reads the line below as this
+            // line's overflow and refuses the record over a trailing space.
+            (kif::SHAPES, "　\n   2 ３四歩(33)\n"),
+            (kif::SHAPES, "\t\n*コメント\n"),
+            (kif::SHAPES, " \n変化：2手\n"),
+            (ki2::SHAPES, "　\n△８四歩\n"),
         ] {
             assert!(
                 !begins_the_line_below(shapes, tail),
