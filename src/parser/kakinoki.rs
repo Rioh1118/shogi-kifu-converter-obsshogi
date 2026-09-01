@@ -89,13 +89,15 @@ pub(super) struct LineShapes {
     pub(super) carries_a_line: fn(&str) -> bool,
     /// Whether text that starts where a line starts opens one.
     pub(super) opens_a_line: fn(&str) -> bool,
-    /// The same, one character further in — see [`begins_the_line_below`].
-    ///
-    /// The shapes a note can open with come out of this one. A marker (`※`,
-    /// `（`, `【`) is exactly the one character that gets skipped, so a shape a
-    /// marker precedes in ordinary prose cannot also be read as the line below.
-    pub(super) opens_a_line_behind_a_marker: fn(&str) -> bool,
 }
+
+/// What a note opens with.
+///
+/// Prose about a move puts one of these in front of it — `※▲２六歩が本筋`,
+/// `（まで先手良し）`, `【変化】` — which is exactly where
+/// [`begins_the_line_below`] would otherwise look for the newline that was
+/// lost. Whatever replaced a newline, it is not one of these.
+const NOTE_MARKERS: [char; 8] = ['※', '（', '(', '【', '[', '「', '〈', '＜'];
 
 /// The shapes both formats share: a comment, a bookmark, a `#` note, a `変化：`
 /// header, a `まで…` outcome.
@@ -140,21 +142,20 @@ pub(super) fn opens_a_numbered_line(head: &str) -> bool {
 ///
 /// What was lost is the newline itself, so whatever sits in its place belongs to
 /// neither line, and the shapes are looked for once more past a single
-/// character. Not all of them: the ones a note can open with are exactly the
-/// ones a marker precedes — `※▲２六歩`, `（△の反撃）` — and reading the marker as
-/// the lost newline turns commentary into a record that will not open. Which
-/// those are is the format's to say
-/// ([`LineShapes::opens_a_line_behind_a_marker`]).
+/// character — unless that character is one a note opens with
+/// ([`NOTE_MARKERS`]). `※ 3 分の1` and `（まで先手良し）` are prose, and looking
+/// past the marker reads them as the line below and refuses a whole record over
+/// a note.
 fn begins_the_line_below(shapes: LineShapes, tail: &str) -> bool {
     let head = tail.trim_start_matches(SPACES);
     if (shapes.opens_a_line)(head) {
         return true;
     }
     match head.chars().next() {
-        Some(c) => {
-            (shapes.opens_a_line_behind_a_marker)(head[c.len_utf8()..].trim_start_matches(SPACES))
+        Some(c) if !NOTE_MARKERS.contains(&c) => {
+            (shapes.opens_a_line)(head[c.len_utf8()..].trim_start_matches(SPACES))
         }
-        None => false,
+        _ => false,
     }
 }
 
@@ -335,7 +336,7 @@ fn information_value_preset(input: &str) -> IResult<&str, Information, VerboseEr
     let (rest, preset) = match named {
         Some(found) => found,
         None => {
-            let (tail, _) = tag("その他")(input)?;
+            let (tail, _) = tag(crate::handicap::OTHER_NAME)(input)?;
             (tail, Preset::PresetOther)
         }
     };
@@ -785,14 +786,12 @@ mod tests {
     const NOTHING: LineShapes = LineShapes {
         carries_a_line: |_| false,
         opens_a_line: opens_a_shared_line,
-        opens_a_line_behind_a_marker: opens_a_shared_line,
     };
 
     /// One that finds a `▲` enough, for the case that has to be refused.
     const ANY_MOVE_MARK: LineShapes = LineShapes {
         carries_a_line: |value| value.contains('▲'),
         opens_a_line: opens_a_shared_line,
-        opens_a_line_behind_a_marker: opens_a_shared_line,
     };
 
     // What separates a line that lost its ending from a line that trails off
@@ -838,6 +837,12 @@ mod tests {
             // A KIF numbers its move lines, so a `▲` in one is prose.
             (kif::SHAPES, " ※▲２六歩が本筋"),
             (kif::SHAPES, " （▲７六歩まで）"),
+            // And what a note opens with is not what a newline turned into.
+            (kif::SHAPES, "（まで先手良し）"),
+            (kif::SHAPES, "※ 3 分の1"),
+            (kif::SHAPES, "[ 3 分]"),
+            (kif::SHAPES, "※ 12 手目からの変化"),
+            (ki2::SHAPES, "（△８四歩 ▲２六歩）"),
             // And in KI2 a move behind a marker is prose too: what the marker
             // stands in for is a newline, and a note is not one.
             (ki2::SHAPES, " ※△８四歩の変化"),

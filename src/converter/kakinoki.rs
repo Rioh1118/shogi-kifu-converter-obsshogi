@@ -71,7 +71,9 @@ fn write_initial_data<W: Write>(data: &StateFormat, sink: &mut W) -> Result {
     // `その他` is the one name the table has no entry for — it is not a
     // handicap, it is "the board says it" (`handicap::lookup`).
     sink.write_str(crate::handicap::KIF_KEYWORD)?;
-    sink.write_str("：その他\n")?;
+    sink.write_char('：')?;
+    sink.write_str(crate::handicap::OTHER_NAME)?;
+    sink.write_char('\n')?;
     sink.write_str("後手の持駒：")?;
     if data.hands[1] != Hand::default() {
         write_hand(&data.hands[1], sink)?;
@@ -130,10 +132,17 @@ fn write_initial_preset<W: Write>(preset: Preset, sink: &mut W) -> Result {
     Ok(())
 }
 
+/// What ends a line, whichever of them a value carries.
+///
+/// R-CSA-001 leaves the newline to the environment, and a JKF built elsewhere
+/// carries whatever that environment used — a lone `\r` among them. A value with
+/// one inside it, written as it came, splits the line it was supposed to be on.
+pub(super) const LINE_ENDS: [char; 2] = ['\n', '\r'];
+
 /// Writes one comment, as as many lines as it takes.
 ///
 /// A comment is one line: `*` or `&` opens it and the newline ends it
-/// (R-KIF-002 / R-KIF-011). A value carrying a newline of its own — JKF puts no
+/// (R-KIF-010 / R-KIF-011). A value carrying a newline of its own — JKF puts no
 /// limit on one, and the consumer builds its own — leaves the text after it
 /// outside any `*`, where the KIF reader skips it as a line it has no shape for
 /// and the KI2 reader stops on it. The record either comes back short or does
@@ -141,12 +150,11 @@ fn write_initial_preset<W: Write>(preset: Preset, sink: &mut W) -> Result {
 ///
 /// Each line gets its own marker. `&` is a bookmark and marks a position rather
 /// than the text (R-KIF-011), so only the line that carried it keeps it.
+///
+/// An empty comment is a `*` on its own, which is what the reader gives back for
+/// one: dropping it instead would make a record the writer quietly shortens.
 pub(super) fn write_comment<W: Write>(comment: &str, sink: &mut W) -> Result {
-    let mut lines = comment.split(['\n', '\r']).filter(|line| !line.is_empty());
-    let Some(first) = lines.next() else {
-        return Ok(());
-    };
-    for (i, line) in std::iter::once(first).chain(lines).enumerate() {
+    for (i, line) in comment.split(LINE_ENDS).enumerate() {
         if i > 0 || !line.starts_with('&') {
             sink.write_char('*')?;
         }
@@ -165,7 +173,7 @@ pub(super) fn write_header<W: Write>(header: &HashMap<String, String>, sink: &mu
         // the header block early, and the reader skips what follows as a
         // non-move line. Which header survives then depends on `HashMap`
         // iteration order, so the same record loses a different one each save.
-        for line in v.lines() {
+        for line in v.split(LINE_ENDS) {
             sink.write_str(line)?;
         }
         sink.write_char('\n')?;
@@ -179,8 +187,8 @@ pub(super) fn write_header<W: Write>(header: &HashMap<String, String>, sink: &mu
 /// A record that leaves its starting position unsaid is read back as the even
 /// game, which is what it means (`initial` is optional in JKF), but a file that
 /// does not say so on its own is one nothing distinguishes from a save that was
-/// cut short — for KI2, where a hirate opening was the only thing left to write,
-/// a record with no header and no moves came out as zero bytes.
+/// cut short — and for KI2, where a hirate opening leaves nothing else to write,
+/// a record with no header and no moves would be zero bytes.
 ///
 /// `header` decides one case, and only one. A `手合割` this crate could not fold
 /// into a `Preset` is kept as text (`手合割：詰将棋`, `parser::kakinoki`), which
@@ -309,7 +317,7 @@ mod tests {
         );
     }
 
-    // A comment is one line (R-KIF-002 / R-KIF-011). A JKF comment carrying a
+    // A comment is one line (R-KIF-010 / R-KIF-011). A JKF comment carrying a
     // newline of its own splits it, and what falls outside the `*` is skipped by
     // the KIF reader and stops the KI2 one — a file this crate wrote and cannot
     // read back. The header block next door has had the same rule for as long.

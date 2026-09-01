@@ -19,8 +19,10 @@ use std::path::Path;
 /// Shift-JIS. R-CSA-001 leaves the encoding to the environment that wrote the
 /// file, and the Windows GUIs that write most CSA in the wild write Shift-JIS.
 ///
-/// The extension is not consulted — R-CSA-001 gives it nothing to say — so a CSA
-/// under any name is read.
+/// The extension is not consulted. R-CSA-001 names one (`csa`) but leaves the
+/// encoding to the environment, and the extension is only ever a hint at the
+/// encoding here (`read_kifu`) — with nothing to hint at, there is nothing to
+/// refuse a file for.
 ///
 /// # Errors
 ///
@@ -734,8 +736,9 @@ mod tests {
         assert_eq!(from_utf8, from_sjis);
         assert_eq!(1, from_utf8.moves.len() - 1);
 
-        // R-CSA-001 gives the extension nothing to say, so no extension is
-        // claimed and none is refused.
+        // The extension is only ever a hint at an encoding (`read_kifu`), and
+        // R-CSA-001 leaves the encoding to whatever wrote the file — so there is
+        // nothing for an extension to say, and none is refused.
         for name in ["upper.CSA", "named.txt", "noextension"] {
             assert!(
                 parse_csa_file(scratch(name, &sjis)).is_ok(),

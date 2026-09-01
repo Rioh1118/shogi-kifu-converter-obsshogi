@@ -144,17 +144,25 @@ pub(crate) fn lookup(preset: Preset) -> Option<&'static Handicap> {
     HANDICAPS.iter().find(|h| h.preset == preset)
 }
 
-/// The KIF names, longest first, so a name is never cut short by a prefix of
-/// itself (`右香落ち` before `香落ち`).
-/// Whether `name` is one of the handicaps in this table.
+/// The name a record gives its starting position when it spells the board out
+/// instead of naming a handicap.
 ///
-/// The reader folds a name it finds here into a [`Preset`] and leaves `header`
-/// alone, so a `手合割` that is *both* in `header` and in this table came from
-/// somewhere else — and the record's own `initial` is the one to write (D16).
+/// Not a handicap, so it has no row in the table (R-HC-003 has 16) — but it is a
+/// `手合割` value the reader turns into a [`Preset`], which is what
+/// [`is_a_known_name`] is asked about.
+pub(crate) const OTHER_NAME: &str = "その他";
+
+/// Whether `name` is a `手合割` value the reader turns into a [`Preset`].
+///
+/// A `手合割` that is *both* in `header` and one of these came from somewhere
+/// other than that reader, which leaves `header` alone for the names it folds —
+/// and then the record's own `initial` is the one to write (D16).
 pub(crate) fn is_a_known_name(name: &str) -> bool {
-    HANDICAPS.iter().any(|h| h.kif_name == name)
+    name == OTHER_NAME || HANDICAPS.iter().any(|h| h.kif_name == name)
 }
 
+/// The KIF names, longest first, so a name is never cut short by a prefix of
+/// itself (`右香落ち` before `香落ち`).
 pub(crate) fn names_longest_first() -> Vec<&'static Handicap> {
     let mut all: Vec<_> = HANDICAPS.iter().collect();
     all.sort_by_key(|h| std::cmp::Reverse(h.kif_name.len()));

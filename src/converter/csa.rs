@@ -1,3 +1,4 @@
+use super::kakinoki::LINE_ENDS;
 use super::WriteResult as Result;
 use crate::error::ConvertError;
 use crate::jkf::*;
@@ -7,6 +8,14 @@ use std::fmt::Write;
 /// A type that is convertible to CSA format.
 pub trait ToCsa {
     /// Write `self` in CSA format.
+    ///
+    /// # What CSA has no place for
+    ///
+    /// A `header` key that is not one of the five R-CSA-004 names (`先手` /
+    /// `後手` / `棋戦` / `場所` / `戦型`) is not written. CSA has no `$キーワード`
+    /// for it, and a record built elsewhere carries whatever its own maker put
+    /// there — obs-shogi's own new-file form writes `tags` and `note`
+    /// (`research/90-gaps.md` GAP-026). Saving as `.csa` is where those stop.
     ///
     /// # Errors
     ///
@@ -107,11 +116,8 @@ fn write_header<W: Write>(header: &HashMap<String, String>, sink: &mut W) -> Res
         ("$SITE:", header.get("場所")),
         ("$OPENING:", header.get("戦型")),
     ] {
-        // A player with no name is not written at all: `N+` on its own says the
-        // name is the empty string, which is not what the record means.
-        if let Some(value) = value.filter(|s| !s.is_empty()) {
-            sink.write_str(prefix)?;
-            write_header_value(value, sink)?;
+        if let Some(value) = value {
+            write_header_value(prefix, value, sink)?;
         }
     }
     Ok(())
@@ -204,25 +210,38 @@ fn write_comment<W: Write>(comment: &str, sink: &mut W) -> Result {
     Ok(())
 }
 
-/// Writes a header value, which CSA gives one line and no more (R-CSA-002).
+/// Writes `prefix` and a header value, which CSA gives one line and no more
+/// (R-CSA-004). Returns whether anything was written.
 ///
 /// `,` ends a statement (R-CSA-009) and cannot be spelled in a value the way it
 /// can in a comment — `N+` and `$EVENT` have nowhere to continue onto — so it
-/// becomes the full-width form. A newline is dropped for the same reason: JKF
-/// puts no limit on a header value and the consumer builds its own
-/// (`converter::kakinoki::write_header`).
+/// becomes the full-width form. What ends a line is dropped for the same reason
+/// ([`LINE_ENDS`]).
+///
+/// A value that is nothing but those gets no line at all. `N+` with nothing
+/// after it is not a record with no player name — it is a file this crate's own
+/// reader refuses whole.
 ///
 /// Altering a value is not nothing. It is less than the alternative: a `,` left
-/// in makes a file this crate's own reader cannot read at all, and D4 puts the
-/// record above its punctuation.
-fn write_header_value<W: Write>(value: &str, sink: &mut W) -> Result {
-    for line in value.lines() {
-        for c in line.chars() {
-            sink.write_char(if c == ',' { '，' } else { c })?;
-        }
+/// in makes that same unreadable file, and D4 puts the record above its
+/// punctuation.
+fn write_header_value<W: Write>(
+    prefix: &str,
+    value: &str,
+    sink: &mut W,
+) -> std::result::Result<bool, ConvertError> {
+    let value: String = value
+        .split(LINE_ENDS)
+        .flat_map(str::chars)
+        .map(|c| if c == ',' { '，' } else { c })
+        .collect();
+    if value.is_empty() {
+        return Ok(false);
     }
+    sink.write_str(prefix)?;
+    sink.write_str(&value)?;
     sink.write_char('\n')?;
-    Ok(())
+    Ok(true)
 }
 
 fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
@@ -308,6 +327,17 @@ mod tests {
                 - 1,
             "{csa}"
         );
+
+        // A lone `\r` ends a line too, and a value that is nothing but line ends
+        // has no line to write at all: `N+` with nothing after it is a file this
+        // crate's own reader refuses whole.
+        jkf.header
+            .insert("先手".to_owned(), "山田\r太郎".to_owned());
+        jkf.header.insert("場所".to_owned(), "\n".to_owned());
+        let csa = jkf.try_to_csa_owned().expect("writes CSA");
+        assert!(csa.contains("N+山田太郎\n"), "{csa}");
+        assert!(!csa.contains("$SITE"), "{csa}");
+        assert!(crate::parser::parse_csa_str(&csa).is_ok(), "{csa}");
 
         // The same in a header value, which has no second line to move onto.
         jkf.header

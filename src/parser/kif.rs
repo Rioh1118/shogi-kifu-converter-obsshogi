@@ -93,9 +93,6 @@ fn move_special(
 pub(super) const SHAPES: LineShapes = LineShapes {
     carries_a_line: |_| false,
     opens_a_line: opens_a_kif_line,
-    // Every KIF shape, because none of them is one a note opens with: a KIF
-    // numbers its move lines, so nothing here starts the way `※▲２六歩` does.
-    opens_a_line_behind_a_marker: opens_a_kif_line,
 };
 
 fn opens_a_kif_line(head: &str) -> bool {

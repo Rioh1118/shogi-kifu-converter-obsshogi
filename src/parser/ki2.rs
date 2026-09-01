@@ -106,10 +106,6 @@ fn single_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
 pub(super) const SHAPES: LineShapes = LineShapes {
     carries_a_line: a_header_value_carrying_moves,
     opens_a_line: opens_a_ki2_line,
-    // Everything but a move. A move behind a marker is how commentary names one
-    // (`※△８四歩の変化`), and KI2 spells moves the same way it spells prose
-    // about them.
-    opens_a_line_behind_a_marker: opens_a_shared_line,
 };
 
 /// What a KI2 line looks like: the shapes both formats have, or a move.
@@ -351,9 +347,20 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
                 // Headers in a row are one declaration: the last of them says
                 // which ply the branch leaves, and the ones over it are spare
                 // lines rather than branches that went missing.
-                while let Ok((after, ply)) = branch_header(rest) {
-                    rest = after;
-                    start_ply = ply;
+                loop {
+                    match branch_header(rest) {
+                        Ok((after, ply)) => {
+                            rest = after;
+                            start_ply = ply;
+                        }
+                        // The same as at the top of the loop: a header that ran
+                        // into the moves under it is the branch, gone. Taking it
+                        // for "no more headers" reports the header above this
+                        // one, and says its block is empty when what is broken
+                        // is the line below it.
+                        Err(err @ nom::Err::Failure(_)) => return Err(err),
+                        Err(_) => break,
+                    }
                 }
                 let (rest, branch) = move_run(start, start_ply)(rest)?;
                 if branch.is_empty() {

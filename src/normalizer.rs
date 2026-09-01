@@ -538,7 +538,8 @@ fn decide_promote(
 /// One home, because both directions need it: [`decide_promote`] to know whether
 /// a move that did not promote is worth recording as `false`, and the KI2 writer
 /// to know whether a `false` in the record has a word to be written with. Two
-/// copies is how `△６八玉不成` reached a file once already.
+/// copies drift apart, and the writer then spells `△６八玉不成`, which the
+/// notation has no word for.
 pub(crate) fn promotion_is_spellable(
     piece: shogi_core::PieceKind,
     from: shogi_core::Square,
