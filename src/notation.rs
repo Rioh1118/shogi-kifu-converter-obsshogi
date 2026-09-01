@@ -13,12 +13,21 @@
 //! What the notation can and cannot say about a move lives here too, for the
 //! same reason: the normalizer and the writers have to answer it the same way.
 
-/// What ends a line, whichever of them a file or a value carries.
+/// The characters a line ending is made of, whichever of them a file or a value
+/// carries.
 ///
 /// R-CSA-001 leaves the newline to the environment, and a JKF built elsewhere
-/// carries whatever that environment used — a lone `\r` among them. Both sides
-/// of the crate need the same answer: a reader deciding where a line stopped and
-/// a writer deciding what it cannot put on one.
+/// carries whatever that environment used — a lone `\r` among them. What the
+/// writers do with this is decide what cannot go on one line (a header value,
+/// R-KIF-004 / R-CSA-004), and they have to agree with each other: a value one
+/// of them splits and another writes through comes back as a header nobody
+/// wrote.
+///
+/// It is not where a reader stops. `parser::kakinoki::end_of_line` is, and it
+/// takes what `nom`'s `line_ending` does — `\n` and `\r\n`, not a lone `\r`
+/// (`research/90-gaps.md` GAP-027). The readers ask this table whether a
+/// character *is* one of those two, which is a narrower question and the same
+/// answer either way.
 pub(crate) const LINE_ENDS: [char; 2] = ['\n', '\r'];
 
 /// Whether the notation has a `成` / `不成` for this move at all (R-NOT-005).
