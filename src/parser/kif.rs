@@ -1,7 +1,7 @@
 use super::kakinoki::{
     blank_line, broken_line, ends_here, move_comment_line, move_to, not_move_line,
-    opens_a_branch_header, opens_a_numbered_line, opens_a_shared_line, parse_without_moves,
-    piece_kind, LineShapes,
+    opens_a_branch_header, opens_a_shared_line, parse_without_moves, piece_kind, LineShapes,
+    SPACES,
 };
 use crate::jkf::*;
 use nom::branch::alt;
@@ -94,6 +94,19 @@ pub(super) const SHAPES: LineShapes = LineShapes {
     carries_a_line: |_| false,
     opens_a_line: opens_a_kif_line,
 };
+
+/// Whether `head` is the beginning of a `<手数> <指し手>` line
+/// (R-KIF-005 / R-KIF-008).
+///
+/// The number on its own is not the shape. A `( 0:01)` this reader has no shape
+/// for and a bare `55` both carry digits and neither is a line — what makes one
+/// is a number, then space, then something for the number to be about.
+fn opens_a_numbered_line(head: &str) -> bool {
+    let after_digits = head.trim_start_matches(|c: char| c.is_ascii_digit());
+    after_digits.len() < head.len()
+        && after_digits.starts_with(SPACES)
+        && !after_digits.trim_start_matches(SPACES).is_empty()
+}
 
 fn opens_a_kif_line(head: &str) -> bool {
     opens_a_shared_line(head) || opens_a_numbered_line(head)

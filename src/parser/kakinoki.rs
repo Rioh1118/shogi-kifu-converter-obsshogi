@@ -1,7 +1,7 @@
 use crate::jkf::*;
 use nom::branch::alt;
 use nom::bytes::complete::{is_not, tag};
-use nom::character::complete::{line_ending, none_of, not_line_ending, one_of, space0};
+use nom::character::complete::{line_ending, not_line_ending, one_of, satisfy, space0};
 use nom::combinator::{eof, map, map_res, opt, value};
 use nom::error::{ErrorKind, ParseError, VerboseError};
 use nom::multi::{count, many0, many1};
@@ -68,15 +68,14 @@ pub(super) fn end_of_line(input: &str) -> IResult<&str, &str, VerboseError<&str>
 
 /// The marks a move opens with (R-NOT-001).
 ///
-/// One table. The KI2 reader spells its moves with them, and both readers have
-/// to agree about which characters those are: `not_move_line` below and
-/// `ki2::a_line_only_prose_opens` each decide whether to skip a line by looking
-/// for one, and a mark only one of them knows makes a line that is skipped by
-/// one reader and kept by the other.
+/// One table, and shared because both formats' readers ask it. The KI2 reader
+/// spells its moves with them; `not_move_line` below decides whether to skip a
+/// line by looking for one, for KIF as well — a `▲` in a KIF is prose, but a
+/// line holding one is never thrown away without a word.
 ///
 /// The variants R-NOT-001 also lists (`☗`/`☖`, `⛊`/`⛉`, `▼`/`▽`) are not read yet:
-/// `research/90-gaps.md` GAP-024, which names the three places that have to
-/// learn a new one together.
+/// `research/90-gaps.md` GAP-024, which names every place that has to learn a
+/// new one together — the KI2 writer among them.
 pub(super) const SIDE_MARKS: [(char, Color); 2] = [('▲', Color::Black), ('△', Color::White)];
 
 /// The spaces a line can be padded with. Full-width among them: KI2 is a record
@@ -140,19 +139,6 @@ pub(super) fn opens_a_branch_header(head: &str) -> bool {
         .is_some_and(|rest| {
             rest.starts_with(|c: char| c.is_ascii_digit() || ('０'..='９').contains(&c))
         })
-}
-
-/// Whether `head` is the beginning of a `<手数> <指し手>` line
-/// (R-KIF-005 / R-KIF-008).
-///
-/// The number on its own is not the shape. A `( 0:01)` this reader has no shape
-/// for and a bare `55` both carry digits and neither is a line — what makes one
-/// is a number, then space, then something for the number to be about.
-pub(super) fn opens_a_numbered_line(head: &str) -> bool {
-    let after_digits = head.trim_start_matches(|c: char| c.is_ascii_digit());
-    after_digits.len() < head.len()
-        && after_digits.starts_with(SPACES)
-        && !after_digits.trim_start_matches(SPACES).is_empty()
 }
 
 /// Whether `tail` — what is left of a line the reader has finished with —
@@ -281,10 +267,19 @@ fn comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
 /// content, and swallows two lines where one was meant — so a blank line in the
 /// middle of a record destroys the move that follows it.
 pub(super) fn not_move_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
-    // Spelled out rather than built from [`SIDE_MARKS`] because `none_of` takes
-    // a pattern, not a table. GAP-024 names this as one of the three places a
-    // new mark has to be added to.
-    delimited(none_of(" \r\n0123456789*&▲△"), not_line_ending, end_of_line)(input)
+    delimited(
+        // A predicate rather than `none_of`'s pattern, so that [`SIDE_MARKS`]
+        // can be asked instead of spelled out again: a mark this knew and the
+        // table did not would make a line one reader skips and the other keeps.
+        satisfy(|c| {
+            !matches!(c, ' ' | '*' | '&')
+                && !c.is_ascii_digit()
+                && !crate::notation::LINE_ENDS.contains(&c)
+                && !SIDE_MARKS.iter().any(|(mark, _)| *mark == c)
+        }),
+        not_line_ending,
+        end_of_line,
+    )(input)
 }
 
 pub(super) fn move_comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
