@@ -7,7 +7,8 @@ use crate::jkf::*;
 use crate::notation::LINE_ENDS;
 use nom::branch::alt;
 use nom::bytes::complete::tag;
-use nom::character::complete::{line_ending, space0};
+use nom::bytes::complete::take_while;
+use nom::character::complete::line_ending;
 use nom::combinator::{map, opt, value};
 use nom::error::{ParseError, VerboseError};
 use nom::multi::{many0, many1};
@@ -59,7 +60,7 @@ fn single_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
                 value(true, tag("成")),
             ))),
             preceded(
-                tuple((space0, opt(line_ending))),
+                tuple((take_while(is_padding), opt(line_ending))),
                 opt(many1(move_comment_line)),
             ),
         )),
@@ -423,6 +424,17 @@ fn attach_branch(
 /// is, which the outcome line needs and the ply parity cannot supply.
 fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
     let (input, comments) = preceded(many0(line_ending), opt(many1(move_comment_line)))(input)?;
+    // A `変化：` above the first move names no move to be an alternative to, so
+    // there is nothing to act on and the line is read and dropped. KIF does the
+    // same (`kif::skippable_line`), and tsshogi does it deliberately: its
+    // `kakinoki.mjs` cites shogihome #570 for records whose header block holds
+    // one, and says a `変化：` before the moves start must be ignored.
+    //
+    // Left in place it reaches `moves`' branch loop below, which reads the whole
+    // game as a branch of a main line that has no node to hang it on —
+    // `attach_branch` finds nothing and returns, and the record comes back `Ok`
+    // with no moves at all (D1, R-JKF-004).
+    let (input, _) = many0(branch_header)(input)?;
     let (mut input, main) = move_run(start, 1)(input)?;
     let mut out = vec![MoveFormat {
         comments,
@@ -781,6 +793,63 @@ mod tests {
                 parse_ki2_str(&format!("{KI2}変化：{huge}手\n△８四歩\n")).is_ok(),
                 "変化：{huge}手"
             );
+        }
+    }
+
+    // A `変化：` above the first move names no move to be an alternative to.
+    // tsshogi reads such records deliberately (shogihome #570) and ignores the
+    // line; KIF has always done the same (`kif::skippable_line`). Left in, it
+    // makes the whole game a branch of a main line with no node to hang it on,
+    // and `attach_branch` drops it without a word — `Ok`, no moves at all.
+    #[test]
+    fn a_branch_header_above_the_first_move_is_read_and_dropped() {
+        use crate::parser::parse_ki2_str;
+        for colon in ['：', ':'] {
+            for before in ["", "*まえがき\n", "先手番\n"] {
+                let src = format!("先手：A\n{before}変化{colon}2手\n▲７六歩 △３四歩 ▲２六歩\n");
+                let jkf = parse_ki2_str(&src).unwrap_or_else(|e| panic!("{src:?}: {e}"));
+                assert_eq!(
+                    3,
+                    jkf.moves.iter().filter(|m| m.move_.is_some()).count(),
+                    "{src:?}: the game was read as a branch and dropped"
+                );
+            }
+        }
+        // A branch that does name a move is still a branch, and one with an
+        // empty block still says so (D1).
+        let jkf = parse_ki2_str("手合割：平手\n▲７六歩 △８四歩 ▲２六歩\n変化：3手\n▲２五歩\n")
+            .expect("reads");
+        assert!(
+            jkf.moves.iter().any(|m| m.forks.is_some()),
+            "{:?}",
+            jkf.moves
+        );
+        assert!(parse_ki2_str("手合割：平手\n▲７六歩 △８四歩\n変化：2手\n").is_err());
+    }
+
+    // The padding between two moves is padding, whichever space it is. Only the
+    // outer skip in `move_run` knew the wider set, so the two questions that
+    // call `many1(single_move)` themselves — the ones that catch a line whose
+    // newline is gone — stopped at the first full-width space and took the
+    // rest for a note.
+    #[test]
+    fn moves_are_separated_by_padding_whichever_space_it_is() {
+        use crate::parser::parse_ki2_str;
+        for pad in [" ", "\t", "　", "\u{a0}", "\u{2009}"] {
+            assert!(
+                parse_ki2_str(&format!("手合割：平手 ▲７六歩{pad}△３四歩\n")).is_err(),
+                "{pad:?}: the game went into the header without a word"
+            );
+            assert!(
+                parse_ki2_str(&format!(
+                    "手合割：平手\n▲７六歩 △３四歩\nまで2手で中断 ▲７六歩{pad}△３四歩\n"
+                ))
+                .is_err(),
+                "{pad:?}: the moves after the outcome went without a word"
+            );
+            let run = parse_ki2_str(&format!("手合割：平手\n▲７六歩{pad}△３四歩\n"))
+                .unwrap_or_else(|e| panic!("{pad:?}: {e}"));
+            assert_eq!(2, run.moves.len() - 1, "{pad:?}");
         }
     }
 
