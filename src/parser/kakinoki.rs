@@ -101,6 +101,25 @@ pub(super) fn is_padding(c: char) -> bool {
     c.is_whitespace() && !crate::notation::LINE_ENDS.contains(&c)
 }
 
+/// The colon a `<keyword>：<value>` line is split on (R-KIF-004).
+///
+/// Full-width in every published example, and half-width in files all the same:
+/// tsshogi matches `[：:]` on the handicap, the hands and the `変化：` header,
+/// so a record that opens on the consumer's TS side has to open here too
+/// (R-KIF-014, D5). A `手合割:香落ち` this reader does not recognise is not even
+/// filed under `header` — it falls to the prose skip, and the handicap is gone
+/// without a key to show for it, taking every move's side with it
+/// (R-HC-001 / R-RULE-006).
+///
+/// **Only where a keyword names the line.** `information_line_keyvalue` keeps
+/// the full-width colon, as tsshogi does: it takes anything at all as a key, so
+/// a half-width colon there makes a header line out of every `key: value` in
+/// any text — `{"header":{},"moves":[{}]}` becomes a kifu with one header, and
+/// the error D1 exists to raise reaches nobody (D8, `parse_kif_str`).
+pub(super) fn colon(input: &str) -> IResult<&str, char, VerboseError<&str>> {
+    one_of("：:")(input)
+}
+
 /// The shapes of the format being read.
 ///
 /// The header block, the board and the side-to-move line are the same in KIF
@@ -159,7 +178,8 @@ pub(super) fn opens_a_shared_line(head: &str) -> bool {
 /// carry on as the main line (R-JKF-004). Whether the number can be used is the
 /// parsers' question, and they ask it themselves.
 pub(super) fn opens_a_branch_header(head: &str) -> bool {
-    head.strip_prefix("変化：")
+    head.strip_prefix("変化")
+        .and_then(|rest| rest.strip_prefix(['：', ':']))
         .map(|rest| rest.trim_start_matches(is_padding))
         .is_some_and(|rest| {
             rest.starts_with(|c: char| c.is_ascii_digit() || ('０'..='９').contains(&c))
@@ -191,7 +211,7 @@ pub(super) fn opens_a_branch_header(head: &str) -> bool {
 /// reject KIF records over a digit KIF never reads. See `ki2::branch_header`.
 pub(super) fn branch_header_ply(input: &str) -> IResult<&str, usize, VerboseError<&str>> {
     let unreadable = || nom::Err::Error(VerboseError::from_error_kind(input, ErrorKind::Digit));
-    let (rest, _) = tag("変化：")(input)?;
+    let (rest, _) = preceded(tag("変化"), colon)(input)?;
     let rest = rest.trim_start_matches(is_padding);
     // Folded a digit at a time, so that the test for "is this a digit" and the
     // arithmetic that assumes it are the same expression. Split apart, widening
@@ -528,7 +548,7 @@ fn information_value_preset(input: &str) -> IResult<&str, Information, VerboseEr
 fn information_line_preset(input: &str) -> IResult<&str, Information, VerboseError<&str>> {
     terminated(
         preceded(
-            pair(tag(crate::handicap::KIF_KEYWORD), tag("：")),
+            pair(tag(crate::handicap::KIF_KEYWORD), colon),
             information_value_preset,
         ),
         line_ending,
@@ -544,7 +564,7 @@ fn information_line_hands(input: &str) -> IResult<&str, Information, VerboseErro
             value(Color::Black, tag("下手")),
             value(Color::White, tag("上手")),
         )),
-        tag("の持駒："),
+        pair(tag("の持駒"), colon),
     )(input)?;
     // Past the prefix this line states a hand, whatever follows. Reporting a
     // recoverable error would send it to `information_line_keyvalue`, which
@@ -1179,6 +1199,35 @@ mod tests {
             assert!(!opens_a_branch_header(head), "{head:?}");
             assert!(branch_header_ply(head).is_err(), "{head:?}");
         }
+    }
+
+    // R-KIF-014 / D5: tsshogi matches `[：:]` where a keyword names the line, so
+    // a record it opens has to open here. Not on the generic key-value line,
+    // which takes anything as a key — see `colon`.
+    #[test]
+    fn a_keyword_names_its_line_with_either_colon() {
+        use crate::parser::{parse_ki2_str, parse_kif_str};
+        for colon in ['：', ':'] {
+            let kif = parse_kif_str(&format!(
+                "手合割{colon}香落ち\n手数----指手---------消費時間--\n   1 ３四歩(33)\n"
+            ))
+            .unwrap_or_else(|e| panic!("手合割{colon}: {e}"));
+            assert_eq!(Preset::PresetKY, kif.initial.expect("a position").preset);
+            assert_eq!(Color::White, kif.moves[1].move_.expect("a move").color);
+
+            let ki2 = parse_ki2_str(&format!(
+                "手合割{colon}平手\n▲７六歩 △８四歩 ▲２六歩\n変化{colon}3手\n▲２五歩\n"
+            ))
+            .unwrap_or_else(|e| panic!("変化{colon}: {e}"));
+            assert!(
+                ki2.moves[3].forks.is_some(),
+                "変化{colon}: the branch read as the main line carrying on: {:?}",
+                ki2.moves
+            );
+        }
+        // And a file that is not a kifu stays one. A half-width colon on the
+        // generic key-value line would make a header out of every `key: value`.
+        assert!(parse_kif_str("{\"header\":{},\"moves\":[{}]}\n").is_err());
     }
 
     // The padding after a value belongs to the value. R-KIF-014 is the shape
