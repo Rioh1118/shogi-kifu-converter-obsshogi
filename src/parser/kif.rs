@@ -6,7 +6,7 @@ use super::kakinoki::{
 use crate::jkf::*;
 use nom::branch::alt;
 use nom::bytes::complete::tag;
-use nom::character::complete::{digit1, space0};
+use nom::character::complete::digit1;
 use nom::combinator::{map, map_res, opt, value};
 use nom::error::{ParseError, VerboseError};
 use nom::multi::{many0, many1};
@@ -124,8 +124,9 @@ fn opens_a_kif_line(head: &str) -> bool {
 fn branch_header_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
     // The number itself is not used: KIF builds the tree from the ply numbers on
     // the move lines (D3). It is read anyway so that this consumes exactly what
-    // `opens_a_branch_header` counts.
-    let (rest, _) = branch_header_ply(input)?;
+    // `opens_a_branch_header` counts — indentation included, since that is what
+    // the callers below ask about.
+    let (rest, _) = branch_header_ply(input.trim_start_matches(is_padding))?;
     let (rest, _) = ends_here(SHAPES, input, rest)?;
     Ok((rest, input))
 }
@@ -137,6 +138,17 @@ fn branch_header_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
 /// Only used before the main line, where a `変化：` is nothing to act on: a
 /// branch cannot come before the moves it is an alternative to, and one written
 /// there anyway is what tsshogi skips as well.
+/// The indentation and column padding a KIF line is written with.
+///
+/// `nom`'s `space0` in the shape this module needs it, but over [`is_padding`]
+/// rather than over ASCII: KIF pads its move lines into columns
+/// (`   1 ７六歩(77)   ( 0:01/00:00:01)`, R-KIF-005), and a file that reached
+/// the user through a web page or a word processor has those columns padded
+/// with whatever that tool uses.
+fn padding(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
+    nom::bytes::complete::take_while(is_padding)(input)
+}
+
 fn skippable_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
     alt((blank_line, branch_header_line, not_move_line))(input)
 }
@@ -148,7 +160,7 @@ fn skippable_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
 /// declined too: a header the reader refuses ([`branch_header_line`]) has to
 /// reach that loop to be refused, not be skipped as unreadable prose.
 fn skippable_line_except_a_branch_header(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
-    if opens_a_branch_header(input) {
+    if opens_a_branch_header(input.trim_start_matches(is_padding)) {
         return Err(nom::Err::Error(VerboseError::from_error_kind(
             input,
             nom::error::ErrorKind::Not,
@@ -173,7 +185,7 @@ fn skip_interruptions(mut input: &str) -> &str {
         let rest = if let Some(rest) = input.strip_prefix('#') {
             rest
         } else {
-            let trimmed = input.trim_start_matches([' ', '\t']);
+            let trimmed = input.trim_start_matches(is_padding);
             if !(trimmed.starts_with('\n') || trimmed.starts_with("\r\n")) {
                 return input;
             }
@@ -242,9 +254,9 @@ fn move_time(input: &str) -> IResult<&str, Time, VerboseError<&str>> {
         tag("("),
         map(
             separated_pair(
-                delimited(space0, move_time_format, space0),
+                delimited(padding, move_time_format, padding),
                 tag("/"),
-                delimited(space0, move_time_format, space0),
+                delimited(padding, move_time_format, padding),
             ),
             |(now, total)| Time { now, total },
         ),
@@ -273,10 +285,10 @@ fn move_line(
     let line = input;
     // The ply number has to be read before the rest: it decides whose turn it
     // is, and 反則勝ち means the *other* player committed the foul.
-    let (input, i) = preceded(space0, map_res(digit1, str::parse::<usize>))(input)?;
+    let (input, i) = preceded(padding, map_res(digit1, str::parse::<usize>))(input)?;
     let side_to_move = known_side.unwrap_or_else(|| crate::handicap::side_to_move_at_ply(start, i));
-    let (input, mut mf) = preceded(space0, alt((move_special(side_to_move), move_move)))(input)?;
-    let (input, time) = preceded(space0, opt(move_time))(input)?;
+    let (input, mut mf) = preceded(padding, alt((move_special(side_to_move), move_move)))(input)?;
+    let (input, time) = preceded(padding, opt(move_time))(input)?;
     // R-KIF-005 / R-KIF-008 say what a move line is made of — the ply, the move,
     // and the time that may or may not follow it — and say nothing about what
     // may come after. So what may come after is whatever is not a line: reading

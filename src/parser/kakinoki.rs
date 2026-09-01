@@ -1,6 +1,6 @@
 use crate::jkf::*;
 use nom::branch::alt;
-use nom::bytes::complete::{is_not, tag};
+use nom::bytes::complete::{is_not, tag, take_while};
 use nom::character::complete::{line_ending, not_line_ending, one_of, satisfy};
 use nom::combinator::{eof, map, map_res, opt, value};
 use nom::error::{ErrorKind, ParseError, VerboseError};
@@ -344,9 +344,12 @@ pub(super) fn program_comment_line(input: &str) -> IResult<&str, String, Verbose
 }
 
 fn comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
-    map(
-        delimited(tag("#"), not_line_ending, end_of_line),
-        String::from,
+    preceded(
+        take_while(is_padding),
+        map(
+            delimited(tag("#"), not_line_ending, end_of_line),
+            String::from,
+        ),
     )(input)
 }
 
@@ -370,31 +373,41 @@ fn comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
 /// content, and swallows two lines where one was meant — so a blank line in the
 /// middle of a record destroys the move that follows it.
 pub(super) fn not_move_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
-    delimited(
-        // A predicate rather than `none_of`'s pattern, so that [`SIDE_MARKS`]
-        // can be asked instead of spelled out again: a mark this knew and the
-        // table did not would make a line one reader skips and the other keeps.
-        satisfy(|c| {
-            !matches!(c, ' ' | '*' | '&')
-                && !c.is_ascii_digit()
-                && !crate::notation::LINE_ENDS.contains(&c)
-                && !SIDE_MARKS.iter().any(|(mark, _)| *mark == c)
-        }),
-        not_line_ending,
-        end_of_line,
-    )(input)
+    // Asked past the indentation. What a line *is* does not change with how far
+    // in it starts (R-KIF-005 writes its move lines three columns in), so a
+    // reader that looks only at column 0 takes an indented `*` comment or
+    // `まで…` for prose and throws it away without a word. A line ending is
+    // still one of the shapes declined, so a blank line goes to `blank_line`.
+    //
+    // A predicate rather than `none_of`'s pattern, so that [`SIDE_MARKS`] can be
+    // asked instead of spelled out again: a mark this knew and the table did not
+    // would make a line one reader skips and the other keeps.
+    satisfy(|c| {
+        !matches!(c, '*' | '&')
+            && !c.is_ascii_digit()
+            && !crate::notation::LINE_ENDS.contains(&c)
+            && !SIDE_MARKS.iter().any(|(mark, _)| *mark == c)
+    })(input.trim_start_matches(is_padding))?;
+    terminated(not_line_ending, end_of_line)(input)
 }
 
 pub(super) fn move_comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
-    alt((
-        map(
-            delimited(tag("*"), not_line_ending, end_of_line),
-            String::from,
-        ),
-        map(delimited(tag("&"), not_line_ending, end_of_line), |s| {
-            String::from("&") + s
-        }),
-    ))(input)
+    // Past the indentation, the same as [`not_move_line`]: those two divide
+    // every line between them, so a column one of them looks past and the other
+    // does not is a line that falls to the skip and is lost (R-KIF-010 /
+    // R-KIF-011).
+    preceded(
+        take_while(is_padding),
+        alt((
+            map(
+                delimited(tag("*"), not_line_ending, end_of_line),
+                String::from,
+            ),
+            map(delimited(tag("&"), not_line_ending, end_of_line), |s| {
+                String::from("&") + s
+            }),
+        )),
+    )(input)
 }
 
 pub(super) fn piece_kind(input: &str) -> IResult<&str, Kind, VerboseError<&str>> {
@@ -564,7 +577,7 @@ fn information_line_keyvalue(
         // Belt and braces: `information_lines` reads these as comments before it
         // gets here, and a reordering of that `alt` would otherwise put them
         // back into `header` without a word.
-        if input.starts_with(['*', '&']) {
+        if input.trim_start_matches(is_padding).starts_with(['*', '&']) {
             return Err(nom::Err::Error(VerboseError::from_error_kind(
                 input,
                 ErrorKind::Not,
@@ -872,11 +885,55 @@ mod tests {
     #[test]
     fn a_skipped_line_never_swallows_the_line_after_it() {
         assert_eq!(
-            Ok(("   2 ３四歩(33)\n", "化：2")),
+            Ok(("   2 ３四歩(33)\n", "変化：2")),
             not_move_line("変化：2\n   2 ３四歩(33)\n")
         );
         assert!(not_move_line("\n   2 ３四歩(33)\n").is_err());
         assert!(not_move_line("\r\n   2 ３四歩(33)\n").is_err());
+        // Padding in front of a blank line does not make it a line with
+        // something on it.
+        assert!(not_move_line("　\t \n   2 ３四歩(33)\n").is_err());
+    }
+
+    // What a line is does not change with how far in it starts. KIF writes its
+    // move lines three columns in (R-KIF-005), and a note or a `まで…` lined up
+    // with them is the same line it would be at column 0 — but a reader that
+    // asks only at column 0 hands it to the prose skip, and what it said goes
+    // with it. The KI2 side of this is
+    // `ki2::tests::a_line_is_the_line_it_is_however_far_in_it_starts`.
+    #[test]
+    fn kif_reads_a_line_however_far_in_it_starts() {
+        use crate::parser::{parse_ki2_str, parse_kif_str};
+        const KIF: &str =
+            "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n   2 ８四歩(83)\n";
+        const KI2: &str = "手合割：平手\n▲７六歩 △８四歩\n";
+        for pad in ["", " ", "   ", "\t", "　", "\u{a0}"] {
+            // A comment and a bookmark are kept (R-KIF-010 / R-KIF-011), and
+            // prose after them is skipped, whichever column they start in.
+            let kif = parse_kif_str(&format!("{KIF}{pad}*コメント\n{pad}&しおり\n{pad}感想戦\n"))
+                .unwrap_or_else(|e| panic!("{pad:?}: {e}"));
+            assert_eq!(
+                Some(&vec![String::from("コメント"), String::from("&しおり")]),
+                kif.moves[2].comments.as_ref(),
+                "{pad:?}: {:?}",
+                kif.moves
+            );
+            // And the same content reads the same way as `.ki2` (D18).
+            let ki2 = parse_ki2_str(&format!("{KI2}{pad}*コメント\n{pad}&しおり\n{pad}感想戦\n"))
+                .unwrap_or_else(|e| panic!("{pad:?} as .ki2: {e}"));
+            assert_eq!(kif.moves[2].comments, ki2.moves[2].comments, "{pad:?}");
+            // A move line is a move line however it is indented.
+            let indented = parse_kif_str(&format!(
+                "手合割：平手\n手数----指手---------消費時間--\n{pad}   1 ７六歩(77)\n{pad}   2 ８四歩(83)\n"
+            ))
+            .unwrap_or_else(|e| panic!("{pad:?} on a move line: {e}"));
+            assert_eq!(2, indented.moves.len() - 1, "{pad:?}: the moves went");
+            // So is a branch header, and the diagnostic under it survives.
+            assert!(
+                parse_kif_str(&format!("{KIF}\n{pad}変化：2手\n")).is_err(),
+                "{pad:?}: `a 変化 block with no moves under it` went quiet"
+            );
+        }
     }
 
     #[test]
