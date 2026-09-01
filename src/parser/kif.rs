@@ -1,7 +1,8 @@
 use super::kakinoki::{
     blank_line, branch_header_ply, broken_line, comments_on_the_starting_position, ends_here,
     is_padding, move_comment_line, move_to, not_move_line, opens_a_branch_header,
-    opens_a_shared_line, padding, parse_without_moves, piece_kind, LineShapes,
+    opens_a_numbered_line, opens_a_shared_line, padding, parse_without_moves, piece_kind,
+    LineShapes,
 };
 use crate::jkf::*;
 use nom::branch::alt;
@@ -93,20 +94,8 @@ fn move_special(
 pub(super) const SHAPES: LineShapes = LineShapes {
     carries_a_line: |_| false,
     opens_a_line: opens_a_kif_line,
+    opens_a_move_line: opens_a_numbered_line,
 };
-
-/// Whether `head` is the beginning of a `<手数> <指し手>` line
-/// (R-KIF-005 / R-KIF-008).
-///
-/// The number on its own is not the shape. A `( 0:01)` this reader has no shape
-/// for and a bare `55` both carry digits and neither is a line — what makes one
-/// is a number, then space, then something for the number to be about.
-fn opens_a_numbered_line(head: &str) -> bool {
-    let after_digits = head.trim_start_matches(|c: char| c.is_ascii_digit());
-    after_digits.len() < head.len()
-        && after_digits.starts_with(is_padding)
-        && !after_digits.trim_start_matches(is_padding).is_empty()
-}
 
 fn opens_a_kif_line(head: &str) -> bool {
     opens_a_shared_line(head) || opens_a_numbered_line(head)
@@ -139,7 +128,9 @@ fn branch_header_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
 /// branch cannot come before the moves it is an alternative to, and one written
 /// there anyway is what tsshogi skips as well.
 fn skippable_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
-    alt((blank_line, branch_header_line, not_move_line))(input)
+    alt((blank_line, branch_header_line, |input| {
+        not_move_line(SHAPES, input)
+    }))(input)
 }
 
 /// The same, except that a `変化：` line is left where it is.
@@ -155,7 +146,7 @@ fn skippable_line_except_a_branch_header(input: &str) -> IResult<&str, &str, Ver
             nom::error::ErrorKind::Not,
         )));
     }
-    alt((blank_line, not_move_line))(input)
+    alt((blank_line, |input| not_move_line(SHAPES, input)))(input)
 }
 
 /// Skips the blank lines and `#` lines that may sit between two moves of a run

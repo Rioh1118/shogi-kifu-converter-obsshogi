@@ -1,7 +1,7 @@
 use super::kakinoki::{
     branch_header_ply, broken_line, comments_on_the_starting_position, ends_here, is_padding,
-    move_comment_line, move_to, not_move_line, opens_a_shared_line, parse_without_moves,
-    piece_kind, program_comment_line, LineShapes, NOTE_MARKERS, SIDE_MARKS,
+    move_comment_line, move_to, not_move_line, opens_a_numbered_line, opens_a_shared_line,
+    parse_without_moves, piece_kind, program_comment_line, LineShapes, NOTE_MARKERS, SIDE_MARKS,
 };
 use crate::jkf::*;
 use crate::notation::LINE_ENDS;
@@ -96,6 +96,10 @@ fn single_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
 pub(super) const SHAPES: LineShapes = LineShapes {
     carries_a_line: a_header_value_carrying_moves,
     opens_a_line: opens_a_ki2_line,
+    // KI2 opens its own move lines with a mark, which the skip looks for
+    // separately. A numbered line in a KI2 is a KIF move line that ended up
+    // here, and skipping it would take the move with it (D1).
+    opens_a_move_line: opens_a_numbered_line,
 };
 
 /// What a KI2 line looks like: the shapes both formats have, or a run of moves.
@@ -364,7 +368,7 @@ fn a_line_only_prose_opens(input: &str) -> IResult<&str, &str, VerboseError<&str
             nom::error::ErrorKind::Not,
         )));
     }
-    let (rest, line) = not_move_line(input)?;
+    let (rest, line) = not_move_line(SHAPES, input)?;
     if line.contains(|c| SIDE_MARKS.iter().any(|(mark, _)| *mark == c)) {
         return Err(nom::Err::Error(VerboseError::from_error_kind(
             input,

@@ -168,6 +168,13 @@ pub(super) struct LineShapes {
     pub(super) carries_a_line: fn(&str) -> bool,
     /// Whether text that starts where a line starts opens one.
     pub(super) opens_a_line: fn(&str) -> bool,
+    /// Whether the line is one this format writes its moves on.
+    ///
+    /// Asked by [`not_move_line`], which must not skip a move line. KIF numbers
+    /// them, KI2 opens them with a mark ([`SIDE_MARKS`], which that skip looks
+    /// for on its own) — so "starts with a digit" is a KIF shape and not a
+    /// shared one, and a KIF note like `　1図以下` is prose either way.
+    pub(super) opens_a_move_line: fn(&str) -> bool,
 }
 
 /// What a note opens with.
@@ -189,21 +196,28 @@ pub(super) fn opens_a_shared_line(head: &str) -> bool {
 /// The number is what makes it one. `変化：` on its own is two characters a
 /// sentence can open with.
 ///
-/// A number this reader cannot use is still a number. The parsers want a
-/// half-width digit right after the colon, but a line spelled `変化：２手` says a
-/// branch starts just as plainly, and this question is asked where the answer
-/// decides whether the line is *kept* — by the line-end rule (D17) and by the
-/// KI2 skip. Reading the narrower shape here is what turns a branch the reader
-/// cannot parse into a branch it never saw: the header is skipped and its moves
-/// carry on as the main line (R-JKF-004). Whether the number can be used is the
-/// parsers' question, and they ask it themselves.
+/// Built on [`branch_header_ply`] rather than beside it, so that what a reader
+/// *counts* as a branch header and what it can *consume* are the same set by
+/// construction. Held apart, the two drifted twice: R6-03 widened only the
+/// count and a branch read as the main line carrying on (R-JKF-004); R7-04 left
+/// only the read narrow and 133 records the format has always allowed came back
+/// as errors (D17).
 pub(super) fn opens_a_branch_header(head: &str) -> bool {
-    head.strip_prefix("変化")
-        .and_then(|rest| rest.strip_prefix(['：', ':']))
-        .map(|rest| rest.trim_start_matches(is_padding))
-        .is_some_and(|rest| {
-            rest.starts_with(|c: char| c.is_ascii_digit() || ('０'..='９').contains(&c))
-        })
+    matches!(branch_header_ply(head), Ok((rest, _)) if a_number_ends_there(rest))
+}
+
+/// Whether the number a branch header names is the last thing on the line
+/// rather than a word the sentence carries on from.
+///
+/// `変化：2手を参照` and `変化：2手が有力` are prose about a branch, and D17's
+/// table already fixes `変化：2手を参照` as an annotation where it turns up at
+/// the end of a line. Reading them as headers makes the block under them empty,
+/// and `a 変化 block with no moves under it` then refuses the whole record over
+/// a note (D1, D17).
+fn a_number_ends_there(rest: &str) -> bool {
+    rest.starts_with(|c: char| {
+        is_padding(c) || crate::notation::LINE_ENDS.contains(&c) || NOTE_MARKERS.contains(&c)
+    }) || rest.is_empty()
 }
 
 /// Reads `変化：<N>手` and returns `N`.
@@ -269,6 +283,24 @@ fn a_branch_header_fills_the_line(head: &str) -> bool {
         Ok((rest, _)) => end_of_line(rest.trim_start_matches(is_padding)).is_ok(),
         Err(_) => false,
     }
+}
+
+/// Whether `head` is the beginning of a `<手数> <指し手>` line
+/// (R-KIF-005 / R-KIF-008).
+///
+/// The number on its own is not the shape. A `( 0:01)` this reader has no shape
+/// for, a bare `55`, and a note that opens `1図以下、先手優勢` all carry digits
+/// and none of them is a line — what makes one is a number, then padding, then
+/// something for the number to be about.
+///
+/// Shared, though only KIF writes such a line: a KI2 that holds one is a record
+/// something went wrong with, and skipping it as prose would take the move with
+/// it (D1).
+pub(super) fn opens_a_numbered_line(head: &str) -> bool {
+    let after_digits = head.trim_start_matches(|c: char| c.is_ascii_digit());
+    after_digits.len() < head.len()
+        && after_digits.starts_with(is_padding)
+        && !after_digits.trim_start_matches(is_padding).is_empty()
 }
 
 /// Whether `tail` — what is left of a line the reader has finished with —
@@ -412,7 +444,10 @@ fn comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
 /// the newline of a *blank* line, takes the line after it as this line's
 /// content, and swallows two lines where one was meant — so a blank line in the
 /// middle of a record destroys the move that follows it.
-pub(super) fn not_move_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
+pub(super) fn not_move_line(
+    shapes: LineShapes,
+    input: &str,
+) -> IResult<&str, &str, VerboseError<&str>> {
     // Asked past the indentation. What a line *is* does not change with how far
     // in it starts (R-KIF-005 writes its move lines three columns in), so a
     // reader that looks only at column 0 takes an indented `*` comment or
@@ -422,12 +457,18 @@ pub(super) fn not_move_line(input: &str) -> IResult<&str, &str, VerboseError<&st
     // A predicate rather than `none_of`'s pattern, so that [`SIDE_MARKS`] can be
     // asked instead of spelled out again: a mark this knew and the table did not
     // would make a line one reader skips and the other keeps.
+    let head = input.trim_start_matches(is_padding);
     satisfy(|c| {
         !matches!(c, '*' | '&')
-            && !c.is_ascii_digit()
             && !crate::notation::LINE_ENDS.contains(&c)
             && !SIDE_MARKS.iter().any(|(mark, _)| *mark == c)
-    })(input.trim_start_matches(is_padding))?;
+    })(head)?;
+    if (shapes.opens_a_move_line)(head) {
+        return Err(nom::Err::Error(VerboseError::from_error_kind(
+            input,
+            ErrorKind::Not,
+        )));
+    }
     terminated(not_line_ending, end_of_line)(input)
 }
 
@@ -948,13 +989,13 @@ mod tests {
     fn a_skipped_line_never_swallows_the_line_after_it() {
         assert_eq!(
             Ok(("   2 ３四歩(33)\n", "変化：2")),
-            not_move_line("変化：2\n   2 ３四歩(33)\n")
+            not_move_line(NOTHING, "変化：2\n   2 ３四歩(33)\n")
         );
-        assert!(not_move_line("\n   2 ３四歩(33)\n").is_err());
-        assert!(not_move_line("\r\n   2 ３四歩(33)\n").is_err());
+        assert!(not_move_line(NOTHING, "\n   2 ３四歩(33)\n").is_err());
+        assert!(not_move_line(NOTHING, "\r\n   2 ３四歩(33)\n").is_err());
         // Padding in front of a blank line does not make it a line with
         // something on it.
-        assert!(not_move_line("　\t \n   2 ３四歩(33)\n").is_err());
+        assert!(not_move_line(NOTHING, "　\t \n   2 ３四歩(33)\n").is_err());
     }
 
     // What a line is does not change with how far in it starts. KIF writes its
@@ -1016,10 +1057,10 @@ mod tests {
 
     #[test]
     fn parse_not_move_line() {
-        assert!(not_move_line("").is_err());
-        assert!(not_move_line("* comment line\n").is_err());
-        assert!(not_move_line("手数----指手---------消費時間--\n").is_ok());
-        assert!(not_move_line("1 ７六歩(77) ( 0:16/00:00:16)").is_err());
+        assert!(not_move_line(NOTHING, "").is_err());
+        assert!(not_move_line(NOTHING, "* comment line\n").is_err());
+        assert!(not_move_line(NOTHING, "手数----指手---------消費時間--\n").is_ok());
+        assert!(not_move_line(NOTHING, "1 ７六歩(77) ( 0:16/00:00:16)").is_err());
     }
 
     #[test]
@@ -1100,12 +1141,14 @@ mod tests {
     const NOTHING: LineShapes = LineShapes {
         carries_a_line: |_| false,
         opens_a_line: opens_a_shared_line,
+        opens_a_move_line: opens_a_numbered_line,
     };
 
     /// One that finds a `▲` enough, for the case that has to be refused.
     const ANY_MOVE_MARK: LineShapes = LineShapes {
         carries_a_line: |value| value.contains('▲'),
         opens_a_line: opens_a_shared_line,
+        opens_a_move_line: opens_a_numbered_line,
     };
 
     // What separates a line that lost its ending from a line that trails off
@@ -1277,6 +1320,80 @@ mod tests {
         let data = jkf.initial.expect("a position").data.expect("a board");
         assert_eq!(1, data.hands[0].KA);
         assert_eq!(1, data.hands[1].FU);
+    }
+
+    // A digit at the head of a line is a KIF move line only when a move follows
+    // it. `1図以下、先手優勢` and `35手目まで` are how a KIF annotates itself,
+    // and refusing to skip them refuses the record over a note (D17). The same
+    // question keeps a KIF move line that ended up in a `.ki2` from being
+    // skipped, which would take the move with it (D1).
+    #[test]
+    fn a_digit_opens_a_move_line_only_when_a_move_follows_it() {
+        use crate::parser::{parse_ki2_str, parse_kif_str};
+        const KIF: &str =
+            "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n   2 ８四歩(83)\n";
+        const KI2: &str = "手合割：平手\n▲７六歩 △８四歩\n";
+        for note in [
+            "　1図以下、先手優勢",
+            "　3手目は疑問",
+            "\t35手目まで",
+            " 1図以下",
+            "55",
+        ] {
+            let kif = parse_kif_str(&format!("{KIF}{note}\n"))
+                .unwrap_or_else(|e| panic!("{note:?} in a KIF: {e}"));
+            assert_eq!(2, kif.moves.len() - 1, "{note:?}");
+            let ki2 = parse_ki2_str(&format!("{KI2}{note}\n"))
+                .unwrap_or_else(|e| panic!("{note:?} in a KI2: {e}"));
+            assert_eq!(2, ki2.moves.len() - 1, "{note:?}");
+        }
+        // And a numbered line that does carry a move is never skipped, in
+        // either format.
+        assert!(parse_ki2_str(&format!("{KI2}   3 ２六歩(27)\n")).is_err());
+    }
+
+    // `変化：2手を参照` is prose about a branch. Read as the header of one, the
+    // block under it is empty and `a 変化 block with no moves under it` refuses
+    // the whole record over a note — the same string D17's table already fixes
+    // as an annotation where it lands at the end of a line.
+    #[test]
+    fn a_branch_header_is_the_whole_of_what_its_number_says() {
+        use crate::parser::{parse_ki2_str, parse_kif_str};
+        const KIF: &str =
+            "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n   2 ８四歩(83)\n";
+        const KI2: &str = "手合割：平手\n▲７六歩 △８四歩\n";
+        for note in [
+            "変化：2手を参照",
+            "変化：2手が有力",
+            "変化：2手目以下は別途",
+            "変化：ここから",
+        ] {
+            assert!(!opens_a_branch_header(note), "{note:?}");
+            let kif = parse_kif_str(&format!("{KIF}{note}\n"))
+                .unwrap_or_else(|e| panic!("{note:?} in a KIF: {e}"));
+            assert_eq!(2, kif.moves.len() - 1, "{note:?}");
+            let ki2 = parse_ki2_str(&format!("{KI2}{note}\n"))
+                .unwrap_or_else(|e| panic!("{note:?} in a KI2: {e}"));
+            assert_eq!(2, ki2.moves.len() - 1, "{note:?}");
+        }
+        // A header the number does end, with or without a note after it.
+        for header in [
+            "変化：2手",
+            "変化：2手 別案",
+            "変化：2手（本命）",
+            "変化：2",
+        ] {
+            assert!(opens_a_branch_header(header), "{header:?}");
+            let jkf = parse_kif_str(&format!("{KIF}\n{header}\n   2 ３四歩(33)\n"))
+                .unwrap_or_else(|e| panic!("{header:?}: {e}"));
+            assert_eq!(
+                1,
+                jkf.moves.iter().filter(|m| m.forks.is_some()).count(),
+                "{header:?}"
+            );
+        }
+        // And a header with nothing under it still says so (D1).
+        assert!(parse_kif_str(&format!("{KIF}\n変化：2手\n")).is_err());
     }
 
     // Every line the header block is made of, at every indentation. The skip
