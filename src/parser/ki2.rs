@@ -198,11 +198,12 @@ fn end_of_game_line(
             _ => input,
         };
         let phrase = phrase.trim_start_matches(SPACES);
-        // The outcome word owns the line up to the first space or note marker.
-        // KIF reads `まで2手で中断 （▲有利）` — the word is the line and the note
-        // is skipped — and the same record spelled as KI2 has to read the same
-        // way (D18). What opens a note is D17's table, the same one the
-        // line-end rule uses.
+        // The outcome word owns the line up to the first space, note marker or
+        // line ending. This line is the only place KI2 has to put an outcome
+        // (R-KI2-006, D5), and it is also where a note about the game goes
+        // (`まで2手で中断 （▲有利）`, D18) — so the word ends where the note
+        // begins. What opens a note is D17's table, the same one the line-end
+        // rule uses, and what is left goes to that rule below.
         let end = phrase
             .find(|c: char| {
                 SPACES.contains(&c) || LINE_ENDS.contains(&c) || NOTE_MARKERS.contains(&c)
@@ -274,9 +275,8 @@ fn move_run(
             // "a game record people can read", pasted as-is, so a run can also
             // arrive indented. Stopping at either drops the rest of the file.
             // A `#` line is a note from the program that wrote the file and may
-            // sit anywhere (R-KIF-002). KIF skips it here; KI2 ended the run on
-            // it, so the same record read as `.kif` and as `.ki2` gave different
-            // answers — one read, one rejected outright (D10).
+            // sit anywhere (R-KIF-002), so it does not end the run — the same
+            // record has to read the same way as `.kif` and as `.ki2` (D10).
             let (rest, _) = many0(alt((
                 line_ending,
                 tag(" "),
@@ -446,8 +446,8 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
         // closing remark — is skipped rather than left behind for the
         // leftover-input check, the same as KIF does: a record readable as
         // `.kif` is readable as `.ki2` (D10). The skip is the one `move_run`
-        // uses, so a shape only one of them knows cannot exist. `#` is read
-        // here rather than skipped because it is a shape (R-KIF-002).
+        // uses, because two skips means a shape only one of them knows. `#` is
+        // read here rather than skipped because it is a shape (R-KIF-002).
         // `not_move_line` under the skip consumes a line at a time, so this
         // cannot spin.
         match alt((
@@ -646,16 +646,6 @@ mod tests {
         assert_eq!(jkf, back, "{written:?}");
     }
 
-    // D10: KIF and KI2 read the same content, so they have to be tolerant of
-    // the same things. Only KIF was — a closing remark after the record, or a
-    // `#` line between moves, made the whole `.ki2` an error while the same
-    // record as `.kif` read fine.
-    //
-    // The tolerance stops where moves start. KIF puts every move at the head of
-    // a numbered line, so skipping a line that does not start with a digit
-    // throws nothing away. KI2 writes moves anywhere along a line, so a line
-    // holding `▲` or `△` is never skipped: swallowing it would drop those moves
-    // without a word, which is the silent loss D1 exists to remove.
     // Only prose is skipped. A line this reader has a shape for belongs to
     // whoever reads it: a `まで…` is the outcome (KI2 has no other way to record
     // one, R-KI2-006 / D5), and a `変化：` says a branch starts — including a
@@ -771,6 +761,14 @@ mod tests {
         assert!(took < std::time::Duration::from_secs(1), "{took:?}");
     }
 
+    // D10: KIF and KI2 read the same content, so they are tolerant of the same
+    // things — a closing remark after the record, a `#` line between moves.
+    //
+    // The tolerance stops where moves start. KIF puts every move at the head of
+    // a numbered line, so skipping a line that does not start with a digit
+    // throws nothing away. KI2 writes moves anywhere along a line, so a line
+    // holding `▲` or `△` is never skipped: swallowing it would drop those moves
+    // without a word, which is the silent loss D1 exists to remove.
     #[test]
     fn ki2_skips_the_same_lines_kif_does_and_no_more() {
         use crate::parser::parse_ki2_str;
