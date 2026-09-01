@@ -130,6 +130,32 @@ fn write_initial_preset<W: Write>(preset: Preset, sink: &mut W) -> Result {
     Ok(())
 }
 
+/// Writes one comment, as as many lines as it takes.
+///
+/// A comment is one line: `*` or `&` opens it and the newline ends it
+/// (R-KIF-002 / R-KIF-011). A value carrying a newline of its own — JKF puts no
+/// limit on one, and the consumer builds its own — leaves the text after it
+/// outside any `*`, where the KIF reader skips it as a line it has no shape for
+/// and the KI2 reader stops on it. The record either comes back short or does
+/// not come back at all, and it is this crate's own writer that made the file.
+///
+/// Each line gets its own marker. `&` is a bookmark and marks a position rather
+/// than the text (R-KIF-011), so only the line that carried it keeps it.
+pub(super) fn write_comment<W: Write>(comment: &str, sink: &mut W) -> Result {
+    let mut lines = comment.split(['\n', '\r']).filter(|line| !line.is_empty());
+    let Some(first) = lines.next() else {
+        return Ok(());
+    };
+    for (i, line) in std::iter::once(first).chain(lines).enumerate() {
+        if i > 0 || !line.starts_with('&') {
+            sink.write_char('*')?;
+        }
+        sink.write_str(line)?;
+        sink.write_char('\n')?;
+    }
+    Ok(())
+}
+
 pub(super) fn write_header<W: Write>(header: &HashMap<String, String>, sink: &mut W) -> Result {
     for (k, v) in header {
         sink.write_str(k)?;
@@ -281,6 +307,40 @@ mod tests {
             back.moves[1].move_.map(|mv| mv.color),
             "R-HC-001: the upper hand moves first"
         );
+    }
+
+    // A comment is one line (R-KIF-002 / R-KIF-011). A JKF comment carrying a
+    // newline of its own splits it, and what falls outside the `*` is skipped by
+    // the KIF reader and stops the KI2 one — a file this crate wrote and cannot
+    // read back. The header block next door has had the same rule for as long.
+    #[test]
+    fn a_comment_with_a_newline_in_it_is_written_as_lines() {
+        use crate::jkf::*;
+        let json = r#"{"header":{},"initial":{"preset":"HIRATE"},"moves":[{},
+            {"move":{"color":0,"from":{"x":7,"y":7},"to":{"x":7,"y":6},"piece":"FU"},
+             "comments":["囲い\n穴熊","&しおり\nつづき"]},
+            {"move":{"color":1,"from":{"x":3,"y":3},"to":{"x":3,"y":4},"piece":"FU"}}]}"#;
+        let jkf: JsonKifuFormat = serde_json::from_str(json).expect("reads the JKF");
+
+        let kif = jkf.try_to_kif_owned().expect("writes KIF");
+        let back = parse_kif_str(&kif).expect("reads the KIF back");
+        assert_eq!(2, back.moves.len() - 1, "{kif}");
+        assert_eq!(
+            Some(vec![
+                "囲い".to_owned(),
+                "穴熊".to_owned(),
+                "&しおり".to_owned(),
+                "つづき".to_owned(),
+            ]),
+            back.moves[1].comments,
+            "{kif}"
+        );
+
+        // KI2 does not merely lose the tail: the line outside the `*` ends the
+        // move list, and the record cannot be read back at all.
+        let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
+        let back = parse_ki2_str(&ki2).expect("reads the KI2 back");
+        assert_eq!(2, back.moves.len() - 1, "{ki2}");
     }
 
     /// R-KIF-004: a header is one line. A value with a newline in it splits the

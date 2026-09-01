@@ -1,4 +1,6 @@
-use super::kakinoki::{write_header, write_initial, write_kansuji, write_sanyou_suji};
+use super::kakinoki::{
+    write_comment, write_header, write_initial, write_kansuji, write_sanyou_suji,
+};
 use super::WriteResult as Result;
 use crate::error::ConvertError;
 use crate::jkf::*;
@@ -157,11 +159,7 @@ fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) 
         }
         if let Some(comments) = &mf.comments {
             for comment in comments {
-                if !comment.starts_with('&') {
-                    sink.write_char('*')?;
-                }
-                sink.write_str(comment)?;
-                sink.write_char('\n')?;
+                write_comment(comment, sink)?;
             }
         }
         if let Some(ref forks) = mf.forks {
@@ -188,11 +186,7 @@ fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
     };
     if let Some(comments) = &head.comments {
         for comment in comments {
-            if !comment.starts_with('&') {
-                sink.write_char('*')?;
-            }
-            sink.write_str(comment)?;
-            sink.write_char('\n')?;
+            write_comment(comment, sink)?;
         }
     }
     write_move_lines(rest, 1, sink)

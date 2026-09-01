@@ -1,4 +1,6 @@
-use super::kakinoki::{write_header, write_initial, write_kansuji, write_sanyou_suji};
+use super::kakinoki::{
+    write_comment, write_header, write_initial, write_kansuji, write_sanyou_suji,
+};
 use super::WriteResult as Result;
 use crate::error::ConvertError;
 use crate::jkf::*;
@@ -126,11 +128,7 @@ fn write_moves<W: Write>(
     };
     if let Some(comments) = &head.comments {
         for comment in comments {
-            if !comment.starts_with('&') {
-                sink.write_char('*')?;
-            }
-            sink.write_str(comment)?;
-            sink.write_char('\n')?;
+            write_comment(comment, sink)?;
         }
     }
     // The main line, then one `変化：N手` block per branch.
@@ -277,11 +275,7 @@ fn write_line<'a, W: Write>(
                 sink.write_char('\n')?;
             }
             for comment in comments {
-                if !comment.starts_with('&') {
-                    sink.write_char('*')?;
-                }
-                sink.write_str(comment)?;
-                sink.write_char('\n')?;
+                write_comment(comment, sink)?;
             }
             at_line_start = true;
         }
