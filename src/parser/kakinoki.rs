@@ -77,11 +77,17 @@ pub(super) fn end_of_line(input: &str) -> IResult<&str, &str, VerboseError<&str>
 /// spells its moves with them; `not_move_line` below declines to skip a line
 /// that *begins* with one, for KIF as well.
 ///
-/// Only where it begins. A line that merely holds one somewhere — `※▲２六歩が本筋`
-/// — is prose to KIF and is skipped, while `ki2::a_line_only_prose_opens` asks
-/// `contains` and refuses the whole file. That asymmetry is
-/// `research/90-gaps.md` GAP-029, which is waiting on a decision; do not read
-/// this table as a promise that KIF keeps such a line.
+/// Only where it begins — past the indentation, so `　▲有利でした` counts as
+/// beginning with one just as `▲有利でした` does. Both are refused in KIF as
+/// well as in KI2: a mark at the head of a line is how a move opens, and
+/// skipping such a line where it turned out to be prose is the trade D1 takes
+/// (`parser::tests::a_record_the_reader_stops_in_the_middle_of_is_an_error`).
+///
+/// A line that merely holds one somewhere — `※▲２六歩が本筋` — is prose to KIF
+/// and is skipped, while `ki2::a_line_only_prose_opens` asks `contains` and
+/// refuses the whole file. That asymmetry is `research/90-gaps.md` GAP-029,
+/// which is waiting on a decision; do not read this table as a promise that KIF
+/// keeps such a line.
 ///
 /// The variants R-NOT-001 also lists (`☗`/`☖`, `⛊`/`⛉`, `▼`/`▽`) are not read yet:
 /// `research/90-gaps.md` GAP-024, which names every place that has to learn a
@@ -116,11 +122,14 @@ pub(super) fn is_padding(c: char) -> bool {
 /// without a key to show for it, taking every move's side with it
 /// (R-HC-001 / R-RULE-006).
 ///
-/// **Only where a keyword names the line.** `information_line_keyvalue` keeps
-/// the full-width colon, as tsshogi does: it takes anything at all as a key, so
-/// a half-width colon there makes a header line out of every `key: value` in
-/// any text — `{"header":{},"moves":[{}]}` becomes a kifu with one header, and
-/// the error D1 exists to raise reaches nobody (D8, `parse_kif_str`).
+/// **Only where a keyword names the line.** tsshogi takes a half-width colon on
+/// any metadata line at all (`/^[^ ：:]+[：:]/`), and this reader deliberately
+/// does not: a key can be anything (R-KIF-004), so a half-width colon there
+/// makes a header line out of every `key: value` in any text —
+/// `{"header":{},"moves":[{}]}` becomes a kifu with one header, and the error D1
+/// exists to raise reaches nobody (D8, `parse_kif_str`). The cost is that a
+/// `棋戦:竜王戦` this reader cannot name is dropped rather than kept as text
+/// (`research/90-gaps.md` GAP-031).
 pub(super) fn colon(input: &str) -> IResult<&str, char, VerboseError<&str>> {
     one_of("：:")(input)
 }
@@ -198,10 +207,10 @@ pub(super) fn opens_a_shared_line(head: &str) -> bool {
 ///
 /// Built on [`branch_header_ply`] rather than beside it, so that what a reader
 /// *counts* as a branch header and what it can *consume* are the same set by
-/// construction. Held apart, the two drifted twice: R6-03 widened only the
-/// count and a branch read as the main line carrying on (R-JKF-004); R7-04 left
-/// only the read narrow and 133 records the format has always allowed came back
-/// as errors (D17).
+/// construction. Held apart they drift, and the drift shows up in opposite
+/// directions: a count wider than the read makes a branch that reads as the
+/// main line carrying on (R-JKF-004), and a read wider than the count refuses
+/// records the format has always allowed (D17).
 pub(super) fn opens_a_branch_header(head: &str) -> bool {
     matches!(branch_header_ply(head), Ok((rest, _)) if a_number_ends_there(rest))
 }
@@ -232,8 +241,8 @@ fn a_number_ends_there(rest: &str) -> bool {
 /// the ply numbers on the move lines, D3), and KI2 needs it, so folding the
 /// spelling here is what lets both read `変化：２手`.
 ///
-/// The number saturates rather than failing. A ply too large for a `usize` is
-/// not a spelling this reader cannot read — KIF does not look at the number at
+/// The number saturates rather than failing (D19). A ply too large for a `usize`
+/// is not a spelling this reader cannot read — KIF does not look at the number at
 /// all, and KI2 hands it to `attach_branch`, which asks whether a node is there
 /// and finds none. Refusing a record over a digit nobody reads is exactly the
 /// difference this function exists to close. (Real records need three digits;
@@ -241,8 +250,9 @@ fn a_number_ends_there(rest: &str) -> bool {
 ///
 /// Ply 0 is read here and refused by the reader that uses it. Plies count from 1
 /// (R-JKF-001), so `変化：０手` names no move for a branch to be an alternative
-/// to — but only KI2 looks at the number (D3), and refusing the line here would
-/// reject KIF records over a digit KIF never reads. See `ki2::branch_header`.
+/// to — but only KI2 looks at the number (D3, D19), and refusing the line here
+/// would reject KIF records over a digit KIF never reads. See
+/// `ki2::branch_header`.
 pub(super) fn branch_header_ply(input: &str) -> IResult<&str, usize, VerboseError<&str>> {
     let unreadable = || nom::Err::Error(VerboseError::from_error_kind(input, ErrorKind::Digit));
     let (rest, _) = preceded(tag("変化"), colon)(input)?;
@@ -427,13 +437,16 @@ fn comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
 
 /// A line that is none of the shapes the move list is made of, skipped whole.
 ///
+/// Asked past the indentation ([`padding`]), because what a line is does not
+/// change with how far in it starts.
+///
 /// What it declines to start on is not every shape the reader knows — it is the
-/// ones that mean something else at the head of a line: a space or a line ending
-/// (a blank line belongs to the caller), a digit (a KIF move line), `*` and `&`
-/// (a comment and a bookmark, R-KIF-010 / R-KIF-011), and [`SIDE_MARKS`] (a KI2
-/// move). `#`, `変化：` and `まで…` are **not** among them, so a caller that
-/// wants one of those read as itself has to try it before this
-/// (`kif::skippable_line`).
+/// ones that mean something else at the head of a line: a line ending (a blank
+/// line belongs to the caller), a move line of this format
+/// ([`LineShapes::opens_a_move_line`]), `*` and `&` (a comment and a bookmark,
+/// R-KIF-010 / R-KIF-011), and [`SIDE_MARKS`] (a KI2 move). `#`, `変化：` and
+/// `まで…` are **not** among them, so a caller that wants one of those read as
+/// itself has to try it before this (`kif::skippable_line`).
 ///
 /// `&` is there because a bookmark is kept as a comment (R-KIF-011), and letting
 /// this parser take the line instead drops it without a word — which is how a
@@ -449,7 +462,7 @@ pub(super) fn not_move_line(
     input: &str,
 ) -> IResult<&str, &str, VerboseError<&str>> {
     // Asked past the indentation. What a line *is* does not change with how far
-    // in it starts (R-KIF-005 writes its move lines three columns in), so a
+    // in it starts (R-KIF-008 writes its move lines three columns in), so a
     // reader that looks only at column 0 takes an indented `*` comment or
     // `まで…` for prose and throws it away without a word. A line ending is
     // still one of the shapes declined, so a blank line goes to `blank_line`.
@@ -842,7 +855,11 @@ fn place_y(input: &str) -> IResult<&str, u8, VerboseError<&str>> {
 
 pub(super) fn move_to(input: &str) -> IResult<&str, Option<PlaceFormat>, VerboseError<&str>> {
     alt((
-        value(None, terminated(tag("同"), opt(tag("　")))),
+        // The padding after `同` is padding, however much of it there is.
+        // R-NOT says a full-width space usually follows and sometimes does not;
+        // nothing says "exactly one", and tsshogi's `moveRegExp` writes `同　*`.
+        // A file whose columns were re-aligned by a word processor has two.
+        value(None, terminated(tag("同"), take_while(is_padding))),
         map(pair(place_x, place_y), |(x, y)| Some(PlaceFormat { x, y })),
     ))(input)
 }
@@ -1028,7 +1045,7 @@ mod tests {
     }
 
     // What a line is does not change with how far in it starts. KIF writes its
-    // move lines three columns in (R-KIF-005), and a note or a `まで…` lined up
+    // move lines three columns in (R-KIF-008), and a note or a `まで…` lined up
     // with them is the same line it would be at column 0 — but a reader that
     // asks only at column 0 hands it to the prose skip, and what it said goes
     // with it. The KI2 side of this is
@@ -1441,6 +1458,10 @@ mod tests {
             " 1図以下",
             "55",
         ] {
+            assert!(
+                !opens_a_numbered_line(note.trim_start_matches(is_padding)),
+                "{note:?}"
+            );
             let kif = parse_kif_str(&format!("{KIF}{note}\n"))
                 .unwrap_or_else(|e| panic!("{note:?} in a KIF: {e}"));
             assert_eq!(2, kif.moves.len() - 1, "{note:?}");
@@ -1451,6 +1472,33 @@ mod tests {
         // And a numbered line that does carry a move is never skipped, in
         // either format.
         assert!(parse_ki2_str(&format!("{KI2}   3 ２六歩(27)\n")).is_err());
+    }
+
+    // A mark at the head of a line is how a move opens, and the indentation in
+    // front of it does not change that — `　▲有利でした` is refused exactly as
+    // `▲有利でした` is. Before the readers looked past the indentation, the
+    // padding itself satisfied the test and the line was skipped instead; the
+    // two spellings now agree. Whether a mark *anywhere* in a line should refuse
+    // it is GAP-029, still open.
+    #[test]
+    fn a_mark_opens_a_line_from_wherever_the_line_starts() {
+        use crate::parser::{parse_ki2_str, parse_kif_str};
+        const KIF: &str = "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n";
+        for pad in ["", " ", "\t", "　", "\u{a0}"] {
+            assert!(
+                parse_kif_str(&format!("{KIF}{pad}▲有利でした\n")).is_err(),
+                "{pad:?}: a line opening with a mark was skipped"
+            );
+            assert!(
+                parse_ki2_str(&format!("手合割：平手\n▲７六歩\n{pad}△有利でした\n")).is_err(),
+                "{pad:?}"
+            );
+            // A note that only quotes a mark is still prose in KIF (GAP-029).
+            assert!(
+                parse_kif_str(&format!("{KIF}{pad}※▲２六歩が本筋\n")).is_ok(),
+                "{pad:?}"
+            );
+        }
     }
 
     // `変化：2手を参照` is prose about a branch. Read as the header of one, the

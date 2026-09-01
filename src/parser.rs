@@ -653,6 +653,35 @@ mod tests {
     // offered at all. Nothing under `data/tests/` carries either UTF-8 spelling,
     // so that arm went unrun, as did the rejection of an extension neither
     // reader claims.
+    // Which encoding is tried *first*, for bytes both of them read cleanly.
+    // `竜王戦` in UTF-8 is also a run of valid Shift-JIS, so the same file has
+    // two readings and the extension picks between them. Nothing else in the
+    // suite pins the order: swapping the two arms of `decode_kifu` leaves every
+    // other test green, and the choice is visible to the consumer — the same
+    // bytes saved as `.kif` and as `.kifu` come back as different text.
+    #[test]
+    fn the_extension_decides_which_of_two_readings_wins() {
+        // `竜王戦` in UTF-8 is also a run of valid Shift-JIS, so these bytes
+        // have two clean readings and the first one asked for wins.
+        let both_ways = "竜王戦".as_bytes();
+        assert_eq!(
+            "竜王戦",
+            decode_kifu(both_ways, UTF_8).expect("reads as UTF-8")
+        );
+        assert_eq!(
+            "遶懃視謌ｦ",
+            decode_kifu(both_ways, SHIFT_JIS).expect("reads as Shift-JIS"),
+            "the Shift-JIS arm returned the UTF-8 reading"
+        );
+        // And the fallback still runs when the first reading is not clean: a
+        // `.kif` holding UTF-8 is what `either_encoding_is_read_whatever_the_extension_says`
+        // covers end to end.
+        assert_eq!(
+            "手合割：平手\n",
+            decode_kifu("手合割：平手\n".as_bytes(), SHIFT_JIS).expect("falls back")
+        );
+    }
+
     #[test]
     fn the_extension_chooses_which_encoding_is_tried_first() {
         const KIF: &str = "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n";

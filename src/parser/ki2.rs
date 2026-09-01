@@ -262,8 +262,8 @@ fn end_of_game_line(
 fn branch_header(input: &str) -> IResult<&str, (usize, &str), VerboseError<&str>> {
     let (line, _) = many0(line_ending)(input)?;
     let (rest, ply) = branch_header_ply(line)?;
-    // KI2 is the reader that uses the number (D3), so it is the one that says
-    // when the number cannot be used. Plies count from 1 (R-JKF-001), so
+    // KI2 is the reader that uses the number (D3, D19), so it is the one that
+    // says when the number cannot be used. Plies count from 1 (R-JKF-001), so
     // `変化：０手` names no move for a branch to be an alternative to; carried
     // on, it reaches `attach_branch`, which cannot find a departure point and
     // returns — taking the branch and everything under it without a word
@@ -325,7 +325,7 @@ fn move_run(
             // The writers count the same way (`MoveFormat::occupies_a_ply`).
             let numbered = out.iter().filter(|mf| mf.occupies_a_ply()).count();
             // Saturating because `first_ply` comes from a `変化：N手` line and a
-            // record can say any `N` (`branch_header_ply`). The ply is only
+            // record can say any `N` (`branch_header_ply`, D19). The ply is only
             // used to decide whose turn an outcome is, and a branch that far out
             // has no node to attach to anyway — an overflow here would be a
             // panic in a Tauri command (R-REQ-002).
@@ -782,16 +782,28 @@ mod tests {
             );
         }
         // A ply too large to use is not a spelling that cannot be read: the
-        // record still says a branch starts, and refusing the file over a digit
-        // is what R8-02 was.
+        // record still says a branch starts, and D19 puts the ceiling at
+        // "a damaged record is not fatal" rather than at supporting the number.
+        // The branch itself has no node to hang on, so it goes the way every
+        // out-of-range departure ply goes (GAP-018) — that is the part D19
+        // accepts, and it is different from `変化：０手`, which is refused
+        // because a record cannot mean it.
         for huge in ["18446744073709551616", "99999999999999999999"] {
-            assert!(
-                parse_kif_str(&format!("{KIF}変化：{huge}手\n   2 ３四歩(33)\n")).is_ok(),
-                "変化：{huge}手: refused over a number KIF never reads"
+            let kif = parse_kif_str(&format!("{KIF}変化：{huge}手\n   2 ３四歩(33)\n"))
+                .unwrap_or_else(|e| {
+                    panic!("変化：{huge}手: refused over a number KIF never reads: {e}")
+                });
+            assert_eq!(
+                1,
+                kif.moves.iter().filter(|m| m.forks.is_some()).count(),
+                "変化：{huge}手: KIF builds its tree from the ply numbers (D3)"
             );
-            assert!(
-                parse_ki2_str(&format!("{KI2}変化：{huge}手\n△８四歩\n")).is_ok(),
-                "変化：{huge}手"
+            let ki2 = parse_ki2_str(&format!("{KI2}変化：{huge}手\n△８四歩\n"))
+                .unwrap_or_else(|e| panic!("変化：{huge}手: {e}"));
+            assert_eq!(
+                0,
+                ki2.moves.iter().filter(|m| m.forks.is_some()).count(),
+                "変化：{huge}手: KI2 has no node at that ply, so the branch goes (GAP-018)"
             );
         }
     }
