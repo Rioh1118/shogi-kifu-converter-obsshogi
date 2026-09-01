@@ -440,10 +440,23 @@ fn information_line_hands(input: &str) -> IResult<&str, Information, VerboseErro
 /// `header["手合割"]` and comes back `Ok` with no moves in it, while a KIF move
 /// line joined to a header is the same shape as `棋戦：第 3 回` and cannot be
 /// told from it (`research/90-gaps.md` GAP-020).
+///
+/// A comment (R-KIF-010) and a bookmark (R-KIF-011) are lines of their own, and
+/// either can hold a `：` — `*（主催：新聞三社連合）` is the opening line of a real
+/// record. Read as a header the line takes its text with it and leaves a key
+/// nobody wrote (`*主催`). Nothing puts them back: what stops the header block in
+/// KIF is the `手数----指手---------消費時間--` line, which R-KIF-012 says a
+/// record need not have, and which KI2 has no equivalent of at all.
 fn information_line_keyvalue(
     shapes: LineShapes,
 ) -> impl FnMut(&str) -> IResult<&str, Information, VerboseError<&str>> {
     move |input| {
+        if input.starts_with(['*', '&']) {
+            return Err(nom::Err::Error(VerboseError::from_error_kind(
+                input,
+                ErrorKind::Not,
+            )));
+        }
         let (rest, (key, value)) = terminated(
             separated_pair(is_not("：\r\n"), tag("："), not_line_ending),
             line_ending,
@@ -912,6 +925,34 @@ mod tests {
         // And a value the reader does find one in: the line under it was read as
         // part of it, so the record is short by however much that line held.
         assert!(information_line_keyvalue(ANY_MOVE_MARK)("手合割：平手 ▲７六歩\n").is_err());
+        // R-KIF-010 / R-KIF-011: a comment and a bookmark hold free text, and
+        // free text holds `：`. Filed as a header they are gone from the record
+        // and a key nobody wrote is in it.
+        assert!(information_line_keyvalue(NOTHING)("*（主催：新聞三社連合）\n").is_err());
+        assert!(information_line_keyvalue(NOTHING)("&しおり：ここ\n").is_err());
+    }
+
+    // R-KIF-010: comments before the first move belong to the starting position.
+    // KIF ends its header block with `手数----指手---------消費時間--`, which
+    // R-KIF-012 says a record need not have and KI2 has no equivalent of — so a
+    // header rule that eats `*` lines eats them out of every KI2 and out of any
+    // KIF written without that line.
+    #[test]
+    fn a_comment_over_the_first_move_is_not_a_header() {
+        use crate::parser::{parse_ki2_str, parse_kif_str};
+        let ki2 = parse_ki2_str("手合割：平手\n*（主催：新聞三社連合）\n▲７六歩 △３四歩\n")
+            .expect("reads");
+        assert_eq!(
+            Some(&vec![String::from("（主催：新聞三社連合）")]),
+            ki2.moves[0].comments.as_ref(),
+            "header: {:?}",
+            ki2.header
+        );
+        assert!(ki2.header.is_empty(), "{:?}", ki2.header);
+        let kif = parse_kif_str("手合割：平手\n*（主催：新聞三社連合）\n   1 ７六歩(77)\n")
+            .expect("reads");
+        assert_eq!(ki2.moves[0].comments, kif.moves[0].comments);
+        assert!(kif.header.is_empty(), "{:?}", kif.header);
     }
 
     #[test]
