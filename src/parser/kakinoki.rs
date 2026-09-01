@@ -484,7 +484,13 @@ pub(super) fn not_move_line(
     // would make a line one reader skips and the other keeps.
     let head = input.trim_start_matches(is_padding);
     satisfy(|c| {
-        !matches!(c, '*' | '&')
+        // `|` and `+` open the rows and the frame of a board diagram
+        // (R-KIF-014 / D6). A record with a board reaches the reader through no
+        // other path (`research/90-gaps.md` GAP-007), so skipping one of its
+        // lines takes the whole position — the reader comes back with an empty
+        // 平手 and the writer saves that over the original (D4). Left here, the
+        // leftover-input check names the line that could not be read (D1).
+        !matches!(c, '*' | '&' | '|' | '+')
             && !crate::notation::LINE_ENDS.contains(&c)
             && !SIDE_MARKS.iter().any(|(mark, _)| *mark == c)
     })(head)?;
@@ -559,6 +565,10 @@ fn kansuji(input: &str) -> IResult<&str, u8, VerboseError<&str>> {
 }
 
 fn information_value_hand(input: &str) -> IResult<&str, Hand, VerboseError<&str>> {
+    // The padding in front of the value belongs to the value too. Taking it in
+    // every arm but this one is what left `後手の持駒： 歩` refused while
+    // `後手の持駒：歩 ` and `後手の持駒：` both read.
+    let (input, _) = padding(input)?;
     alt((
         // The padding after the value belongs to the value, in every arm. Left
         // out of one of them, `後手の持駒：なし ` reaches the newline check with
@@ -669,7 +679,7 @@ fn information_line_hands(input: &str) -> IResult<&str, Information, VerboseErro
     // the pieces written *before* the one that could not be read. A later drop
     // from that hand then fails to normalize, and the message names the move
     // rather than the line that actually broke.
-    let fail = |_| nom::Err::Failure(VerboseError::from_error_kind(line, ErrorKind::Tag));
+    let fail = |_| broken_line(line, "this hand line cannot be read");
     let (rest, hand) = information_value_hand(rest).map_err(fail)?;
     let (rest, _) = line_ending(rest).map_err(fail)?;
     Ok((
@@ -812,7 +822,7 @@ fn board_row(input: &str) -> IResult<&str, Vec<Piece>, VerboseError<&str>> {
             count(board_piece, 9),
             preceded(tag("|"), one_of("一二三四五六七八九")),
         ),
-        line_ending,
+        pair(padding, line_ending),
     )(input)
 }
 
@@ -821,8 +831,16 @@ fn board(input: &str) -> IResult<&str, [[Piece; 9]; 9], VerboseError<&str>> {
         tuple((
             // The two columns in front of `９` line the file numbers up with the
             // frame below them, so they are padding and not part of the word.
-            delimited(padding, tag("９ ８ ７ ６ ５ ４ ３ ２ １"), line_ending),
-            delimited(padding, tag("+---------------------------+"), line_ending),
+            delimited(
+                padding,
+                tag("９ ８ ７ ６ ５ ４ ３ ２ １"),
+                pair(padding, line_ending),
+            ),
+            delimited(
+                padding,
+                tag("+---------------------------+"),
+                pair(padding, line_ending),
+            ),
         )),
         map(count(board_row, 9), |v| {
             let mut ret = [[Piece::empty(); 9]; 9];
@@ -833,7 +851,11 @@ fn board(input: &str) -> IResult<&str, [[Piece; 9]; 9], VerboseError<&str>> {
             }
             ret
         }),
-        delimited(padding, tag("+---------------------------+"), line_ending),
+        delimited(
+            padding,
+            tag("+---------------------------+"),
+            pair(padding, line_ending),
+        ),
     )(input)
 }
 
@@ -1409,6 +1431,80 @@ mod tests {
         assert!(parse_kif_str("{\"header\":{},\"moves\":[{}]}\n").is_err());
     }
 
+    // A board diagram reaches the reader through no other path (GAP-007), so a
+    // line of one that the readers cannot take must not be taken by the skip
+    // instead: the record then comes back as an empty 平手 and the writer saves
+    // that over the original (D4). Padding at the end of a line is padding;
+    // anything else broken about the diagram is reported (D1).
+    #[test]
+    fn a_board_is_read_or_reported_but_never_skipped() {
+        use crate::parser::parse_kif_str;
+        const ROWS: [&str; 12] = [
+            "  ９ ８ ７ ６ ５ ４ ３ ２ １",
+            "+---------------------------+",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|一",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|二",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|三",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|四",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|五",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|六",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|七",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|八",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|九",
+            "+---------------------------+",
+        ];
+        let record = |rows: &[String]| {
+            format!(
+                "手合割：詰将棋\n後手の持駒：飛二\n{}先手の持駒：金\n後手番\n",
+                rows.concat()
+            )
+        };
+        // Padding at the end of any one line, on any one row.
+        for pad in [" ", "　", "\t"] {
+            for broken in 0..ROWS.len() {
+                let rows: Vec<String> = ROWS
+                    .iter()
+                    .enumerate()
+                    .map(|(i, line)| {
+                        if i == broken {
+                            format!("{line}{pad}\n")
+                        } else {
+                            format!("{line}\n")
+                        }
+                    })
+                    .collect();
+                let jkf = parse_kif_str(&record(&rows))
+                    .unwrap_or_else(|e| panic!("{pad:?} on row {broken}: {e}"));
+                assert!(
+                    jkf.initial.expect("a position").data.is_some(),
+                    "{pad:?} on row {broken}: the board went"
+                );
+            }
+        }
+        // And a diagram that is actually broken says so rather than vanishing.
+        for (name, broken, line) in [
+            ("a short frame", 1, "+--------------------------+\n"),
+            ("a half-width rank", 2, "| ・ ・ ・ ・ ・ ・ ・ ・ ・|1\n"),
+            ("eight files", 3, "| ・ ・ ・ ・ ・ ・ ・ ・|二\n"),
+        ] {
+            let rows: Vec<String> = ROWS
+                .iter()
+                .enumerate()
+                .map(|(i, l)| {
+                    if i == broken {
+                        String::from(line)
+                    } else {
+                        format!("{l}\n")
+                    }
+                })
+                .collect();
+            assert!(parse_kif_str(&record(&rows)).is_err(), "{name}");
+        }
+        // Including one that stops in the middle of the file.
+        let cut: Vec<String> = ROWS[..6].iter().map(|l| format!("{l}\n")).collect();
+        assert!(parse_kif_str(&record(&cut)).is_err(), "a diagram cut short");
+    }
+
     // R-KIF-014 asks a *writer* to spell an empty hand `なし`. A reader that
     // refuses the blank one refuses the whole file — board and all — over a
     // line that says nothing, and tsshogi's `readHand` drops an empty section
@@ -1439,6 +1535,11 @@ mod tests {
             ("歩", 1, 0),
             ("歩十八", 18, 0),
             ("歩 角", 1, 1),
+            // The padding in front of the value belongs to the value too.
+            (" なし", 0, 0),
+            (" 歩", 1, 0),
+            ("　歩", 1, 0),
+            ("\t歩 角", 1, 1),
         ] {
             let jkf = parse_kif_str(&format!("後手の持駒：{value}\n{BOARD}"))
                 .unwrap_or_else(|e| panic!("{value:?}: {e}"));
