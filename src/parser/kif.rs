@@ -1,7 +1,7 @@
 use super::kakinoki::{
-    blank_line, broken_line, comments_on_the_starting_position, ends_here, is_padding,
-    move_comment_line, move_to, not_move_line, opens_a_branch_header, opens_a_shared_line,
-    parse_without_moves, piece_kind, LineShapes,
+    blank_line, branch_header_ply, broken_line, comments_on_the_starting_position, ends_here,
+    is_padding, move_comment_line, move_to, not_move_line, opens_a_branch_header,
+    opens_a_shared_line, parse_without_moves, piece_kind, LineShapes,
 };
 use crate::jkf::*;
 use nom::branch::alt;
@@ -122,9 +122,10 @@ fn opens_a_kif_line(head: &str) -> bool {
 /// Returns the line itself, which is where an error about the branch has to
 /// point.
 fn branch_header_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
-    // `手` is what the writers put after the number, but nothing requires it of
-    // a reader — tsshogi's `branchRegExp` reads the number and stops.
-    let (rest, _) = tuple((tag("変化："), digit1, opt(tag("手"))))(input)?;
+    // The number itself is not used: KIF builds the tree from the ply numbers on
+    // the move lines (D3). It is read anyway so that this consumes exactly what
+    // `opens_a_branch_header` counts.
+    let (rest, _) = branch_header_ply(input)?;
     let (rest, _) = ends_here(SHAPES, input, rest)?;
     Ok((rest, input))
 }

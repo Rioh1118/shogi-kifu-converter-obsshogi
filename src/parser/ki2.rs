@@ -1,14 +1,14 @@
 use super::kakinoki::{
-    broken_line, comments_on_the_starting_position, ends_here, is_padding, move_comment_line,
-    move_to, not_move_line, opens_a_shared_line, parse_without_moves, piece_kind,
-    program_comment_line, LineShapes, NOTE_MARKERS, SIDE_MARKS,
+    branch_header_ply, broken_line, comments_on_the_starting_position, ends_here, is_padding,
+    move_comment_line, move_to, not_move_line, opens_a_shared_line, parse_without_moves,
+    piece_kind, program_comment_line, LineShapes, NOTE_MARKERS, SIDE_MARKS,
 };
 use crate::jkf::*;
 use crate::notation::LINE_ENDS;
 use nom::branch::alt;
 use nom::bytes::complete::tag;
-use nom::character::complete::{digit1, line_ending, space0};
-use nom::combinator::{map, map_res, opt, value};
+use nom::character::complete::{line_ending, space0};
+use nom::combinator::{map, opt, value};
 use nom::error::{ParseError, VerboseError};
 use nom::multi::{many0, many1};
 use nom::sequence::{preceded, tuple};
@@ -256,10 +256,7 @@ fn end_of_game_line(
 /// the newline between them is lost.
 fn branch_header(input: &str) -> IResult<&str, (usize, &str), VerboseError<&str>> {
     let (line, _) = many0(line_ending)(input)?;
-    let (rest, ply) = preceded(tag("変化："), map_res(digit1, str::parse::<usize>))(line)?;
-    // `手` is what the writers put after the number, but nothing requires it of
-    // a reader — tsshogi's `branchRegExp` reads the number and stops.
-    let (rest, _) = opt(tag("手"))(rest)?;
+    let (rest, ply) = branch_header_ply(line)?;
     let (rest, _) = ends_here(SHAPES, line, rest)?;
     Ok((rest, (ply, line)))
 }
@@ -673,18 +670,25 @@ mod tests {
                 "{before:?}: the outcome is gone"
             );
         }
-        // A `変化：` the reader cannot read is still a `変化：`. Both of the
-        // blocks below have to say so: one runs into the leftover-input check
-        // through the moves under the header, and the other only through the
-        // header itself.
-        for header in ["変化：２手", "変化： 2手"] {
+        // A branch header is one however its number is spelled, and every
+        // spelling `opens_a_branch_header` counts is one `branch_header_ply`
+        // consumes. A spelling only one of the two knows is a line nobody owns:
+        // counted, so not skipped as prose; unreadable, so not consumed.
+        for header in ["変化：2手", "変化：２手", "変化： 2手", "変化：２手"] {
             for block in ["▲２六歩\n", "まで2手で投了\n"] {
+                let jkf = parse_ki2_str(&format!("{MOVES}{header}\n{block}"))
+                    .unwrap_or_else(|e| panic!("{header:?} + {block:?}: {e}"));
                 assert!(
-                    parse_ki2_str(&format!("{MOVES}{header}\n{block}")).is_err(),
-                    "{header:?} + {block:?}: skipped, and what it said went with it"
+                    jkf.moves[2].forks.is_some(),
+                    "{header:?} + {block:?}: read as the main line carrying on: {:?}",
+                    jkf.moves
                 );
             }
         }
+        // And `変化：` with no number is a sentence opening with two characters,
+        // so it is prose — the same as KIF makes of it (D18).
+        let prose = parse_ki2_str(&format!("{MOVES}変化：ここから\n")).expect("reads");
+        assert_eq!(2, prose.moves.len() - 1, "{:?}", prose.moves);
     }
 
     // R-KI2-001: KI2 is a record people read, and what people paste is padded

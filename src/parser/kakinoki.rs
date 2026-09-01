@@ -157,6 +157,72 @@ pub(super) fn opens_a_branch_header(head: &str) -> bool {
         })
 }
 
+/// Reads `変化：<N>手` and returns `N`.
+///
+/// The same shape [`opens_a_branch_header`] recognises, and for the same reason
+/// it is one function: what a reader *counts* as a branch header and what a
+/// reader can *consume* have to be the same set. A line inside the difference
+/// belongs to nobody — counted, so not skipped as prose; unreadable, so not
+/// consumed — and the leftover-input check refuses a record over a line the
+/// format has always allowed (D1, D17).
+///
+/// Full-width digits among them. KIF never uses the number (the tree comes from
+/// the ply numbers on the move lines, D3), and KI2 needs it, so folding the
+/// spelling here is what lets both read `変化：２手`.
+pub(super) fn branch_header_ply(input: &str) -> IResult<&str, usize, VerboseError<&str>> {
+    /// What to take off a full-width digit to reach its half-width twin.
+    const FULL_WIDTH_ZERO: u32 = '０' as u32 - '0' as u32;
+    let unreadable = || nom::Err::Error(VerboseError::from_error_kind(input, ErrorKind::Digit));
+    let (rest, _) = tag("変化：")(input)?;
+    let rest = rest.trim_start_matches(is_padding);
+    // Measured on the source, not on the folded copy: a full-width digit is
+    // three bytes and its half-width twin is one, so the two lengths are
+    // different indices into `rest`.
+    let taken = rest
+        .char_indices()
+        .take_while(|(_, c)| c.is_ascii_digit() || ('０'..='９').contains(c))
+        .last()
+        .map_or(0, |(i, c)| i + c.len_utf8());
+    if taken == 0 {
+        return Err(unreadable());
+    }
+    let ply = rest[..taken]
+        .chars()
+        .map(|c| {
+            char::from_u32(
+                u32::from(c)
+                    - if c.is_ascii_digit() {
+                        0
+                    } else {
+                        FULL_WIDTH_ZERO
+                    },
+            )
+            .unwrap_or(c)
+        })
+        .collect::<String>()
+        .parse::<usize>()
+        .map_err(|_| unreadable())?;
+    // `手` is what the writers put after the number, but nothing requires it of
+    // a reader — tsshogi's `branchRegExp` reads the number and stops.
+    let (rest, _) = opt(tag("手"))(&rest[taken..])?;
+    Ok((rest, ply))
+}
+
+/// Whether `head` is a `変化：<N>手` header and nothing else, to the end of its
+/// line.
+///
+/// Asked where a line has already ended, not where one begins. `変化：2手` in
+/// the annotation column of a move line — `  83 投了    変化：2手  ( 0:00)` —
+/// is prose about a branch; reading it as the header of one says the record
+/// runs into the line below it, which it does not, and refuses the whole file
+/// over a note (D17).
+fn a_branch_header_fills_the_line(head: &str) -> bool {
+    match branch_header_ply(head) {
+        Ok((rest, _)) => end_of_line(rest.trim_start_matches(is_padding)).is_ok(),
+        Err(_) => false,
+    }
+}
+
 /// Whether `tail` — what is left of a line the reader has finished with —
 /// begins the line that should have been underneath it.
 ///
@@ -183,13 +249,23 @@ pub(super) fn opens_a_branch_header(head: &str) -> bool {
 /// — which [`space0`] does not take and [`SPACES`] does — is refused whole, with
 /// an error naming a line it does not run into.
 fn begins_the_line_below(shapes: LineShapes, tail: &str) -> bool {
+    // A `変化：` here has to be the whole of the line it would begin. Everywhere
+    // else the question is asked at the head of a line, where a header followed
+    // by a note is still a header; here it is asked past the end of one, where
+    // the same characters are the note.
+    let opens = |head: &str| {
+        if opens_a_branch_header(head) {
+            return a_branch_header_fills_the_line(head);
+        }
+        (shapes.opens_a_line)(head)
+    };
     let head = tail.trim_start_matches(is_padding);
-    if (shapes.opens_a_line)(head) {
+    if opens(head) {
         return true;
     }
     match head.chars().next() {
         Some(c) if !NOTE_MARKERS.contains(&c) && !crate::notation::LINE_ENDS.contains(&c) => {
-            (shapes.opens_a_line)(head[c.len_utf8()..].trim_start_matches(is_padding))
+            opens(head[c.len_utf8()..].trim_start_matches(is_padding))
         }
         _ => false,
     }
@@ -975,11 +1051,42 @@ mod tests {
             (ki2::SHAPES, " △８四歩が最善だった"),
             (ki2::SHAPES, "　△３三桂が敗着"),
             (ki2::SHAPES, " △８四歩から"),
+            // A branch header that does not own the line it would begin is
+            // prose about a branch. `  83 投了    変化：2手  ( 0:00)` is how
+            // the annotation column of a move line reads.
+            (kif::SHAPES, "    変化：2手     ( 0:00/00:00:00)"),
+            (kif::SHAPES, "    変化：２手     ( 0:00/00:00:00)"),
+            (kif::SHAPES, " 変化：2手を参照"),
+            (ki2::SHAPES, " 変化：２手を参照"),
         ] {
             assert!(
                 !begins_the_line_below(shapes, tail),
                 "{tail:?} is an annotation, and dropping it loses nothing"
             );
+        }
+    }
+
+    // What a reader counts as a branch header and what it can consume are the
+    // same set, so that no line falls between them: counted, and so not skipped
+    // as prose; unreadable, and so reported by the leftover-input check (D1).
+    #[test]
+    fn every_branch_header_that_counts_as_one_can_be_read_as_one() {
+        for (head, ply) in [
+            ("変化：2手", 2),
+            ("変化：２手", 2),
+            ("変化： 2手", 2),
+            ("変化：\t１２手", 12),
+            ("変化：38", 38),
+        ] {
+            assert!(opens_a_branch_header(head), "{head:?}");
+            let (rest, read) =
+                branch_header_ply(head).unwrap_or_else(|e| panic!("{head:?}: {e:?}"));
+            assert_eq!(ply, read, "{head:?}");
+            assert!(rest.is_empty(), "{head:?} left {rest:?}");
+        }
+        for head in ["変化：ここから", "変化：", "変化：手", "変わり：2手"] {
+            assert!(!opens_a_branch_header(head), "{head:?}");
+            assert!(branch_header_ply(head).is_err(), "{head:?}");
         }
     }
 
