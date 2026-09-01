@@ -1,8 +1,8 @@
 use crate::jkf::*;
 use nom::branch::alt;
 use nom::bytes::complete::{is_not, tag, take_while};
-use nom::character::complete::{line_ending, not_line_ending, one_of, satisfy};
-use nom::combinator::{eof, map, map_res, opt, peek, value};
+use nom::character::complete::{char, digit1, line_ending, not_line_ending, one_of, satisfy};
+use nom::combinator::{eof, map, map_res, opt, peek, recognize, value};
 use nom::error::{ErrorKind, ParseError, VerboseError};
 use nom::multi::{count, many0, many1};
 use nom::sequence::{delimited, pair, preceded, terminated, tuple};
@@ -131,8 +131,19 @@ pub(crate) fn is_padding(c: char) -> bool {
 /// `棋戦:竜王戦` this reader cannot name is dropped rather than kept as text
 /// (`research/90-gaps.md` GAP-031).
 pub(super) fn colon(input: &str) -> IResult<&str, char, VerboseError<&str>> {
-    one_of("：:")(input)
+    one_of(COLONS)(input)
 }
+
+/// The one the format itself is written with. The other is tolerance.
+pub(super) const COLON: char = '：';
+
+/// Every character that may separate a keyword from its value.
+///
+/// One set, so that [`colon`] and the key rule in [`information_line_keyvalue`]
+/// cannot answer differently: the key is taken as everything up to one of these,
+/// and a character `colon` knows that the key rule does not would be swallowed
+/// into the key — leaving nothing for `colon` to find and dropping the line.
+pub(super) const COLONS: &str = "：:";
 
 /// The indentation and column padding a line is written with.
 ///
@@ -179,6 +190,17 @@ pub(super) struct LineShapes {
     pub(super) opens_a_line: fn(&str) -> bool,
 }
 
+/// Where a word on a line ends: padding, the line ending, or the mark a note
+/// opens with.
+///
+/// The outcome word on a `まで…` line and the number on a `変化：` line both stop
+/// here. One function, because the two would drift: the same character added to
+/// one and not the other changes what an outcome word is in one place and
+/// whether an empty branch block is reported in the other.
+pub(super) fn ends_a_word(c: char) -> bool {
+    is_padding(c) || crate::notation::LINE_ENDS.contains(&c) || NOTE_MARKERS.contains(&c)
+}
+
 /// What a note opens with.
 ///
 /// Prose about a move puts one of these in front of it — `※▲２六歩が本筋`,
@@ -187,9 +209,22 @@ pub(super) struct LineShapes {
 /// lost. Whatever replaced a newline, it is not one of these.
 pub(super) const NOTE_MARKERS: [char; 8] = ['※', '（', '(', '【', '[', '「', '〈', '＜'];
 
+/// The word a branch declaration opens with (D3).
+///
+/// One spelling, because the guard in [`opens_a_branch_header`] and the parser
+/// in [`branch_header_ply`] both look for it: a guard that knows a narrower word
+/// than the parser silently stops the parser from ever being asked, which is the
+/// "counted set ≠ consumed set" failure this pair keeps having.
+pub(super) const BRANCH_KEYWORD: &str = "変化";
+
 /// The shapes both formats share: a comment, a bookmark, a `#` note, a `変化：`
 /// header, a `まで…` outcome.
 pub(super) fn opens_a_shared_line(head: &str) -> bool {
+    // Past the indentation, for every shape and not just the one whose parser
+    // happens to look past it. A predicate that answers `true` for `　変化：2手`
+    // and `false` for `　*コメント` has two contracts, and the callers cannot see
+    // which one they are getting.
+    let head = head.trim_start_matches(is_padding);
     head.starts_with(['*', '&', '#']) || opens_a_branch_header(head) || head.starts_with("まで")
 }
 
@@ -198,34 +233,45 @@ pub(super) fn opens_a_shared_line(head: &str) -> bool {
 /// The number is what makes it one. `変化：` on its own is two characters a
 /// sentence can open with.
 ///
-/// Built on [`branch_header_ply`] rather than beside it, so that what a reader
-/// *counts* as a branch header and what it can *consume* are the same set by
-/// construction. Held apart they drift, and the drift shows up in opposite
-/// directions: a count wider than the read makes a branch that reads as the
-/// main line carrying on (R-JKF-004), and a read wider than the count refuses
-/// records the format has always allowed (D17).
+/// Built on [`branch_header_ply`], so that what a reader *counts* as a branch
+/// header and what it can *consume* are the same set. Held apart they drift, and
+/// the drift shows up in opposite directions: a count wider than the read makes
+/// a branch that reads as the main line carrying on (R-JKF-004), and a read
+/// wider than the count refuses records the format has always allowed (D17).
+///
+/// The `starts_with` in front is a guard, not a second answer: it is the
+/// parser's own prefix ([`BRANCH_KEYWORD`]), and it is here because this runs on
+/// nearly every line while `branch_header_ply` builds a `VerboseError` on each
+/// miss — the cost `kif::skip_interruptions` is hand-written to avoid.
 pub(super) fn opens_a_branch_header(head: &str) -> bool {
-    // `starts_with` first because this runs on nearly every line and
-    // `branch_header_ply` builds a `VerboseError` on each miss — the cost
-    // `kif::skip_interruptions` is hand-written to avoid.
-    head.trim_start_matches(is_padding).starts_with("変化") && branch_header_ply(head).is_ok()
+    head.trim_start_matches(is_padding)
+        .starts_with(BRANCH_KEYWORD)
+        && branch_header_ply(head).is_ok()
 }
 
-/// Whether a `変化：<N>手` line says nothing but that.
+/// Whether an empty block under this `変化：` line is a branch that went missing.
 ///
-/// Not what makes it a header — a number followed by a word is still a branch
-/// declaration, and tsshogi reads it as one (`変化：3手目`). What it decides is
-/// whether an **empty** block under it is worth reporting: `変化：2手` with
-/// nothing beneath it is a branch that went missing and D1 says so, while
-/// `変化：2手を参照` with nothing beneath it is a note about a branch and there
-/// was never anything to lose. D17's table already fixes the second spelling as
-/// an annotation where it lands at the end of a line.
-pub(super) fn a_branch_header_is_all_the_line_says(head: &str) -> bool {
-    matches!(branch_header_ply(head), Ok((rest, _)) if {
-        rest.starts_with(|c: char| {
-            is_padding(c) || crate::notation::LINE_ENDS.contains(&c) || NOTE_MARKERS.contains(&c)
-        }) || rest.is_empty()
-    })
+/// True when the number is the last thing the line says — padding, a note
+/// marker or the line ending after it. `変化：2手 別案` and `変化：2手（本命）`
+/// are true as well: what follows is a note *on* the header, not a sentence the
+/// header is part of.
+///
+/// Not what makes it a header. A number followed by a word is still a branch
+/// declaration (D20) — `変化：3手目` names ply 3 — and reading it as prose lets
+/// the branch run on as the main line, which changes whose game it is
+/// (R-JKF-004).
+///
+/// What this decides is whether an **empty** block under such a line is worth
+/// reporting: `変化：2手` with nothing beneath it is a branch that went missing
+/// and D1 says so, while `変化：2手を参照` with nothing beneath it is a note
+/// about a branch and there was never anything to lose.
+///
+/// The padding, the line ending and [`NOTE_MARKERS`] are the same set D17 uses
+/// for the end of a line, but **D17 is not the reason** — that rule is about
+/// what is left after a line the reader finished with, and this is a question
+/// about the head of one. D20 is the decision.
+pub(super) fn an_empty_block_here_is_worth_reporting(head: &str) -> bool {
+    matches!(branch_header_ply(head), Ok((rest, _)) if rest.starts_with(ends_a_word) || rest.is_empty())
 }
 
 /// Reads `変化：<N>手` and returns `N`.
@@ -248,10 +294,8 @@ pub(super) fn a_branch_header_is_all_the_line_says(head: &str) -> bool {
 /// the ceiling is here so that a damaged one is not fatal, not to support it.)
 ///
 /// Starts past the indentation, so that a `変化：` one column in is the same
-/// line as one at column 0 ([`padding`]). Every caller asks the question that
-/// way, and the one that consumed it did not — which left a `変化:` above the
-/// first move of a KI2 to be read as a branch of a main line that has no node
-/// to hang it on.
+/// line as one at column 0 ([`padding`]). The callers all ask the question that
+/// way, so consuming it here keeps the counted set and the consumed set equal.
 ///
 /// Ply 0 is read here and refused by the reader that uses it. Plies count from 1
 /// (R-JKF-001), so `変化：０手` names no move for a branch to be an alternative
@@ -260,7 +304,7 @@ pub(super) fn a_branch_header_is_all_the_line_says(head: &str) -> bool {
 /// `ki2::branch_header`.
 pub(super) fn branch_header_ply(input: &str) -> IResult<&str, usize, VerboseError<&str>> {
     let unreadable = || nom::Err::Error(VerboseError::from_error_kind(input, ErrorKind::Digit));
-    let (rest, _) = preceded(pair(padding, tag("変化")), colon)(input)?;
+    let (rest, _) = preceded(pair(padding, tag(BRANCH_KEYWORD)), colon)(input)?;
     let rest = rest.trim_start_matches(is_padding);
     // Folded a digit at a time, so that the test for "is this a digit" and the
     // arithmetic that assumes it are the same expression. Split apart, widening
@@ -293,11 +337,102 @@ pub(super) fn branch_header_ply(input: &str) -> IResult<&str, usize, VerboseErro
 /// is prose about a branch; reading it as the header of one says the record
 /// runs into the line below it, which it does not, and refuses the whole file
 /// over a note (D17).
+///
+/// Not the same question as [`an_empty_block_here_is_worth_reporting`], which
+/// allows a note after the number: `変化：2手（本命）` fills no line but does
+/// declare a block. Check which one you mean before calling either.
 fn a_branch_header_fills_the_line(head: &str) -> bool {
     match branch_header_ply(head) {
         Ok((rest, _)) => end_of_line(rest.trim_start_matches(is_padding)).is_ok(),
         Err(_) => false,
     }
+}
+
+/// The KIF outcome words, longest first so that a word is never cut short by a
+/// prefix of itself. [`MoveSpecial::from_kif_word`] holds the mapping.
+///
+/// Here rather than with the KIF reader because both readers ask: KI2 has to
+/// know that `   5 投了` is a line something wrote as a move, so that skipping
+/// it as prose does not take the outcome with it (D1, `opens_a_numbered_line`).
+pub(super) const KIF_SPECIAL_WORDS: [&str; 12] = [
+    "切れ負け",
+    "入玉勝ち",
+    "反則負け",
+    "反則勝ち",
+    "不戦勝",
+    "不戦敗",
+    "千日手",
+    "持将棋",
+    "投了",
+    "中断",
+    "詰み",
+    "不詰",
+];
+
+/// Parses an outcome word. `side_to_move` decides the direction of 反則勝ち.
+pub(super) fn move_special(
+    side_to_move: Color,
+) -> impl FnMut(&str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
+    move |input| {
+        for word in KIF_SPECIAL_WORDS {
+            if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>(word)(input) {
+                if let Some(special) = MoveSpecial::from_kif_word(word, side_to_move) {
+                    return Ok((
+                        rest,
+                        MoveFormat {
+                            special: Some(special),
+                            ..Default::default()
+                        },
+                    ));
+                }
+            }
+        }
+        Err(nom::Err::Error(VerboseError::from_error_kind(
+            input,
+            nom::error::ErrorKind::Alt,
+        )))
+    }
+}
+
+/// The half of [`opens_a_numbered_line`] that answers when nothing separates
+/// the number from what follows it. A writer that aligned its columns leaves
+/// padding there and the question does not reach here; without it, `35手目まで`
+/// and `2８四歩(83)` are the same characters until somebody tries to read them.
+///
+/// So this asks whether `kif::move_line` would find a move: the destination, the
+/// piece, and the *shape* of an origin. `move_from` itself is not used —
+/// it raises a `Failure` for `(00)`, which `.is_ok()` would fold into "not a
+/// move line" and hand `1７六歩(00)` to the skip. The shape keeps such a line
+/// here, where the leftover-input check reports it (D1).
+///
+/// The origin is what makes this the whole shape rather than half of it.
+/// Without it `2同銀と取れば` counts as a move line and nothing can consume it:
+/// the record is refused over a note (D17).
+///
+/// The outcome words are in it because a move line can hold one instead of a
+/// move (`   5 投了`, R-KIF-007). Which side 反則勝ち accuses does not change
+/// whether the line is one, so either colour will do to ask.
+pub(super) fn a_move_follows_the_number(after_digits: &str) -> bool {
+    alt((
+        // The whole of what is left, for an outcome: a move line that holds one
+        // holds nothing else (`   5 投了`, R-KIF-007), so `3投了もあった` is a
+        // note about an outcome and not a line that names one.
+        recognize(terminated(
+            move_special(Color::Black),
+            pair(padding, nom::combinator::eof),
+        )),
+        recognize(tuple((
+            move_to,
+            piece_kind,
+            opt(tag("成")),
+            // The *shape* of an origin, not `move_from` itself: that one raises
+            // a `Failure` for `(00)`, and `.is_ok()` would fold it into "not a
+            // move line" — sending `1７六歩(00)` to the skip, which drops it
+            // (D1, `an_origin_off_the_board_is_an_error_not_a_drop`).
+            alt((tag("打"), recognize(delimited(tag("("), digit1, tag(")"))))),
+        ))),
+    ))(after_digits)
+    .is_ok()
 }
 
 /// Whether `head` is the beginning of a `<手数> <指し手>` line
@@ -316,7 +451,7 @@ fn a_branch_header_fills_the_line(head: &str) -> bool {
 ///
 /// Without padding the question has to be asked of the reader that would
 /// consume the line, because `35手目まで` is a note and `2８四歩(83)` is a move
-/// line a writer left unaligned. [`kif::move_line`](super::kif) takes any amount
+/// line a writer left unaligned. `kif::move_line` takes any amount
 /// of padding including none, so a question that demanded some would call the
 /// second one prose and hand it to the skip, which drops the move.
 ///
@@ -339,7 +474,7 @@ pub(super) fn opens_a_numbered_line(head: &str) -> bool {
     if after_digits.starts_with(is_padding) {
         return !after_digits.trim_start_matches(is_padding).is_empty();
     }
-    super::kif::a_move_follows_the_number(after_digits)
+    a_move_follows_the_number(after_digits)
 }
 
 /// Whether `tail` — what is left of a line the reader has finished with —
@@ -608,9 +743,8 @@ fn kansuji(input: &str) -> IResult<&str, u8, VerboseError<&str>> {
 }
 
 fn information_value_hand(input: &str) -> IResult<&str, Hand, VerboseError<&str>> {
-    // The padding in front of the value belongs to the value too. Taking it in
-    // every arm but this one is what left `後手の持駒： 歩` refused while
-    // `後手の持駒：歩 ` and `後手の持駒：` both read.
+    // The padding in front of the value belongs to the value, the same as the
+    // padding behind it: `後手の持駒： 歩` is the value `歩`.
     let (input, _) = padding(input)?;
     alt((
         // The padding after the value belongs to the value, in every arm. Left
@@ -706,7 +840,7 @@ fn information_line_preset(input: &str) -> IResult<&str, Information, VerboseErr
             tuple((padding, tag(crate::handicap::KIF_KEYWORD), padding, colon)),
             information_value_preset,
         ),
-        line_ending,
+        end_of_line,
     )(input)
 }
 
@@ -730,7 +864,7 @@ fn information_line_hands(input: &str) -> IResult<&str, Information, VerboseErro
     // rather than the line that actually broke.
     let fail = |_| broken_line(line, "this hand line cannot be read");
     let (rest, hand) = information_value_hand(rest).map_err(fail)?;
-    let (rest, _) = line_ending(rest).map_err(fail)?;
+    let (rest, _) = end_of_line(rest).map_err(fail)?;
     Ok((
         rest,
         match color {
@@ -763,6 +897,11 @@ fn a_key_that_names_its_line(key: &str) -> bool {
 /// nobody wrote (`*主催`). Nothing puts them back: what stops the header block in
 /// KIF is the `手数----指手---------消費時間--` line, which R-KIF-012 says a
 /// record need not have, and which KI2 has no equivalent of at all.
+/// What a key runs up to: the colon the format uses, or a line ending.
+const FULL_WIDTH_ONLY: &str = "：\r\n";
+/// The same, plus the half-width colon [`colon`] also takes.
+const EITHER_COLON: &str = "：:\r\n";
+
 fn information_line_keyvalue(
     shapes: LineShapes,
 ) -> impl FnMut(&str) -> IResult<&str, Information, VerboseError<&str>> {
@@ -783,10 +922,10 @@ fn information_line_keyvalue(
         // including lines this crate's own writer produces from a `header` the
         // consumer filled in.
         let (rest, key, mark) =
-            match preceded(padding, terminated(is_not("：\r\n"), tag("：")))(input) {
-                Ok((rest, key)) => (rest, key, '：'),
+            match preceded(padding, terminated(is_not(FULL_WIDTH_ONLY), char(COLON)))(input) {
+                Ok((rest, key)) => (rest, key, COLON),
                 Err(_) => {
-                    let (rest, key) = preceded(padding, is_not("：:\r\n"))(input)?;
+                    let (rest, key) = preceded(padding, is_not(EITHER_COLON))(input)?;
                     let (rest, mark) = colon(rest)?;
                     (rest, key, mark)
                 }
@@ -814,7 +953,7 @@ fn information_line_keyvalue(
                 ErrorKind::OneOf,
             )));
         }
-        let (rest, value) = terminated(not_line_ending, line_ending)(rest)?;
+        let (rest, value) = terminated(not_line_ending, end_of_line)(rest)?;
         if (shapes.carries_a_line)(value) {
             return Err(broken_line(input, "this line runs into the one below it"));
         }
@@ -890,7 +1029,7 @@ fn board_row(input: &str) -> IResult<&str, Vec<Piece>, VerboseError<&str>> {
             count(board_piece, 9),
             preceded(tag("|"), one_of("一二三四五六七八九")),
         ),
-        pair(padding, line_ending),
+        pair(padding, end_of_line),
     )(input)
 }
 
@@ -922,7 +1061,7 @@ fn board(input: &str) -> IResult<&str, [[Piece; 9]; 9], VerboseError<&str>> {
         delimited(
             padding,
             tag("+---------------------------+"),
-            pair(padding, line_ending),
+            pair(padding, end_of_line),
         ),
     )(input)
 }
@@ -1506,12 +1645,12 @@ mod tests {
         assert!(parse_kif_str("{\"header\":{},\"moves\":[{}]}\n").is_err());
     }
 
-    // What a reader counts as a move line and what it can consume have to be the
-    // same set — the pairing `opens_a_branch_header` has with
-    // `branch_header_ply`. `kif::move_line` takes any amount of padding between
-    // the number and the move, including none, so a question that demanded some
-    // called `   2８四歩(83)` prose and handed it to the skip, which dropped the
-    // move.
+    // A line counted as a move line always reaches a reader — either
+    // `kif::move_line` takes it, or the leftover-input check names it. The two
+    // sets are deliberately *not* equal: `   2 パス` and `   1 ７六歩(00)` are
+    // counted and cannot be read, and that is the trade D1 and D8 take
+    // (GAP-020 of `research/90-gaps.md`). What must not happen is the other
+    // direction — a line the skip takes that `move_line` would have read.
     #[test]
     fn a_move_line_a_writer_left_unaligned_is_still_a_move_line() {
         use crate::parser::{parse_ki2_str, parse_kif_str};
@@ -1619,6 +1758,88 @@ mod tests {
                 .header
                 .get("a:b")
         );
+    }
+
+    // A text file need not end with a newline (`end_of_line`), and a header
+    // block can be the whole of one: a position with no moves reaches the reader
+    // through no other path (GAP-007). Requiring `line_ending` there drops the
+    // last line and says nothing about it.
+    #[test]
+    fn the_header_block_reads_without_a_trailing_newline() {
+        use crate::parser::parse_kif_str;
+        const BOARD: &str = concat!(
+            "  ９ ８ ７ ６ ５ ４ ３ ２ １\n",
+            "+---------------------------+\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|一\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|二\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|三\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|四\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|五\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|六\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|七\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|八\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|九\n",
+            "+---------------------------+\n",
+        );
+        assert_eq!(
+            Some(&String::from("竜王戦")),
+            parse_kif_str("手合割：平手\n棋戦：竜王戦")
+                .expect("reads")
+                .header
+                .get("棋戦")
+        );
+        assert_eq!(
+            Preset::PresetKY,
+            parse_kif_str("手合割：香落ち")
+                .expect("reads")
+                .initial
+                .expect("a position")
+                .preset
+        );
+        let hand = parse_kif_str(&format!("後手の持駒：飛\n{BOARD}先手の持駒：金"))
+            .expect("reads")
+            .initial
+            .expect("a position")
+            .data
+            .expect("a board");
+        assert_eq!(1, hand.hands[0].KI);
+        let side = parse_kif_str(&format!("後手の持駒：飛\n{BOARD}先手の持駒：金\n後手番"))
+            .expect("reads")
+            .initial
+            .expect("a position")
+            .data
+            .expect("a board");
+        assert_eq!(Color::White, side.color);
+        // Including the board's own closing frame.
+        assert!(
+            parse_kif_str(&format!("後手の持駒：飛\n{}", BOARD.trim_end()))
+                .expect("reads")
+                .initial
+                .expect("a position")
+                .data
+                .is_some()
+        );
+    }
+
+    // One contract for every shape the two formats share: the indentation is
+    // looked past for all of them, or the callers cannot tell which answer they
+    // are getting.
+    #[test]
+    fn a_shared_shape_is_one_however_far_in_it_starts() {
+        for pad in ["", " ", "　", "\t"] {
+            for line in [
+                "*コメント",
+                "&しおり",
+                "# メモ",
+                "変化：2手",
+                "まで2手で投了",
+            ] {
+                assert!(
+                    opens_a_shared_line(&format!("{pad}{line}")),
+                    "{pad:?} + {line:?}"
+                );
+            }
+        }
     }
 
     // A board diagram reaches the reader through no other path (GAP-007), so a
@@ -1827,10 +2048,9 @@ mod tests {
         }
     }
 
-    // `変化：2手を参照` is prose about a branch. Read as the header of one, the
-    // block under it is empty and `a 変化 block with no moves under it` refuses
-    // the whole record over a note — the same string D17's table already fixes
-    // as an annotation where it lands at the end of a line.
+    // A `変化：<数字>` line is a branch declaration whatever follows the number
+    // (D20). What the suffix decides is whether an empty block under it is a
+    // branch that went missing (D1) or a note that never had one.
     #[test]
     fn a_branch_header_is_the_whole_of_what_its_number_says() {
         use crate::parser::{parse_ki2_str, parse_kif_str};
@@ -1838,14 +2058,14 @@ mod tests {
             "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n   2 ８四歩(83)\n";
         const KI2: &str = "手合割：平手\n▲７六歩 △８四歩\n";
         // A note about a branch, with nothing under it: skipped, in both
-        // formats, as it was before this crate started reading the line at all.
+        // formats.
         for note in [
             "変化：2手を参照",
             "変化：2手が有力",
             "変化：2手目以下は別途",
             "変化：ここから",
         ] {
-            assert!(!a_branch_header_is_all_the_line_says(note), "{note:?}");
+            assert!(!an_empty_block_here_is_worth_reporting(note), "{note:?}");
             let kif = parse_kif_str(&format!("{KIF}{note}\n"))
                 .unwrap_or_else(|e| panic!("{note:?} in a KIF: {e}"));
             assert_eq!(2, kif.moves.len() - 1, "{note:?}");
@@ -2065,7 +2285,16 @@ mod tests {
     fn parse_information_keyvalue() {
         assert!(information_line_keyvalue(NOTHING)("").is_err());
         assert!(information_line_keyvalue(NOTHING)("# comment\n").is_err());
-        assert!(information_line_keyvalue(NOTHING)("key：value with not line ending").is_err());
+        // A text file need not end with a newline, and a header block can be the
+        // whole of one (a position with no moves). Requiring `line_ending` drops
+        // the last line and says nothing about it — `end_of_line`'s rule.
+        assert_eq!(
+            Ok((
+                "",
+                Information::KeyValue(String::from("key"), String::from("value at the end"))
+            )),
+            information_line_keyvalue(NOTHING)("key：value at the end")
+        );
         assert_eq!(
             Ok((
                 "",

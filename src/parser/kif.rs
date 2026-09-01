@@ -1,17 +1,17 @@
 use super::kakinoki::{
-    a_branch_header_is_all_the_line_says, blank_line, branch_header_ply, broken_line,
-    comments_on_the_starting_position, ends_here, is_padding, move_comment_line, move_to,
-    not_move_line, opens_a_branch_header, opens_a_numbered_line, opens_a_shared_line, padding,
-    parse_without_moves, piece_kind, LineShapes, Position,
+    an_empty_block_here_is_worth_reporting, blank_line, branch_header_ply, broken_line,
+    comments_on_the_starting_position, ends_here, is_padding, move_comment_line, move_special,
+    move_to, not_move_line, opens_a_branch_header, opens_a_numbered_line, opens_a_shared_line,
+    padding, parse_without_moves, piece_kind, LineShapes, Position,
 };
 use crate::jkf::*;
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::character::complete::digit1;
-use nom::combinator::{map, map_res, opt, recognize, value};
+use nom::combinator::{map, map_res, opt, value};
 use nom::error::{ParseError, VerboseError};
 use nom::multi::{many0, many1};
-use nom::sequence::{delimited, pair, preceded, separated_pair, terminated, tuple};
+use nom::sequence::{delimited, preceded, separated_pair, terminated, tuple};
 use nom::IResult;
 
 fn move_from(input: &str) -> IResult<&str, Option<PlaceFormat>, VerboseError<&str>> {
@@ -36,48 +36,6 @@ fn move_from(input: &str) -> IResult<&str, Option<PlaceFormat>, VerboseError<&st
             Ok((rest, Some(PlaceFormat { x, y })))
         },
     ))(input)
-}
-
-/// The KIF outcome words, longest first so that a word is never cut short by a
-/// prefix of itself. [`MoveSpecial::from_kif_word`] holds the mapping.
-const KIF_SPECIAL_WORDS: [&str; 12] = [
-    "切れ負け",
-    "入玉勝ち",
-    "反則負け",
-    "反則勝ち",
-    "不戦勝",
-    "不戦敗",
-    "千日手",
-    "持将棋",
-    "投了",
-    "中断",
-    "詰み",
-    "不詰",
-];
-
-/// Parses an outcome word. `side_to_move` decides the direction of 反則勝ち.
-fn move_special(
-    side_to_move: Color,
-) -> impl FnMut(&str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
-    move |input| {
-        for word in KIF_SPECIAL_WORDS {
-            if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>(word)(input) {
-                if let Some(special) = MoveSpecial::from_kif_word(word, side_to_move) {
-                    return Ok((
-                        rest,
-                        MoveFormat {
-                            special: Some(special),
-                            ..Default::default()
-                        },
-                    ));
-                }
-            }
-        }
-        Err(nom::Err::Error(VerboseError::from_error_kind(
-            input,
-            nom::error::ErrorKind::Alt,
-        )))
-    }
 }
 
 /// What a KIF line looks like.
@@ -112,9 +70,8 @@ fn opens_a_kif_line(head: &str) -> bool {
 fn branch_header_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
     // The number itself is not used: KIF builds the tree from the ply numbers on
     // the move lines (D3). It is read anyway so that this consumes exactly what
-    // `opens_a_branch_header` counts — indentation included, since that is what
-    // the callers below ask about.
-    let (rest, _) = branch_header_ply(input.trim_start_matches(is_padding))?;
+    // `opens_a_branch_header` counts.
+    let (rest, _) = branch_header_ply(input)?;
     let (rest, _) = ends_here(SHAPES, input, rest)?;
     Ok((rest, input))
 }
@@ -142,7 +99,7 @@ fn skippable_line_except_a_branch_header(
     where_it_is: Position,
     input: &str,
 ) -> IResult<&str, &str, VerboseError<&str>> {
-    if opens_a_branch_header(input.trim_start_matches(is_padding)) {
+    if opens_a_branch_header(input) {
         return Err(nom::Err::Error(VerboseError::from_error_kind(
             input,
             nom::error::ErrorKind::Not,
@@ -182,47 +139,6 @@ fn skip_interruptions(mut input: &str) -> &str {
 
 /// Whether what follows a ply number is the move that number is about.
 ///
-/// The half of [`opens_a_numbered_line`] that answers when nothing separates
-/// the number from what follows it. A writer that aligned its columns leaves
-/// padding there and the question does not reach here; without it, `35手目まで`
-/// and `2８四歩(83)` are the same characters until somebody tries to read them.
-///
-/// So this asks whether [`move_line`] would find a move: the destination, the
-/// piece, and the *shape* of an origin. `move_from` itself is not used —
-/// it raises a `Failure` for `(00)`, which `.is_ok()` would fold into "not a
-/// move line" and hand `1７六歩(00)` to the skip. The shape keeps such a line
-/// here, where the leftover-input check reports it (D1).
-///
-/// The origin is what makes this the whole shape rather than half of it.
-/// Without it `2同銀と取れば` counts as a move line and nothing can consume it:
-/// the record is refused over a note (D17).
-///
-/// The outcome words are in it because a move line can hold one instead of a
-/// move (`   5 投了`, R-KIF-007). Which side 反則勝ち accuses does not change
-/// whether the line is one, so either colour will do to ask.
-pub(super) fn a_move_follows_the_number(after_digits: &str) -> bool {
-    alt((
-        // The whole of what is left, for an outcome: a move line that holds one
-        // holds nothing else (`   5 投了`, R-KIF-007), so `3投了もあった` is a
-        // note about an outcome and not a line that names one.
-        recognize(terminated(
-            move_special(Color::Black),
-            pair(padding, nom::combinator::eof),
-        )),
-        recognize(tuple((
-            move_to,
-            piece_kind,
-            opt(tag("成")),
-            // The *shape* of an origin, not `move_from` itself: that one raises
-            // a `Failure` for `(00)`, and `.is_ok()` would fold it into "not a
-            // move line" — sending `1７六歩(00)` to the skip, which drops it
-            // (D1, `an_origin_off_the_board_is_an_error_not_a_drop`).
-            alt((tag("打"), recognize(delimited(tag("("), digit1, tag(")"))))),
-        ))),
-    ))(after_digits)
-    .is_ok()
-}
-
 fn move_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
     map(
         tuple((move_to, piece_kind, opt(tag("成")), move_from)),
@@ -560,11 +476,11 @@ fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Ver
                 match header {
                     // `変化：2手を参照` is a note *about* a branch — nothing was
                     // ever under it to lose — while `変化：2手` alone is a branch
-                    // that went missing. Both are declarations to this reader
-                    // and to tsshogi, so what tells them apart is whether the
-                    // line says anything else (D1, D17).
+                    // that went missing. Both are declarations (D20); what tells
+                    // them apart is whether the line says anything else (D1).
                     Some(line)
-                        if rest.trim().is_empty() && a_branch_header_is_all_the_line_says(line) =>
+                        if rest.trim().is_empty()
+                            && an_empty_block_here_is_worth_reporting(line) =>
                     {
                         return Err(broken_line(line, "a 変化 block with no moves under it"));
                     }

@@ -1,5 +1,5 @@
 use super::kakinoki::{
-    a_branch_header_is_all_the_line_says, branch_header_ply, broken_line,
+    an_empty_block_here_is_worth_reporting, branch_header_ply, broken_line,
     comments_on_the_starting_position, ends_here, is_padding, move_comment_line, move_to,
     not_move_line, opens_a_shared_line, parse_without_moves, piece_kind, program_comment_line,
     LineShapes, Position, NOTE_MARKERS, SIDE_MARKS,
@@ -504,10 +504,9 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
                     // Unless the line says more than the number. `変化：2手を参照`
                     // is a note *about* a branch — nothing was ever under it to
                     // lose — while `変化：2手` alone is a branch that went
-                    // missing. Both are branch declarations to tsshogi and to
-                    // this reader, so what tells them apart is whether the line
-                    // says anything else (D1, D17).
-                    if a_branch_header_is_all_the_line_says(header) {
+                    // missing. Both are branch declarations (D20); what tells
+                    // them apart is whether the line says anything else (D1).
+                    if an_empty_block_here_is_worth_reporting(header) {
                         return Err(broken_line(header, "a 変化 block with no moves under it"));
                     }
                     input = rest;
