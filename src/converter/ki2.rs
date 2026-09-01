@@ -73,7 +73,7 @@ fn write_move_kind<W: Write>(kind: Kind, sink: &mut W) -> Result {
 }
 
 /// Whether this move has a `不成` to write (R-NOT-005,
-/// [`promotion_is_spellable`](crate::normalizer::promotion_is_spellable)).
+/// [`promotion_is_spellable`](crate::notation::promotion_is_spellable)).
 ///
 /// The rule is asked here, and not left to the normalizer, because a record
 /// reaches a writer without having been through it: past an outcome the first
@@ -95,7 +95,7 @@ fn promotion_was_on_the_table(mv: &MoveMoveFormat) -> bool {
         shogi_core::Square::try_from(from),
         shogi_core::Square::try_from(&mv.to),
     ) {
-        (Ok(from), Ok(to)) => crate::normalizer::promotion_is_spellable(piece, from, to, color),
+        (Ok(from), Ok(to)) => crate::notation::promotion_is_spellable(piece, from, to, color),
         // An origin off the board is `normalizer::ORIGIN_UNSTATED`: the record
         // never stated one (KI2 has no origins, R-KI2-003) and the position could
         // not supply it. The rule needs both squares, so it cannot be asked — and

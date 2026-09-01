@@ -522,31 +522,11 @@ fn decide_promote(
     });
     if promoted {
         Some(true)
-    } else if promotion_is_spellable(from_piece_kind, from, to, side) {
+    } else if crate::notation::promotion_is_spellable(from_piece_kind, from, to, side) {
         Some(false)
     } else {
         None
     }
-}
-
-/// Whether the notation has a `成` / `不成` for this move at all (R-NOT-005).
-///
-/// A promotable piece, with the enemy camp at one end of the move. A gold, a
-/// king or an already-promoted piece has neither word, and neither has a move
-/// that goes nowhere near the camp.
-///
-/// One home, because both directions need it: [`decide_promote`] to know whether
-/// a move that did not promote is worth recording as `false`, and the KI2 writer
-/// to know whether a `false` in the record has a word to be written with. Two
-/// copies drift apart, and the writer then spells `△６八玉不成`, which the
-/// notation has no word for.
-pub(crate) fn promotion_is_spellable(
-    piece: shogi_core::PieceKind,
-    from: shogi_core::Square,
-    to: shogi_core::Square,
-    side: shogi_core::Color,
-) -> bool {
-    piece.promote().is_some() && (from.relative_rank(side) <= 3 || to.relative_rank(side) <= 3)
 }
 
 /// The squares a piece of the same kind could have moved to `to` from.

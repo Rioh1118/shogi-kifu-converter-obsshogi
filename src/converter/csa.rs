@@ -1,4 +1,4 @@
-use super::kakinoki::LINE_ENDS;
+use super::kakinoki::{on_one_line, LINE_ENDS};
 use super::WriteResult as Result;
 use crate::error::ConvertError;
 use crate::jkf::*;
@@ -200,11 +200,11 @@ fn write_initial<W: Write>(initial: &Option<Initial>, sink: &mut W) -> Result {
 /// drops the rest of the file from there without a word (`research/90-gaps.md`
 /// GAP-023).
 ///
-/// What ends a line is the only thing CSA has nowhere to put. What sits either
-/// side of it it does, so each piece becomes a line of its own rather than the
-/// record ending there.
+/// What ends a line ([`LINE_ENDS`]) and what ends a statement are the only
+/// things CSA has nowhere to put here. What sits either side of one it does, so
+/// each piece becomes a line of its own rather than the record ending there.
 fn write_comment<W: Write>(comment: &str, sink: &mut W) -> Result {
-    for piece in comment.split([',', '\n', '\r']) {
+    for piece in comment.split(|c| c == ',' || LINE_ENDS.contains(&c)) {
         sink.write_fmt(format_args!("'{piece}\n"))?;
     }
     Ok(())
@@ -230,9 +230,8 @@ fn write_header_value<W: Write>(
     value: &str,
     sink: &mut W,
 ) -> std::result::Result<bool, ConvertError> {
-    let value: String = value
-        .split(LINE_ENDS)
-        .flat_map(str::chars)
+    let value: String = on_one_line(value)
+        .chars()
         .map(|c| if c == ',' { '，' } else { c })
         .collect();
     if value.is_empty() {

@@ -1,6 +1,6 @@
 use super::kakinoki::{
     broken_line, ends_here, move_comment_line, move_to, not_move_line, opens_a_shared_line,
-    parse_without_moves, piece_kind, program_comment_line, LineShapes,
+    parse_without_moves, piece_kind, program_comment_line, LineShapes, SIDE_MARKS,
 };
 use crate::jkf::*;
 use nom::branch::alt;
@@ -11,17 +11,6 @@ use nom::error::{ParseError, VerboseError};
 use nom::multi::{many0, many1};
 use nom::sequence::{preceded, terminated, tuple};
 use nom::IResult;
-
-/// The marks a KI2 move opens with (R-NOT-001).
-///
-/// One table. `single_move` reads it, and the two questions asked about text
-/// that might be a move — [`a_move_starts_here`] and
-/// [`a_header_value_carrying_moves`] — look for the same characters, so a mark
-/// added here is a mark all three know.
-///
-/// The variants R-NOT-001 also lists (`☗`/`☖`, `▼`/`▽`) are not read yet:
-/// `research/90-gaps.md` GAP-024.
-const SIDE_MARKS: [(char, Color); 2] = [('▲', Color::Black), ('△', Color::White)];
 
 fn side_mark(input: &str) -> IResult<&str, Color, VerboseError<&str>> {
     for (mark, color) in SIDE_MARKS {
@@ -279,7 +268,7 @@ fn move_run(
 /// check reports it instead.
 fn not_readable_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
     let (rest, line) = not_move_line(input)?;
-    if line.contains('▲') || line.contains('△') {
+    if line.contains(|c| SIDE_MARKS.iter().any(|(mark, _)| *mark == c)) {
         return Err(nom::Err::Error(VerboseError::from_error_kind(
             input,
             nom::error::ErrorKind::Verify,

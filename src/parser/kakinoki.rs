@@ -66,6 +66,19 @@ pub(super) fn end_of_line(input: &str) -> IResult<&str, &str, VerboseError<&str>
     alt((line_ending, eof))(input)
 }
 
+/// The marks a move opens with (R-NOT-001).
+///
+/// One table. The KI2 reader spells its moves with them, and both readers have
+/// to agree about which characters those are: `not_move_line` below and
+/// `ki2::not_readable_line` each decide whether to skip a line by looking for
+/// one, and a mark only one of them knows makes a line that is skipped by one
+/// reader and kept by the other.
+///
+/// The variants R-NOT-001 also lists (`☗`/`☖`, `▼`/`▽`) are not read yet:
+/// `research/90-gaps.md` GAP-024, which names the three places that have to
+/// learn a new one together.
+pub(super) const SIDE_MARKS: [(char, Color); 2] = [('▲', Color::Black), ('△', Color::White)];
+
 /// The spaces a line can be padded with. Full-width among them: KI2 is a record
 /// people read (R-KI2-001), and what people paste is padded either way.
 const SPACES: [char; 3] = [' ', '\t', '　'];
@@ -237,6 +250,9 @@ fn comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
 /// content, and swallows two lines where one was meant — so a blank line in the
 /// middle of a record destroys the move that follows it.
 pub(super) fn not_move_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
+    // The excluded set is [`SIDE_MARKS`] and the characters the other line
+    // shapes open with, spelled out because `none_of` takes a pattern rather
+    // than a table.
     delimited(none_of(" \r\n0123456789*&▲△"), not_line_ending, end_of_line)(input)
 }
 

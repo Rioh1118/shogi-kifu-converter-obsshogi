@@ -139,6 +139,16 @@ fn write_initial_preset<W: Write>(preset: Preset, sink: &mut W) -> Result {
 /// one inside it, written as it came, splits the line it was supposed to be on.
 pub(super) const LINE_ENDS: [char; 2] = ['\n', '\r'];
 
+/// `value` with everything that ends a line taken out.
+///
+/// For the places a format gives one line and no more: a header value in KIF
+/// and KI2 (R-KIF-004) and in CSA (R-CSA-004). What is left of the line after a
+/// newline inside the value is read as a line of its own, and the reader makes
+/// of it whatever its shapes say — none of which is "the rest of that header".
+pub(super) fn on_one_line(value: &str) -> String {
+    value.split(LINE_ENDS).collect()
+}
+
 /// Writes one comment, as as many lines as it takes.
 ///
 /// A comment is one line: `*` or `&` opens it and the newline ends it
@@ -173,9 +183,7 @@ pub(super) fn write_header<W: Write>(header: &HashMap<String, String>, sink: &mu
         // the header block early, and the reader skips what follows as a
         // non-move line. Which header survives then depends on `HashMap`
         // iteration order, so the same record loses a different one each save.
-        for line in v.split(LINE_ENDS) {
-            sink.write_str(line)?;
-        }
+        sink.write_str(&on_one_line(v))?;
         sink.write_char('\n')?;
     }
     Ok(())
