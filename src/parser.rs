@@ -63,13 +63,21 @@ pub fn parse_csa_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
 
 /// Parses a KIF file to [`jkf::JsonKifuFormat`](crate::jkf::JsonKifuFormat)
 ///
-/// If the file extension is `.kif`, it is decoded as Shift-JIS, and if it is `.kifu`, it is decoded as UTF-8 and parsed.
+/// The extension chooses which encoding to try first — Shift-JIS for `.kif`,
+/// UTF-8 for `.kifu` — and the bytes get the last word: if that decode raises a
+/// replacement character the other encoding is tried (R-REQ-003, D14). A `.kif`
+/// holding UTF-8 reads, and so does a `.kifu` holding Shift-JIS. What the
+/// extension does decide is whether the file is offered at all: anything but
+/// those two is refused unread.
 ///
 /// See: [http://kakinoki.o.oo7.jp/kif_format.html](http://kakinoki.o.oo7.jp/kif_format.html)
 ///
 /// # Errors
 ///
-/// This function returns [`ParseError`] if it fails to parse the file.
+/// Returns [`ParseError::FileExtension`] for an extension other than `.kif` or
+/// `.kifu`, [`ParseError::Decode`] when neither encoding reads the bytes
+/// cleanly, [`ParseError::Io`] when the file cannot be read, and otherwise
+/// whatever [`parse_kif_str`] returns.
 pub fn parse_kif_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseError> {
     let text = read_kifu(path, &[("kif", SHIFT_JIS), ("kifu", UTF_8)])?;
     parse_kif_str(&text)
@@ -202,13 +210,19 @@ pub fn parse_kif_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
 
 /// Parses a KI2 file to [`jkf::JsonKifuFormat`](crate::jkf::JsonKifuFormat)
 ///
-/// If the file extension is `.ki2`, it is decoded as Shift-JIS, and if it is `.ki2u`, it is decoded as UTF-8 and parsed.
+/// The extension chooses which encoding to try first — Shift-JIS for `.ki2`,
+/// UTF-8 for `.ki2u` — and the bytes get the last word (R-REQ-003, D14), the
+/// same as [`parse_kif_file`]. What the extension decides is whether the file
+/// is offered at all: anything but those two is refused unread.
 ///
 /// See: [http://kakinoki.o.oo7.jp/KifuwInt.htm](http://kakinoki.o.oo7.jp/KifuwInt.htm)
 ///
 /// # Errors
 ///
-/// This function returns [`ParseError`] if it fails to parse the file.
+/// Returns [`ParseError::FileExtension`] for an extension other than `.ki2` or
+/// `.ki2u`, [`ParseError::Decode`] when neither encoding reads the bytes
+/// cleanly, [`ParseError::Io`] when the file cannot be read, and otherwise
+/// whatever [`parse_ki2_str`] returns.
 pub fn parse_ki2_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseError> {
     let text = read_kifu(path, &[("ki2", SHIFT_JIS), ("ki2u", UTF_8)])?;
     parse_ki2_str(&text)
@@ -632,12 +646,15 @@ mod tests {
         path
     }
 
-    // `.kifu` and `.ki2u` are the UTF-8 spellings of `.kif` and `.ki2`. Both
-    // readers dispatch on the extension alone, and nothing under `data/tests/`
-    // carries either one, so the whole UTF-8 arm went unrun — as did the
-    // rejection of an extension neither arm claims.
+    // `.kifu` and `.ki2u` are the UTF-8 spellings of `.kif` and `.ki2`. The
+    // extension chooses which encoding is *tried first* — the bytes decide the
+    // rest (R-REQ-003 / D14, and `either_encoding_is_read_whatever_the_extension_says`
+    // below) — but it is the extension alone that decides whether a file is
+    // offered at all. Nothing under `data/tests/` carries either UTF-8 spelling,
+    // so that arm went unrun, as did the rejection of an extension neither
+    // reader claims.
     #[test]
-    fn the_extension_picks_the_encoding() {
+    fn the_extension_chooses_which_encoding_is_tried_first() {
         const KIF: &str = "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n";
         const KI2: &str = "手合割：平手\n▲７六歩\n";
         let sjis = |s: &str| SHIFT_JIS.encode(s).0.into_owned();

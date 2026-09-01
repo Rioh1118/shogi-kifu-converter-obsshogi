@@ -849,12 +849,6 @@ mod tests {
         }
     }
 
-    // The value this check exists for is a whole game on one line, and the
-    // consumer meets it inside a scan of a whole directory at start-up
-    // (R-REQ-002). Asking the question once per mark made that 19.6 s for 41 KB,
-    // and the record still came back `Ok` — nothing in a log to explain the
-    // pause. The bound is loose on purpose: it is here to catch a quadratic
-    // walk, not to measure the machine.
     // A move reads the comments under it as its own, so the last mark in a
     // value need not be a move start: a swallowed `*` line puts marks behind
     // the run. Asking only the mark before the last one answers no there, and
@@ -885,6 +879,12 @@ mod tests {
         }
     }
 
+    // The value this check exists for is a whole game on one line, and the
+    // consumer meets it inside a scan of a whole directory at start-up
+    // (R-REQ-002). Asking the question once per mark made that 19.6 s for 41 KB,
+    // and the record still came back `Ok` — nothing in a log to explain the
+    // pause. The bound is loose on purpose: it is here to catch a quadratic
+    // walk, not to measure the machine.
     #[test]
     fn a_header_value_holding_a_whole_game_is_read_in_one_pass() {
         use crate::parser::parse_ki2_str;

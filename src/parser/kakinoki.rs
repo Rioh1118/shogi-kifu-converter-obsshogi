@@ -74,9 +74,14 @@ pub(super) fn end_of_line(input: &str) -> IResult<&str, &str, VerboseError<&str>
 /// The marks a move opens with (R-NOT-001).
 ///
 /// One table, and shared because both formats' readers ask it. The KI2 reader
-/// spells its moves with them; `not_move_line` below decides whether to skip a
-/// line by looking for one, for KIF as well — a `▲` in a KIF is prose, but a
-/// line holding one is never thrown away without a word.
+/// spells its moves with them; `not_move_line` below declines to skip a line
+/// that *begins* with one, for KIF as well.
+///
+/// Only where it begins. A line that merely holds one somewhere — `※▲２六歩が本筋`
+/// — is prose to KIF and is skipped, while `ki2::a_line_only_prose_opens` asks
+/// `contains` and refuses the whole file. That asymmetry is
+/// `research/90-gaps.md` GAP-029, which is waiting on a decision; do not read
+/// this table as a promise that KIF keeps such a line.
 ///
 /// The variants R-NOT-001 also lists (`☗`/`☖`, `⛊`/`⛉`, `▼`/`▽`) are not read yet:
 /// `research/90-gaps.md` GAP-024, which names every place that has to learn a
@@ -1199,6 +1204,53 @@ mod tests {
             assert!(!opens_a_branch_header(head), "{head:?}");
             assert!(branch_header_ply(head).is_err(), "{head:?}");
         }
+    }
+
+    // The header block is read twice — before the board and after it — and a
+    // comment can stand in either half (R-KIF-010). Both halves and their order
+    // are contracts nothing else states: a JKF is a list, and a reader that
+    // returns the same comments in a different order returns a different
+    // record. Records with a board are the ones that reach this path at all
+    // (詰将棋 and any 任意局面, `research/90-gaps.md` GAP-007).
+    #[test]
+    fn a_comment_on_either_side_of_the_board_is_kept_in_the_order_it_was_written() {
+        use crate::parser::parse_kif_str;
+        const EMPTY_BOARD: &str = concat!(
+            "  ９ ８ ７ ６ ５ ４ ３ ２ １\n",
+            "+---------------------------+\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|一\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|二\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|三\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|四\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|五\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|六\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|七\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|八\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|九\n",
+            "+---------------------------+\n",
+        );
+        // `E` is read by the move reader rather than by the header block, so it
+        // is what says the two lists are joined the way the file wrote them.
+        let jkf = parse_kif_str(&format!(
+            "*A\n後手の持駒：歩\n*B\n{EMPTY_BOARD}*C\n先手の持駒：角\n*D\n先手番\n\
+             手数----指手---------消費時間--\n*E\n"
+        ))
+        .expect("reads");
+        assert_eq!(
+            Some(&vec![
+                String::from("A"),
+                String::from("B"),
+                String::from("C"),
+                String::from("D"),
+                String::from("E"),
+            ]),
+            jkf.moves[0].comments.as_ref(),
+            "the halves are joined out of order, or one of them is dropped"
+        );
+        // And the hands stated on either side of the board are both read.
+        let data = jkf.initial.expect("a position").data.expect("a board");
+        assert_eq!(1, data.hands[0].KA);
+        assert_eq!(1, data.hands[1].FU);
     }
 
     // R-KIF-014 / D5: tsshogi matches `[：:]` where a keyword names the line, so
