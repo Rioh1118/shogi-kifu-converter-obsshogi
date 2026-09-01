@@ -2,10 +2,10 @@ use crate::jkf::*;
 use nom::branch::alt;
 use nom::bytes::complete::{is_not, tag, take_while};
 use nom::character::complete::{line_ending, not_line_ending, one_of, satisfy};
-use nom::combinator::{eof, map, map_res, opt, value};
+use nom::combinator::{eof, map, map_res, opt, peek, value};
 use nom::error::{ErrorKind, ParseError, VerboseError};
 use nom::multi::{count, many0, many1};
-use nom::sequence::{delimited, pair, preceded, separated_pair, terminated, tuple};
+use nom::sequence::{delimited, pair, preceded, terminated, tuple};
 use nom::IResult;
 use std::collections::HashMap;
 
@@ -535,7 +535,7 @@ fn kansuji(input: &str) -> IResult<&str, u8, VerboseError<&str>> {
 
 fn information_value_hand(input: &str) -> IResult<&str, Hand, VerboseError<&str>> {
     alt((
-        // The padding after the value belongs to the value, in both arms. Left
+        // The padding after the value belongs to the value, in every arm. Left
         // out of one of them, `後手の持駒：なし ` reaches the newline check with
         // a space still to read and the whole file is refused with an error
         // naming nothing (`in Tag:`) — while `後手の持駒：歩 ` reads. tsshogi
@@ -566,6 +566,16 @@ fn information_value_hand(input: &str) -> IResult<&str, Hand, VerboseError<&str>
                     Ok(acc)
                 })
             },
+        ),
+        // Last, so that it answers only for a value the arms above found nothing
+        // in. An empty value is an empty hand for the same reason a padded one
+        // is: tsshogi's `readHand` skips a section that is empty exactly as it
+        // skips `なし`. Writing `なし` is what R-KIF-014 asks of a *writer*; a
+        // reader that refuses the blank one refuses the whole file, board and
+        // all, over a line that says nothing.
+        terminated(
+            value(Hand::default(), take_while(is_padding)),
+            peek(line_ending),
         ),
     ))(input)
 }
@@ -663,6 +673,12 @@ fn information_line_hands(input: &str) -> IResult<&str, Information, VerboseErro
 /// nobody wrote (`*主催`). Nothing puts them back: what stops the header block in
 /// KIF is the `手数----指手---------消費時間--` line, which R-KIF-012 says a
 /// record need not have, and which KI2 has no equivalent of at all.
+/// Whether `key` is one of the words that name a line of the opening block, and
+/// so may be written with either colon ([`colon`]).
+fn a_key_that_names_its_line(key: &str) -> bool {
+    key == crate::handicap::KIF_KEYWORD || key.ends_with("の持駒")
+}
+
 fn information_line_keyvalue(
     shapes: LineShapes,
 ) -> impl FnMut(&str) -> IResult<&str, Information, VerboseError<&str>> {
@@ -676,13 +692,26 @@ fn information_line_keyvalue(
                 ErrorKind::Not,
             )));
         }
-        let (rest, (key, value)) = terminated(
-            preceded(
-                padding,
-                separated_pair(is_not("：\r\n"), tag("："), not_line_ending),
-            ),
-            line_ending,
-        )(input)?;
+        let (rest, key) = preceded(padding, is_not("：:\r\n"))(input)?;
+        let (rest, mark) = colon(rest)?;
+        // Half-width only where the key is one this reader knows. A key can be
+        // anything (R-KIF-004), so taking a half-width colon from every key
+        // makes a header line out of every `key: value` in any text —
+        // `{"header":{},"moves":[{}]}` comes back as a kifu with one header, and
+        // the error D1 and D8 exist to raise reaches nobody.
+        //
+        // The known keys need it because their own rules already take it
+        // (`colon`) and then decline when the value is not one this crate has a
+        // board for: `手合割:詰将棋` would otherwise land nowhere and fall to the
+        // prose skip, losing even the word the file wrote. GAP-021 keeps such a
+        // value under `header`, which is where this puts it.
+        if mark == ':' && !a_key_that_names_its_line(key) {
+            return Err(nom::Err::Error(VerboseError::from_error_kind(
+                input,
+                ErrorKind::OneOf,
+            )));
+        }
+        let (rest, value) = terminated(not_line_ending, line_ending)(rest)?;
         if (shapes.carries_a_line)(value) {
             return Err(broken_line(input, "this line runs into the one below it"));
         }
@@ -1320,6 +1349,78 @@ mod tests {
         let data = jkf.initial.expect("a position").data.expect("a board");
         assert_eq!(1, data.hands[0].KA);
         assert_eq!(1, data.hands[1].FU);
+    }
+
+    // A value this crate has no board for still has to land somewhere. The
+    // preset rule takes either colon and then declines, so without a landing
+    // place the line falls to the prose skip and the record loses even the word
+    // the file wrote — GAP-021 keeps it under `header`, which is the lighter
+    // half of the same problem. A key nobody knows keeps the full-width colon:
+    // otherwise every `key: value` in any text is a header line (D1 / D8).
+    #[test]
+    fn a_known_key_may_use_either_colon_and_still_lands_somewhere() {
+        use crate::parser::parse_kif_str;
+        const TAIL: &str = "手数----指手---------消費時間--\n";
+        for colon in ['：', ':'] {
+            let known = parse_kif_str(&format!("手合割{colon}香落ち\n{TAIL}")).expect("reads");
+            assert_eq!(Preset::PresetKY, known.initial.expect("a position").preset);
+
+            for value in ["詰将棋", "香落ち（30分）"] {
+                let jkf = parse_kif_str(&format!("手合割{colon}{value}\n{TAIL}"))
+                    .unwrap_or_else(|e| panic!("手合割{colon}{value}: {e}"));
+                assert_eq!(
+                    Some(&String::from(value)),
+                    jkf.header.get("手合割"),
+                    "手合割{colon}{value}: the line went without a word"
+                );
+            }
+        }
+        // A key this reader does not know keeps the full-width colon, so that a
+        // file which is not a kifu still says so.
+        assert!(parse_kif_str("{\"header\":{},\"moves\":[{}]}\n").is_err());
+    }
+
+    // R-KIF-014 asks a *writer* to spell an empty hand `なし`. A reader that
+    // refuses the blank one refuses the whole file — board and all — over a
+    // line that says nothing, and tsshogi's `readHand` drops an empty section
+    // exactly as it drops `なし`.
+    #[test]
+    fn an_empty_hand_line_is_an_empty_hand() {
+        use crate::parser::parse_kif_str;
+        const BOARD: &str = concat!(
+            "  ９ ８ ７ ６ ５ ４ ３ ２ １\n",
+            "+---------------------------+\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|一\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|二\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|三\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|四\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|五\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|六\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|七\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|八\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|九\n",
+            "+---------------------------+\n先手の持駒：なし\n先手番\n",
+        );
+        for (value, fu, ka) in [
+            ("なし", 0, 0),
+            ("", 0, 0),
+            (" ", 0, 0),
+            ("　", 0, 0),
+            ("\t", 0, 0),
+            ("歩", 1, 0),
+            ("歩十八", 18, 0),
+            ("歩 角", 1, 1),
+        ] {
+            let jkf = parse_kif_str(&format!("後手の持駒：{value}\n{BOARD}"))
+                .unwrap_or_else(|e| panic!("{value:?}: {e}"));
+            let hand = jkf
+                .initial
+                .expect("a position")
+                .data
+                .expect("a board")
+                .hands[1];
+            assert_eq!((fu, ka), (hand.FU, hand.KA), "{value:?}");
+        }
     }
 
     // A digit at the head of a line is a KIF move line only when a move follows
