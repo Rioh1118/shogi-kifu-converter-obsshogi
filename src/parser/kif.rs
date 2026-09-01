@@ -1,7 +1,7 @@
 use super::kakinoki::{
-    blank_line, broken_line, comments_on_the_starting_position, ends_here, move_comment_line,
-    move_to, not_move_line, opens_a_branch_header, opens_a_shared_line, parse_without_moves,
-    piece_kind, LineShapes, SPACES,
+    blank_line, broken_line, comments_on_the_starting_position, ends_here, is_padding,
+    move_comment_line, move_to, not_move_line, opens_a_branch_header, opens_a_shared_line,
+    parse_without_moves, piece_kind, LineShapes,
 };
 use crate::jkf::*;
 use nom::branch::alt;
@@ -104,8 +104,8 @@ pub(super) const SHAPES: LineShapes = LineShapes {
 fn opens_a_numbered_line(head: &str) -> bool {
     let after_digits = head.trim_start_matches(|c: char| c.is_ascii_digit());
     after_digits.len() < head.len()
-        && after_digits.starts_with(SPACES)
-        && !after_digits.trim_start_matches(SPACES).is_empty()
+        && after_digits.starts_with(is_padding)
+        && !after_digits.trim_start_matches(is_padding).is_empty()
 }
 
 fn opens_a_kif_line(head: &str) -> bool {

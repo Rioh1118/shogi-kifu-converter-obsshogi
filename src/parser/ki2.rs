@@ -1,7 +1,7 @@
 use super::kakinoki::{
-    broken_line, comments_on_the_starting_position, ends_here, move_comment_line, move_to,
-    not_move_line, opens_a_shared_line, parse_without_moves, piece_kind, program_comment_line,
-    LineShapes, NOTE_MARKERS, SIDE_MARKS, SPACES,
+    broken_line, comments_on_the_starting_position, ends_here, is_padding, move_comment_line,
+    move_to, not_move_line, opens_a_shared_line, parse_without_moves, piece_kind,
+    program_comment_line, LineShapes, NOTE_MARKERS, SIDE_MARKS,
 };
 use crate::jkf::*;
 use crate::notation::LINE_ENDS;
@@ -127,7 +127,7 @@ fn a_move_run_fills_the_line(head: &str) -> bool {
     let line = head.split(LINE_ENDS).next().unwrap_or(head);
     matches!(
         many1(single_move)(line),
-        Ok((rest, _)) if rest.trim_start_matches(SPACES).is_empty()
+        Ok((rest, _)) if rest.trim_start_matches(is_padding).is_empty()
     )
 }
 
@@ -197,7 +197,7 @@ fn end_of_game_line(
             Some((head, rest)) if !head.contains(LINE_ENDS) => rest,
             _ => input,
         };
-        let phrase = phrase.trim_start_matches(SPACES);
+        let phrase = phrase.trim_start_matches(is_padding);
         // The outcome word owns the line up to the first space, note marker or
         // line ending. This line is the only place KI2 has to put an outcome
         // (R-KI2-006, D5), and it is also where a note about the game goes
@@ -205,9 +205,7 @@ fn end_of_game_line(
         // begins. What opens a note is D17's table, the same one the line-end
         // rule uses, and what is left goes to that rule below.
         let end = phrase
-            .find(|c: char| {
-                SPACES.contains(&c) || LINE_ENDS.contains(&c) || NOTE_MARKERS.contains(&c)
-            })
+            .find(|c: char| is_padding(c) || LINE_ENDS.contains(&c) || NOTE_MARKERS.contains(&c))
             .unwrap_or(phrase.len());
         let side_to_move = crate::handicap::side_to_move_at_ply(start, ply);
         match MoveSpecial::from_ki2_phrase(&phrase[..end], side_to_move) {
@@ -679,13 +677,16 @@ mod tests {
     }
 
     // R-KI2-001: KI2 is a record people read, and what people paste is padded
-    // with whatever their editor put there. A separator table narrower than
-    // `SPACES` leaves the padding inside the outcome word, and the record comes
-    // back as an error naming a word that is in the vocabulary.
+    // with whatever the place they read it padded with. A separator narrower
+    // than `is_padding` leaves the padding inside the outcome word, and the
+    // record comes back as an error naming a word that is in the vocabulary.
+    // The list is a sample of what `is_padding` answers for, not its definition
+    // — a keyboard's three, and what a web page and a typesetter put in.
     #[test]
     fn padding_after_the_outcome_word_is_padding_whichever_space_it_is() {
         use crate::parser::parse_ki2_str;
-        for pad in super::SPACES {
+        for pad in [' ', '\t', '　', '\u{a0}', '\u{2009}', '\u{b}', '\u{c}'] {
+            assert!(super::is_padding(pad), "{pad:?}");
             for src in [
                 format!("手合割：平手\n▲７六歩 △３四歩\nまで2手で投了{pad}\n"),
                 format!("手合割：平手\n▲７六歩 △３四歩\nまで2手で{pad}投了\n"),

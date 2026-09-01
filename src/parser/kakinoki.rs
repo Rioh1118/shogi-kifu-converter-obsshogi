@@ -83,12 +83,23 @@ pub(super) fn end_of_line(input: &str) -> IResult<&str, &str, VerboseError<&str>
 /// new one together — the KI2 writer among them.
 pub(super) const SIDE_MARKS: [(char, Color); 2] = [('▲', Color::Black), ('△', Color::White)];
 
-/// The spaces a line can be padded with. Full-width among them: KI2 is a record
-/// people read (R-KI2-001), and what people paste is padded either way.
+/// Whether `c` is padding — space a line can carry without saying anything.
 ///
-/// One table, for the same reason [`SIDE_MARKS`] is one: a reader that pads with
-/// a narrower set than the one that wrote the file reads the padding as content.
-pub(super) const SPACES: [char; 3] = [' ', '\t', '　'];
+/// A predicate rather than a table of the three characters a keyboard makes
+/// easily. KI2 is a record people read (R-KI2-001) and paste from wherever they
+/// read it, and a web page pads with `\u{a0}` and `\u{2009}` as readily as an
+/// editor pads with a tab. A reader whose idea of padding is narrower than the
+/// writer's reads the padding as content, and then says the record is wrong
+/// about something it is right about — `まで2手で投了\u{a0}` came back as
+/// "this outcome is not one of the words KI2 has", naming `投了`, which is one
+/// of them.
+///
+/// Line endings are not padding. Whatever else this takes, it must not take
+/// those: [`begins_the_line_below`] steps over one character looking for the
+/// newline that was lost, and a newline that is still there was never lost.
+pub(super) fn is_padding(c: char) -> bool {
+    c.is_whitespace() && !crate::notation::LINE_ENDS.contains(&c)
+}
 
 /// The shapes of the format being read.
 ///
@@ -140,7 +151,7 @@ pub(super) fn opens_a_shared_line(head: &str) -> bool {
 /// parsers' question, and they ask it themselves.
 pub(super) fn opens_a_branch_header(head: &str) -> bool {
     head.strip_prefix("変化：")
-        .map(|rest| rest.trim_start_matches(SPACES))
+        .map(|rest| rest.trim_start_matches(is_padding))
         .is_some_and(|rest| {
             rest.starts_with(|c: char| c.is_ascii_digit() || ('０'..='９').contains(&c))
         })
@@ -172,13 +183,13 @@ pub(super) fn opens_a_branch_header(head: &str) -> bool {
 /// — which [`space0`] does not take and [`SPACES`] does — is refused whole, with
 /// an error naming a line it does not run into.
 fn begins_the_line_below(shapes: LineShapes, tail: &str) -> bool {
-    let head = tail.trim_start_matches(SPACES);
+    let head = tail.trim_start_matches(is_padding);
     if (shapes.opens_a_line)(head) {
         return true;
     }
     match head.chars().next() {
         Some(c) if !NOTE_MARKERS.contains(&c) && !crate::notation::LINE_ENDS.contains(&c) => {
-            (shapes.opens_a_line)(head[c.len_utf8()..].trim_start_matches(SPACES))
+            (shapes.opens_a_line)(head[c.len_utf8()..].trim_start_matches(is_padding))
         }
         _ => false,
     }
@@ -205,10 +216,10 @@ pub(super) fn ends_here<'a>(
     line: &'a str,
     rest: &'a str,
 ) -> IResult<&'a str, &'a str, VerboseError<&'a str>> {
-    // [`SPACES`] rather than `space0`, which takes neither a full-width space
-    // nor anything else outside ASCII: padding it does not recognise is padding
-    // the rest of this function then has to explain as something else.
-    if let Ok(ended) = end_of_line(rest.trim_start_matches(SPACES)) {
+    // [`is_padding`] rather than `space0`, which takes neither a full-width
+    // space nor anything else outside ASCII: padding it does not recognise is
+    // padding the rest of this function then has to explain as something else.
+    if let Ok(ended) = end_of_line(rest.trim_start_matches(is_padding)) {
         return Ok(ended);
     }
     if begins_the_line_below(shapes, rest) {
