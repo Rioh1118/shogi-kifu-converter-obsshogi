@@ -80,8 +80,8 @@ pub(super) fn end_of_line(input: &str) -> IResult<&str, &str, VerboseError<&str>
 /// Only where it begins — past the indentation, so `　▲有利でした` counts as
 /// beginning with one just as `▲有利でした` does. Both are refused in KIF as
 /// well as in KI2: a mark at the head of a line is how a move opens, and
-/// skipping such a line where it turned out to be prose is the trade D1 takes
-/// (`parser::tests::a_record_the_reader_stops_in_the_middle_of_is_an_error`).
+/// refusing such a line even where it turns out to be prose is the trade D1
+/// takes (`parser::tests::a_record_the_reader_stops_in_the_middle_of_is_an_error`).
 ///
 /// A line that merely holds one somewhere — `※▲２六歩が本筋` — is prose to KIF
 /// and is skipped, while `ki2::a_line_only_prose_opens` asks `contains` and
@@ -177,13 +177,6 @@ pub(super) struct LineShapes {
     pub(super) carries_a_line: fn(&str) -> bool,
     /// Whether text that starts where a line starts opens one.
     pub(super) opens_a_line: fn(&str) -> bool,
-    /// Whether the line is one this format writes its moves on.
-    ///
-    /// Asked by [`not_move_line`], which must not skip a move line. KIF numbers
-    /// them, KI2 opens them with a mark ([`SIDE_MARKS`], which that skip looks
-    /// for on its own) — so "starts with a digit" is a KIF shape and not a
-    /// shared one, and a KIF note like `　1図以下` is prose either way.
-    pub(super) opens_a_move_line: fn(&str) -> bool,
 }
 
 /// What a note opens with.
@@ -470,8 +463,9 @@ fn comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
 ///
 /// What it declines to start on is not every shape the reader knows — it is the
 /// ones that mean something else at the head of a line: a line ending (a blank
-/// line belongs to the caller), a move line of this format
-/// ([`LineShapes::opens_a_move_line`]), `*` and `&` (a comment and a bookmark,
+/// line belongs to the caller), a numbered move line ([`opens_a_numbered_line`]
+/// — shared, because a KI2 that holds one is a record something went wrong with
+/// and the move must not go with the line), `*` and `&` (a comment and a bookmark,
 /// R-KIF-010 / R-KIF-011), and [`SIDE_MARKS`] (a KI2 move). `#`, `変化：` and
 /// `まで…` are **not** among them, so a caller that wants one of those read as
 /// itself has to try it before this (`kif::skippable_line`).
@@ -485,10 +479,7 @@ fn comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
 /// the newline of a *blank* line, takes the line after it as this line's
 /// content, and swallows two lines where one was meant — so a blank line in the
 /// middle of a record destroys the move that follows it.
-pub(super) fn not_move_line(
-    shapes: LineShapes,
-    input: &str,
-) -> IResult<&str, &str, VerboseError<&str>> {
+pub(super) fn not_move_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
     // Asked past the indentation. What a line *is* does not change with how far
     // in it starts (R-KIF-008 writes its move lines three columns in), so a
     // reader that looks only at column 0 takes an indented `*` comment or
@@ -510,7 +501,7 @@ pub(super) fn not_move_line(
             && !crate::notation::LINE_ENDS.contains(&c)
             && !SIDE_MARKS.iter().any(|(mark, _)| *mark == c)
     })(head)?;
-    if (shapes.opens_a_move_line)(head) {
+    if opens_a_numbered_line(head) {
         return Err(nom::Err::Error(VerboseError::from_error_kind(
             input,
             ErrorKind::Not,
@@ -670,7 +661,7 @@ fn information_value_preset(input: &str) -> IResult<&str, Information, VerboseEr
 fn information_line_preset(input: &str) -> IResult<&str, Information, VerboseError<&str>> {
     terminated(
         preceded(
-            tuple((padding, tag(crate::handicap::KIF_KEYWORD), colon)),
+            tuple((padding, tag(crate::handicap::KIF_KEYWORD), padding, colon)),
             information_value_preset,
         ),
         line_ending,
@@ -687,7 +678,7 @@ fn information_line_hands(input: &str) -> IResult<&str, Information, VerboseErro
             value(Color::Black, tag("下手")),
             value(Color::White, tag("上手")),
         )),
-        pair(tag("の持駒"), colon),
+        tuple((tag("の持駒"), padding, colon)),
     )(input)?;
     // Past the prefix this line states a hand, whatever follows. Reporting a
     // recoverable error would send it to `information_line_keyvalue`, which
@@ -707,6 +698,12 @@ fn information_line_hands(input: &str) -> IResult<&str, Information, VerboseErro
     ))
 }
 
+/// Whether `key` is one of the words that name a line of the opening block, and
+/// so may be written with either colon ([`colon`]).
+fn a_key_that_names_its_line(key: &str) -> bool {
+    key == crate::handicap::KIF_KEYWORD || key.ends_with("の持駒")
+}
+
 /// A `<キーワード>：<値>` line, which a header can be any of (R-KIF-004).
 ///
 /// This is where every header line that is nothing more specific ends up, so it
@@ -724,12 +721,6 @@ fn information_line_hands(input: &str) -> IResult<&str, Information, VerboseErro
 /// nobody wrote (`*主催`). Nothing puts them back: what stops the header block in
 /// KIF is the `手数----指手---------消費時間--` line, which R-KIF-012 says a
 /// record need not have, and which KI2 has no equivalent of at all.
-/// Whether `key` is one of the words that name a line of the opening block, and
-/// so may be written with either colon ([`colon`]).
-fn a_key_that_names_its_line(key: &str) -> bool {
-    key == crate::handicap::KIF_KEYWORD || key.ends_with("の持駒")
-}
-
 fn information_line_keyvalue(
     shapes: LineShapes,
 ) -> impl FnMut(&str) -> IResult<&str, Information, VerboseError<&str>> {
@@ -758,6 +749,12 @@ fn information_line_keyvalue(
                     (rest, key, mark)
                 }
             };
+        // The padding on either side of the key belongs to the line, not to the
+        // key. `手合割 ：香落ち` filed under `header["手合割 "]` is a handicap the
+        // board never sees, and D16's `contains_key` misses it too — the record
+        // reads as 平手, every side is reversed (R-HC-001 / R-RULE-006), and
+        // writing it back produces two `手合割` lines.
+        let key = key.trim_end_matches(is_padding);
         // Half-width only where the key is one this reader knows. A key can be
         // anything (R-KIF-004), so taking a half-width colon from every key
         // makes a header line out of every `key: value` in any text —
@@ -919,8 +916,9 @@ fn place_y(input: &str) -> IResult<&str, u8, VerboseError<&str>> {
 pub(super) fn move_to(input: &str) -> IResult<&str, Option<PlaceFormat>, VerboseError<&str>> {
     alt((
         // The padding after `同` is padding, however much of it there is.
-        // R-NOT says a full-width space usually follows and sometimes does not;
-        // nothing says "exactly one", and tsshogi's `moveRegExp` writes `同　*`.
+        // R-NOT-002 says a full-width space usually follows and sometimes does
+        // not; nothing says "exactly one", and tsshogi's `moveRegExp` writes
+        // `同　*`.
         // A file whose columns were re-aligned by a word processor has two.
         value(None, terminated(tag("同"), take_while(is_padding))),
         map(pair(place_x, place_y), |(x, y)| Some(PlaceFormat { x, y })),
@@ -1098,13 +1096,13 @@ mod tests {
     fn a_skipped_line_never_swallows_the_line_after_it() {
         assert_eq!(
             Ok(("   2 ３四歩(33)\n", "変化：2")),
-            not_move_line(NOTHING, "変化：2\n   2 ３四歩(33)\n")
+            not_move_line("変化：2\n   2 ３四歩(33)\n")
         );
-        assert!(not_move_line(NOTHING, "\n   2 ３四歩(33)\n").is_err());
-        assert!(not_move_line(NOTHING, "\r\n   2 ３四歩(33)\n").is_err());
+        assert!(not_move_line("\n   2 ３四歩(33)\n").is_err());
+        assert!(not_move_line("\r\n   2 ３四歩(33)\n").is_err());
         // Padding in front of a blank line does not make it a line with
         // something on it.
-        assert!(not_move_line(NOTHING, "　\t \n   2 ３四歩(33)\n").is_err());
+        assert!(not_move_line("　\t \n   2 ３四歩(33)\n").is_err());
     }
 
     // What a line is does not change with how far in it starts. KIF writes its
@@ -1166,10 +1164,10 @@ mod tests {
 
     #[test]
     fn parse_not_move_line() {
-        assert!(not_move_line(NOTHING, "").is_err());
-        assert!(not_move_line(NOTHING, "* comment line\n").is_err());
-        assert!(not_move_line(NOTHING, "手数----指手---------消費時間--\n").is_ok());
-        assert!(not_move_line(NOTHING, "1 ７六歩(77) ( 0:16/00:00:16)").is_err());
+        assert!(not_move_line("").is_err());
+        assert!(not_move_line("* comment line\n").is_err());
+        assert!(not_move_line("手数----指手---------消費時間--\n").is_ok());
+        assert!(not_move_line("1 ７六歩(77) ( 0:16/00:00:16)").is_err());
     }
 
     #[test]
@@ -1250,14 +1248,12 @@ mod tests {
     const NOTHING: LineShapes = LineShapes {
         carries_a_line: |_| false,
         opens_a_line: opens_a_shared_line,
-        opens_a_move_line: opens_a_numbered_line,
     };
 
     /// One that finds a `▲` enough, for the case that has to be refused.
     const ANY_MOVE_MARK: LineShapes = LineShapes {
         carries_a_line: |value| value.contains('▲'),
         opens_a_line: opens_a_shared_line,
-        opens_a_move_line: opens_a_numbered_line,
     };
 
     // What separates a line that lost its ending from a line that trails off
@@ -1711,10 +1707,8 @@ mod tests {
 
     // A mark at the head of a line is how a move opens, and the indentation in
     // front of it does not change that — `　▲有利でした` is refused exactly as
-    // `▲有利でした` is. Before the readers looked past the indentation, the
-    // padding itself satisfied the test and the line was skipped instead; the
-    // two spellings now agree. Whether a mark *anywhere* in a line should refuse
-    // it is GAP-029, still open.
+    // `▲有利でした` is. Whether a mark *anywhere* in a line should refuse it is
+    // GAP-029, still open.
     #[test]
     fn a_mark_opens_a_line_from_wherever_the_line_starts() {
         use crate::parser::{parse_ki2_str, parse_kif_str};
@@ -1858,6 +1852,29 @@ mod tests {
                 header.header.get("棋戦"),
                 "{pad:?}: the indentation went into the key: {:?}",
                 header.header
+            );
+
+            // The padding on the *other* side of the key belongs to the line
+            // too. A `手合割` filed under `header["手合割 "]` is a handicap the
+            // board never sees, and D16 misses it as well.
+            let before_colon = parse_kif_str(&format!(
+                "手合割{pad}：香落ち\n手数----指手---------消費時間--\n   1 ３四歩(33)\n"
+            ))
+            .unwrap_or_else(|e| panic!("手合割{pad:?}：: {e}"));
+            assert_eq!(
+                Preset::PresetKY,
+                before_colon.initial.expect("a position").preset,
+                "手合割{pad:?}："
+            );
+            let key_padded = parse_kif_str(&format!(
+                "棋戦{pad}：竜王戦\n手数----指手---------消費時間--\n   1 ７六歩(77)\n"
+            ))
+            .unwrap_or_else(|e| panic!("棋戦{pad:?}：: {e}"));
+            assert_eq!(
+                Some(&String::from("竜王戦")),
+                key_padded.header.get("棋戦"),
+                "棋戦{pad:?}：: {:?}",
+                key_padded.header
             );
         }
     }
