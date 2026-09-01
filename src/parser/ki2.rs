@@ -257,6 +257,19 @@ fn end_of_game_line(
 fn branch_header(input: &str) -> IResult<&str, (usize, &str), VerboseError<&str>> {
     let (line, _) = many0(line_ending)(input)?;
     let (rest, ply) = branch_header_ply(line)?;
+    // KI2 is the reader that uses the number (D3), so it is the one that says
+    // when the number cannot be used. Plies count from 1 (R-JKF-001), so
+    // `変化：０手` names no move for a branch to be an alternative to; carried
+    // on, it reaches `attach_branch`, which cannot find a departure point and
+    // returns — taking the branch and everything under it without a word
+    // (`research/90-gaps.md` GAP-018). Refused, the line is left for the
+    // leftover-input check to report (D1).
+    if ply == 0 {
+        return Err(nom::Err::Error(VerboseError::from_error_kind(
+            line,
+            nom::error::ErrorKind::Verify,
+        )));
+    }
     let (rest, _) = ends_here(SHAPES, line, rest)?;
     Ok((rest, (ply, line)))
 }
@@ -306,7 +319,13 @@ fn move_run(
             // nodes: a comment-only node writes no line for anyone to number.
             // The writers count the same way (`MoveFormat::occupies_a_ply`).
             let numbered = out.iter().filter(|mf| mf.occupies_a_ply()).count();
-            let (rest, end) = opt(end_of_game_line(start, first_ply + numbered))(rest)?;
+            // Saturating because `first_ply` comes from a `変化：N手` line and a
+            // record can say any `N` (`branch_header_ply`). The ply is only
+            // used to decide whose turn an outcome is, and a branch that far out
+            // has no node to attach to anyway — an overflow here would be a
+            // panic in a Tauri command (R-REQ-002).
+            let ply = first_ply.saturating_add(numbered);
+            let (rest, end) = opt(end_of_game_line(start, ply))(rest)?;
             let read_end = end.is_some();
             out.extend(end);
             input = rest;
@@ -712,6 +731,52 @@ mod tests {
                     "{src:?}: the outcome is gone"
                 );
             }
+        }
+    }
+
+    // Plies count from 1 (R-JKF-001), so `変化：０手` names no move for a branch
+    // to be an alternative to. Read as a number it reaches `attach_branch`,
+    // which cannot find a departure point and returns — taking the branch and
+    // the outcome under it without a word (GAP-018). Refused, the line is what
+    // the leftover-input check reports (D1).
+    //
+    // KIF has to keep reading it: the tree there comes from the ply numbers on
+    // the move lines and the declaration is never looked at (D3), so refusing
+    // would reject a record over a digit KIF does not read.
+    #[test]
+    fn a_branch_that_departs_from_no_ply_is_refused_rather_than_dropped() {
+        use crate::parser::{parse_ki2_str, parse_kif_str};
+        const KI2: &str = "手合割：平手\n▲７六歩 △８四歩 ▲２六歩 △４四歩\n";
+        const KIF: &str =
+            "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n   2 ８四歩(83)\n\n";
+        for zero in ["0", "０"] {
+            assert!(
+                parse_ki2_str(&format!(
+                    "{KI2}変化：{zero}手\n△８四歩 ▲２五歩\nまで6手で中断\n"
+                ))
+                .is_err(),
+                "変化：{zero}手: the branch and the outcome went without a word"
+            );
+            let kif = parse_kif_str(&format!("{KIF}変化：{zero}手\n   2 ３四歩(33)\n"))
+                .unwrap_or_else(|e| panic!("変化：{zero}手 in KIF: {e}"));
+            assert_eq!(
+                1,
+                kif.moves.iter().filter(|m| m.forks.is_some()).count(),
+                "変化：{zero}手: KIF builds its tree from the ply numbers (D3)"
+            );
+        }
+        // A ply too large to use is not a spelling that cannot be read: the
+        // record still says a branch starts, and refusing the file over a digit
+        // is what R8-02 was.
+        for huge in ["18446744073709551616", "99999999999999999999"] {
+            assert!(
+                parse_kif_str(&format!("{KIF}変化：{huge}手\n   2 ３四歩(33)\n")).is_ok(),
+                "変化：{huge}手: refused over a number KIF never reads"
+            );
+            assert!(
+                parse_ki2_str(&format!("{KI2}変化：{huge}手\n△８四歩\n")).is_ok(),
+                "変化：{huge}手"
+            );
         }
     }
 

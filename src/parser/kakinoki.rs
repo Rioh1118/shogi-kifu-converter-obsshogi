@@ -168,49 +168,48 @@ pub(super) fn opens_a_branch_header(head: &str) -> bool {
 
 /// Reads `変化：<N>手` and returns `N`.
 ///
-/// The same shape [`opens_a_branch_header`] recognises, and for the same reason
-/// it is one function: what a reader *counts* as a branch header and what a
-/// reader can *consume* have to be the same set. A line inside the difference
-/// belongs to nobody — counted, so not skipped as prose; unreadable, so not
-/// consumed — and the leftover-input check refuses a record over a line the
-/// format has always allowed (D1, D17).
+/// The same shape [`opens_a_branch_header`] recognises, so that a spelling one
+/// of them takes is a spelling the other takes: a header counted but not
+/// consumable is a line that belongs to nobody — not skipped as prose, not read
+/// as a header — and the leftover-input check then refuses a record over a line
+/// the format has always allowed (D1, D17).
 ///
 /// Full-width digits among them. KIF never uses the number (the tree comes from
 /// the ply numbers on the move lines, D3), and KI2 needs it, so folding the
 /// spelling here is what lets both read `変化：２手`.
+///
+/// The number saturates rather than failing. A ply too large for a `usize` is
+/// not a spelling this reader cannot read — KIF does not look at the number at
+/// all, and KI2 hands it to `attach_branch`, which asks whether a node is there
+/// and finds none. Refusing a record over a digit nobody reads is exactly the
+/// difference this function exists to close. (Real records need three digits;
+/// the ceiling is here so that a damaged one is not fatal, not to support it.)
+///
+/// Ply 0 is read here and refused by the reader that uses it. Plies count from 1
+/// (R-JKF-001), so `変化：０手` names no move for a branch to be an alternative
+/// to — but only KI2 looks at the number (D3), and refusing the line here would
+/// reject KIF records over a digit KIF never reads. See `ki2::branch_header`.
 pub(super) fn branch_header_ply(input: &str) -> IResult<&str, usize, VerboseError<&str>> {
-    /// What to take off a full-width digit to reach its half-width twin.
-    const FULL_WIDTH_ZERO: u32 = '０' as u32 - '0' as u32;
     let unreadable = || nom::Err::Error(VerboseError::from_error_kind(input, ErrorKind::Digit));
     let (rest, _) = tag("変化：")(input)?;
     let rest = rest.trim_start_matches(is_padding);
-    // Measured on the source, not on the folded copy: a full-width digit is
-    // three bytes and its half-width twin is one, so the two lengths are
-    // different indices into `rest`.
-    let taken = rest
-        .char_indices()
-        .take_while(|(_, c)| c.is_ascii_digit() || ('０'..='９').contains(c))
-        .last()
-        .map_or(0, |(i, c)| i + c.len_utf8());
+    // Folded a digit at a time, so that the test for "is this a digit" and the
+    // arithmetic that assumes it are the same expression. Split apart, widening
+    // the first silently underflows the second.
+    let mut ply: usize = 0;
+    let mut taken = 0;
+    for (i, c) in rest.char_indices() {
+        let digit = match c {
+            '0'..='9' => u32::from(c) - u32::from('0'),
+            '０'..='９' => u32::from(c) - u32::from('０'),
+            _ => break,
+        };
+        ply = ply.saturating_mul(10).saturating_add(digit as usize);
+        taken = i + c.len_utf8();
+    }
     if taken == 0 {
         return Err(unreadable());
     }
-    let ply = rest[..taken]
-        .chars()
-        .map(|c| {
-            char::from_u32(
-                u32::from(c)
-                    - if c.is_ascii_digit() {
-                        0
-                    } else {
-                        FULL_WIDTH_ZERO
-                    },
-            )
-            .unwrap_or(c)
-        })
-        .collect::<String>()
-        .parse::<usize>()
-        .map_err(|_| unreadable())?;
     // `手` is what the writers put after the number, but nothing requires it of
     // a reader — tsshogi's `branchRegExp` reads the number and stops.
     let (rest, _) = opt(tag("手"))(&rest[taken..])?;
@@ -1089,6 +1088,18 @@ mod tests {
             ("変化： 2手", 2),
             ("変化：\t１２手", 12),
             ("変化：38", 38),
+            // Real records need three digits; these are here because a damaged
+            // one must not be fatal. The number saturates rather than failing,
+            // because failing would put the line in the difference between the
+            // two questions — which is the thing this pair exists to close.
+            ("変化：2000手", 2000),
+            ("変化：18446744073709551615手", usize::MAX),
+            ("変化：18446744073709551616手", usize::MAX),
+            ("変化：99999999999999999999手", usize::MAX),
+            // Ply 0 is read here. Refusing it belongs to `ki2::branch_header`,
+            // the only reader that uses the number (D3).
+            ("変化：0手", 0),
+            ("変化：０手", 0),
         ] {
             assert!(opens_a_branch_header(head), "{head:?}");
             let (rest, read) =
