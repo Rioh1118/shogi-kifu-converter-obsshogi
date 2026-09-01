@@ -837,7 +837,7 @@ mod tests {
     // `promote: false`, because a KIF states 不成 by leaving `成` off
     // (R-KIF-006).
     #[test]
-    fn no_不成_where_the_notation_has_no_word_for_it() {
+    fn a_piece_with_no_promoted_form_gets_no_不成() {
         let kif = "手合割：平手
 手数----指手---------消費時間--
    1 ７六歩(77)
@@ -855,22 +855,33 @@ mod tests {
         // is written on comes out wrong past an outcome (`research/90-gaps.md`
         // GAP-025), and which end of the move the enemy camp is at follows from
         // the side — so pinning it would pin the wrong turn as correct.
+    }
 
-        // A drop has an origin at neither end (R-JKF-003), so there is no move for
-        // R-NOT-005 to be asked about and the enemy camp under it changes nothing.
+    // A drop has an origin at neither end (R-JKF-003), so there is no move for
+    // R-NOT-005 to be asked about and the enemy camp under it changes nothing.
+    #[test]
+    fn a_drop_gets_no_不成() {
         let drop = r#"{"color":0,"to":{"x":2,"y":2},"piece":"GI","promote":false}"#;
         assert!(!written(drop).contains("不成"), "{}", written(drop));
+    }
 
-        // An origin the record never stated is the other end of the same
-        // question, and it goes the other way: the rule cannot be asked, so the
-        // record's own word is kept rather than dropped.
+    // An origin the record never stated (`normalizer::ORIGIN_UNSTATED`) leaves
+    // R-NOT-005 with no square to ask about, and then the record's own word is
+    // all there is: dropping one it wrote loses something, writing one a known
+    // position would not have does not (D4).
+    #[test]
+    fn an_origin_the_record_never_stated_keeps_the_word_it_wrote() {
         let unstated =
             r#"{"color":0,"from":{"x":0,"y":0},"to":{"x":5,"y":6},"piece":"FU","promote":false}"#;
         assert!(written(unstated).contains("不成"), "{}", written(unstated));
+    }
 
-        // A destination nothing resolved is not the same question. There is no
-        // square to say which end of the move the camp is at, and `同` is how
-        // the move is spelled — the word would be about nowhere.
+    // A destination nothing resolved is not the same question. There is no
+    // square to say which end of the move the camp is at, `同` is how the move
+    // is spelled — the word would be about nowhere — and the origin the record
+    // did state is not a word, so there is nothing of the record's to keep.
+    #[test]
+    fn a_destination_nothing_resolved_gets_no_不成() {
         let kif = "手合割：平手
 手数----指手---------消費時間--
    1 ７六歩(77)
