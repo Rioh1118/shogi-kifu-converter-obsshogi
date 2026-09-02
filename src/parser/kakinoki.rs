@@ -25,6 +25,9 @@ enum Information {
 struct InformationData {
     preset: Option<Preset>,
     hands: [Hand; 2],
+    /// Whether a `…の持駒：` line was read. A hand belongs to a board, and an
+    /// empty hand cannot be told from an absent one by its contents.
+    saw_a_hand_line: bool,
     map: HashMap<String, String>,
     comments: Vec<String>,
 }
@@ -34,6 +37,7 @@ impl InformationData {
         InformationData {
             preset: lhs.preset.or(rhs.preset),
             hands: Self::merged_hands(lhs.hands, rhs.hands),
+            saw_a_hand_line: lhs.saw_a_hand_line || rhs.saw_a_hand_line,
             map: lhs.map.into_iter().chain(rhs.map).collect(),
             comments: lhs.comments.into_iter().chain(rhs.comments).collect(),
         }
@@ -1145,8 +1149,14 @@ fn information_lines(
             v.iter().fold(InformationData::default(), |mut acc, info| {
                 match info {
                     Information::Preset(p) => acc.preset = Some(*p),
-                    Information::HandBlack(h) => acc.hands[0] = *h,
-                    Information::HandWhite(h) => acc.hands[1] = *h,
+                    Information::HandBlack(h) => {
+                        acc.hands[0] = *h;
+                        acc.saw_a_hand_line = true;
+                    }
+                    Information::HandWhite(h) => {
+                        acc.hands[1] = *h;
+                        acc.saw_a_hand_line = true;
+                    }
                     Information::KeyValue(k, v) => {
                         acc.map.insert(k.to_owned(), v.to_owned());
                     }
@@ -1349,48 +1359,58 @@ pub(super) fn parse_without_moves(
     shapes: LineShapes,
     input: &str,
 ) -> IResult<&str, (JsonKifuFormat, Vec<String>, WhereABoardCouldBe), VerboseError<&str>> {
-    map(
-        tuple((
-            informations(shapes),
-            opt(board),
-            informations(shapes),
-            side_to_move_line(shapes),
-        )),
-        |(info1, opt_board, info2, side_to_move)| {
-            let info = InformationData::merged(info1, info2);
-            let has_a_board = opt_board.is_some();
-            let initial = if let Some(board) = opt_board {
-                Some(Initial {
-                    preset: Preset::PresetOther,
-                    data: Some(StateFormat {
-                        color: side_to_move.unwrap_or(Color::Black),
-                        board,
-                        hands: info.hands,
-                    }),
-                })
-            } else {
-                Some(Initial {
-                    preset: info.preset.unwrap_or(Preset::PresetHirate),
-                    data: None,
-                })
-            };
-            (
-                JsonKifuFormat {
-                    header: info.map,
-                    initial,
-                    moves: Vec::new(),
-                },
-                // R-KIF-010: a comment above the first move belongs to the
-                // starting position. The caller owns `moves`, so it puts them
-                // there.
-                info.comments,
-                // A record has one board. If it was read here, nothing below is
-                // part of one; if it was not, a `|` or `+` line below is a
-                // board this reader could not take.
-                WhereABoardCouldBe(!has_a_board),
-            )
-        },
-    )(input)
+    let start = input;
+    let (input, (info1, opt_board, info2, side_to_move)) = tuple((
+        informations(shapes),
+        opt(board),
+        informations(shapes),
+        side_to_move_line(shapes),
+    ))(input)?;
+    let info = InformationData::merged(info1, info2);
+    let has_a_board = opt_board.is_some();
+    // A hand belongs to a board. Without one there is nowhere to put it, and
+    // `initial.data` comes back `None` with the pieces gone — a 詰将棋 whose
+    // diagram could not be read comes back as an empty 平手, and the writer
+    // saves that over the original (D4, GAP-007). The board above it is the
+    // line that broke, so that is what the message names.
+    if info.saw_a_hand_line && !has_a_board {
+        return Err(broken_line(
+            start,
+            "this record states a hand but has no board for it",
+        ));
+    }
+    let initial = if let Some(board) = opt_board {
+        Some(Initial {
+            preset: Preset::PresetOther,
+            data: Some(StateFormat {
+                color: side_to_move.unwrap_or(Color::Black),
+                board,
+                hands: info.hands,
+            }),
+        })
+    } else {
+        Some(Initial {
+            preset: info.preset.unwrap_or(Preset::PresetHirate),
+            data: None,
+        })
+    };
+    Ok((
+        input,
+        (
+            JsonKifuFormat {
+                header: info.map,
+                initial,
+                moves: Vec::new(),
+            },
+            // R-KIF-010: a comment above the first move belongs to the starting
+            // position. The caller owns `moves`, so it puts them there.
+            info.comments,
+            // A record has one board. If it was read here, nothing below is part
+            // of one; if it was not, a `|` or `+` line below is a board this
+            // reader could not take.
+            WhereABoardCouldBe(!has_a_board),
+        ),
+    ))
 }
 
 /// Puts the comments that stood among the header lines in front of the ones the
@@ -1540,6 +1560,26 @@ mod tests {
             )),
             move_time_format("00:00:16")
         );
+    }
+
+    // A hand belongs to a board. Where the diagram could not be read the hands
+    // go with it — `initial.data` is `None` and the pieces are simply gone —
+    // and the record comes back as an empty 平手 that the writer then saves over
+    // the original (D4, GAP-007). `main` refused three of these four spellings
+    // by accident (it wanted a newline); the fourth it accepted and lost the
+    // hands.
+    #[test]
+    fn a_hand_with_no_board_is_reported_rather_than_dropped() {
+        for record in [
+            "後手の持駒：飛二 角\n先手の持駒：",
+            "後手の持駒：飛二 角\n先手の持駒：\n",
+            "後手の持駒：飛二 角\n先手の持駒：金",
+            "後手の持駒：飛二 角\n先手の持駒：金\n",
+            "手合割：平手\n後手の持駒：なし\n手数----指手---------消費時間--\n   1 ７六歩(77)\n",
+        ] {
+            assert!(crate::parser::parse_kif_str(record).is_err(), "{record:?}");
+            assert!(crate::parser::parse_ki2_str(record).is_err(), "{record:?}");
+        }
     }
 
     // A hand line whose count cannot be read must not fall through to the
@@ -2138,14 +2178,16 @@ mod tests {
             .data
             .expect("a board");
         assert_eq!(Color::White, side.color);
-        // Including a hand line with nothing after the colon, which is the one
-        // value R10-04 decided reads as an empty hand rather than as an error.
-        assert!(parse_kif_str("後手の持駒：飛\n先手の持駒：")
-            .expect("reads")
-            .initial
-            .expect("a position")
-            .data
-            .is_none());
+        // Including a hand line with nothing after the colon, which R10-04
+        // decided reads as an empty hand rather than as an error. A hand needs a
+        // board to sit on, so the check is that the line is read — the record
+        // itself is refused for having no board (D1).
+        let hand_without_a_board = parse_kif_str("後手の持駒：飛\n先手の持駒：")
+            .expect_err("a hand with no board is refused");
+        assert!(
+            format!("{hand_without_a_board}").contains("no board"),
+            "{hand_without_a_board}"
+        );
         // Including the board's own closing frame.
         assert!(
             parse_kif_str(&format!("後手の持駒：飛\n{}", BOARD.trim_end()))
