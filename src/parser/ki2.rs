@@ -2,7 +2,7 @@ use super::kakinoki::{
     an_empty_block_here_is_worth_reporting, branch_header_ply, broken_line,
     comments_on_the_starting_position, ends_a_word, ends_here, move_comment_line, move_to,
     not_move_line, opens_a_shared_line, parse_without_moves, piece_kind, program_comment_line,
-    LineShapes, WhereInTheRecord, SIDE_MARKS,
+    LineShapes, WhereABoardCouldBe, SIDE_MARKS,
 };
 use crate::jkf::*;
 use crate::notation::is_padding;
@@ -290,16 +290,15 @@ fn branch_header(input: &str) -> IResult<&str, (usize, &str), VerboseError<&str>
 fn move_run(
     start: Color,
     first_ply: usize,
-    where_it_starts: WhereInTheRecord,
+    where_a_board_could_be: WhereABoardCouldBe,
 ) -> impl FnMut(&str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
     move |mut input| {
         let mut out = Vec::new();
+        // Only a move puts the opening block behind us. A comment or a `まで…`
+        // line can sit above a board — the last game's outcome left at the head
+        // of the file does not mean the diagram below it is not one (GAP-007).
+        let mut where_a_board_could_be = where_a_board_could_be;
         loop {
-            let where_it_is = if out.is_empty() {
-                where_it_starts
-            } else {
-                WhereInTheRecord::PastTheOpeningBlock
-            };
             // R-KI2-002: blank lines sit between runs of moves — the
             // specification's own example is written that way. R-KI2-001: KI2 is
             // "a game record people can read", pasted as-is, so a run can also
@@ -315,7 +314,9 @@ fn move_run(
                 // one here as well, and a record that reads as `.kif` has to
                 // read as `.ki2` (D18). Everything the reader has a shape for
                 // is left where it is.
-                nom::combinator::recognize(|input| a_line_only_prose_opens(where_it_is, input)),
+                nom::combinator::recognize(|input| {
+                    a_line_only_prose_opens(where_a_board_could_be, input)
+                }),
             )))(input)?;
             // A comment before any move of a run belongs to a node of its own:
             // that is what `write_line` produces for a JKF node carrying only
@@ -328,6 +329,9 @@ fn move_run(
             }));
             let (rest, v) = many0(single_move)(rest)?;
             let read_moves = !v.is_empty();
+            if read_moves {
+                where_a_board_could_be = where_a_board_could_be.after_a_move();
+            }
             out.extend(v);
             // The ply an outcome line names counts moves and outcomes, not
             // nodes: a comment-only node writes no line for anyone to number.
@@ -368,7 +372,7 @@ fn move_run(
 /// carrying `▲` or `△` is therefore never skippable, and the leftover-input
 /// check reports it instead.
 fn a_line_only_prose_opens(
-    where_it_is: WhereInTheRecord,
+    where_a_board_could_be: WhereABoardCouldBe,
     input: &str,
 ) -> IResult<&str, &str, VerboseError<&str>> {
     // Past the padding, the same as `begins_the_line_below` looks past it. A
@@ -381,7 +385,7 @@ fn a_line_only_prose_opens(
             nom::error::ErrorKind::Not,
         )));
     }
-    let (rest, line) = not_move_line(where_it_is, input)?;
+    let (rest, line) = not_move_line(where_a_board_could_be, input)?;
     if line.contains(|c| SIDE_MARKS.iter().any(|(mark, _)| *mark == c)) {
         return Err(nom::Err::Error(VerboseError::from_error_kind(
             input,
@@ -434,7 +438,11 @@ fn attach_branch(
 
 /// Reads the main line and every `変化：N手` block. `start` is whose turn ply 1
 /// is, which the outcome line needs and the ply parity cannot supply.
-fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
+fn moves(
+    start: Color,
+    where_a_board_could_be: WhereABoardCouldBe,
+    input: &str,
+) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
     // Everything above the first move, in one loop.
     //
     // Comments belong to the starting position (R-KIF-010) and are kept; the
@@ -464,7 +472,7 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
             nom::combinator::recognize(branch_header),
             nom::combinator::recognize(program_comment_line),
             nom::combinator::recognize(|input| {
-                a_line_only_prose_opens(WhereInTheRecord::BeforeTheFirstMove, input)
+                a_line_only_prose_opens(where_a_board_could_be, input)
             }),
             line_ending,
         ))(input)
@@ -475,7 +483,14 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
         }
     }
     let comments = (!comments.is_empty()).then_some(comments);
-    let (mut input, main) = move_run(start, 1, WhereInTheRecord::BeforeTheFirstMove)(input)?;
+    let (mut input, main) = move_run(start, 1, where_a_board_could_be)(input)?;
+    // What the main line read decides it for the skips below: a record whose
+    // first move is still to come may have its diagram anywhere above it.
+    let where_a_board_could_be = if main.iter().any(|mf| mf.move_.is_some()) {
+        where_a_board_could_be.after_a_move()
+    } else {
+        where_a_board_could_be
+    };
     let mut out = vec![MoveFormat {
         comments,
         ..Default::default()
@@ -505,8 +520,7 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
                         Err(_) => break,
                     }
                 }
-                let (rest, branch) =
-                    move_run(start, start_ply, WhereInTheRecord::PastTheOpeningBlock)(rest)?;
+                let (rest, branch) = move_run(start, start_ply, where_a_board_could_be)(rest)?;
                 if branch.is_empty() {
                     // The header says a branch follows. Reading nothing under it
                     // means the branch is gone, and carrying on returns a record
@@ -543,7 +557,7 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
         // `not_move_line` under the skip consumes a line at a time, so this
         // cannot spin.
         match alt((nom::combinator::recognize(program_comment_line), |input| {
-            a_line_only_prose_opens(WhereInTheRecord::PastTheOpeningBlock, input)
+            a_line_only_prose_opens(where_a_board_could_be, input)
         }))(input)
         {
             Ok((rest, _)) => input = rest,
@@ -560,12 +574,13 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
 /// else is set. Only the reader knows the difference — one consumed a line and
 /// the other did not — so it has to say so here (D1, `parse_kif_str`).
 pub(crate) fn parse(input: &str) -> IResult<&str, (JsonKifuFormat, bool), VerboseError<&str>> {
-    let (rest, (mut jkf, header_comments)) = parse_without_moves(SHAPES, input)?;
+    let (rest, (mut jkf, header_comments, where_a_board_could_be)) =
+        parse_without_moves(SHAPES, input)?;
     let read_header = rest.len() < input.len();
     // The side has to come from the starting position, not the ply parity: a
     // handicap record has White at every odd ply (R-HC-001).
     let start = crate::handicap::starting_side(jkf.initial.as_ref());
-    let (input, moves) = moves(start, rest)?;
+    let (input, moves) = moves(start, where_a_board_could_be, rest)?;
     jkf.moves.extend(moves);
     comments_on_the_starting_position(header_comments, &mut jkf.moves);
     Ok((input, (jkf, read_header)))
@@ -1260,7 +1275,11 @@ mod tests {
                     ..Default::default()
                 }]
             )),
-            moves(Color::Black, "*comment\n")
+            moves(
+                Color::Black,
+                WhereABoardCouldBe::past_a_board_for_tests(),
+                "*comment\n"
+            )
         );
         assert_eq!(
             Ok((
@@ -1308,7 +1327,11 @@ mod tests {
                     }
                 ]
             )),
-            moves(Color::Black, "▲６八銀 △３四歩 ▲５六歩")
+            moves(
+                Color::Black,
+                WhereABoardCouldBe::past_a_board_for_tests(),
+                "▲６八銀 △３四歩 ▲５六歩"
+            )
         )
     }
 
@@ -1357,6 +1380,7 @@ mod tests {
             )),
             moves(
                 Color::Black,
+                WhereABoardCouldBe::past_a_board_for_tests(),
                 &r#"
 △７四歩
 *-2732

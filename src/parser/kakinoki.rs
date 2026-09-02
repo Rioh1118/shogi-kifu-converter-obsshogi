@@ -649,18 +649,43 @@ fn comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
     )(input)
 }
 
-/// Where in the record a skip is being asked to run.
+/// Whether a `|` or `+` line could still be a piece of this record's board.
 ///
-/// The board is read once, by `parse_without_moves`, so the shapes it is made of
-/// only have to be protected until the first move is read. Asking the same
-/// question everywhere would refuse `|先手|後手|` and `+123` after the moves,
-/// where they cannot be a board and the format has always allowed them.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum WhereInTheRecord {
-    /// Before the first move: the opening block may still be arriving.
-    BeforeTheFirstMove,
-    /// Past it.
-    PastTheOpeningBlock,
+/// Two facts decide it, and **neither can be worked out from the line in front
+/// of the skip**: whether [`parse_without_moves`] came back with a diagram (a
+/// record has one board and it is read there), and whether the reader has taken
+/// its first move. Each is known in exactly one place, so this carries the
+/// answer from there instead of letting every skip derive it again — three
+/// skips with three derivations is how a `.ki2` came back as an empty 平手 with
+/// the position gone (GAP-007, D4).
+///
+/// There is no way to make one out of a `bool`: [`parse_without_moves`] hands
+/// out the only ones there are, and [`Self::after_a_move`] is the only thing
+/// that changes one. A reader that forgets to pass it on keeps guarding, which
+/// costs a refused `|先手|後手|` (D1's side of the trade) rather than a
+/// position that vanishes.
+#[derive(Clone, Copy)]
+pub(super) struct WhereABoardCouldBe(bool);
+
+impl WhereABoardCouldBe {
+    /// Past the first move of the record. A `|先手|後手|` or `+123` here cannot
+    /// be a board — the board is above the moves — and the format has always
+    /// allowed such a line.
+    pub(super) fn after_a_move(self) -> Self {
+        Self(false)
+    }
+
+    fn a_frame_line_is_worth_keeping(self) -> bool {
+        self.0
+    }
+
+    /// For tests that call a run parser directly, past the point where a board
+    /// could be. The readers cannot reach this: what they get comes from
+    /// [`parse_without_moves`], which is the only place that knows.
+    #[cfg(test)]
+    pub(super) fn past_a_board_for_tests() -> Self {
+        Self(false)
+    }
 }
 
 /// A line that is none of the shapes the move list is made of, skipped whole.
@@ -677,12 +702,13 @@ pub(super) enum WhereInTheRecord {
 /// `まで…` are **not** among them, so a caller that wants one of those read as
 /// itself has to try it before this (`kif::skippable_line`).
 ///
-/// `where_it_is` adds `|` and `+` to that list while a board could still be
-/// arriving. They are the frame and the ranks of a diagram, which reaches the
-/// reader through no other path (GAP-007), and a skip that takes one takes the
-/// position with it — the record comes back as an empty 平手 and the writer
-/// saves that over the original (D4). Past the first move the same two
-/// characters cannot be a board and the format has always allowed them.
+/// `where_a_board_could_be` adds `|` and `+` to that list while a board could
+/// still be arriving. They are the frame and the ranks of a diagram, which
+/// reaches the reader through no other path (GAP-007), and a skip that takes one
+/// takes the position with it — the record comes back as an empty 平手 and the
+/// writer saves that over the original (D4). Past the first move, or below a
+/// diagram that was read, the same two characters cannot be a board and the
+/// format has always allowed them.
 ///
 /// `&` is there because a bookmark is kept as a comment (R-KIF-011), and letting
 /// this parser take the line instead drops it without a word — which is how a
@@ -694,7 +720,7 @@ pub(super) enum WhereInTheRecord {
 /// content, and swallows two lines where one was meant — so a blank line in the
 /// middle of a record destroys the move that follows it.
 pub(super) fn not_move_line(
-    where_it_is: WhereInTheRecord,
+    where_a_board_could_be: WhereABoardCouldBe,
     input: &str,
 ) -> IResult<&str, &str, VerboseError<&str>> {
     // Asked past the indentation. What a line *is* does not change with how far
@@ -723,7 +749,7 @@ pub(super) fn not_move_line(
     // been read no `|` or `+` line can be a piece of one, and refusing them
     // buys nothing — it just drops `|先手|後手|` and `+123` from records the
     // format has always allowed.
-    if where_it_is == WhereInTheRecord::BeforeTheFirstMove && head.starts_with(['|', '+']) {
+    if where_a_board_could_be.a_frame_line_is_worth_keeping() && head.starts_with(['|', '+']) {
         return Err(nom::Err::Error(VerboseError::from_error_kind(
             input,
             ErrorKind::Not,
@@ -1220,10 +1246,15 @@ fn side_to_move_line(
 ///
 /// Returns the comments that stood among those lines as well — see
 /// [`comments_on_the_starting_position`].
+/// Reads the header block: everything above the moves, including the board.
+///
+/// The third of what it hands back is [`WhereABoardCouldBe`] — this is the one
+/// place that knows whether the record's diagram was read, and the skips below
+/// have no way of finding out for themselves (GAP-007).
 pub(super) fn parse_without_moves(
     shapes: LineShapes,
     input: &str,
-) -> IResult<&str, (JsonKifuFormat, Vec<String>), VerboseError<&str>> {
+) -> IResult<&str, (JsonKifuFormat, Vec<String>, WhereABoardCouldBe), VerboseError<&str>> {
     map(
         tuple((
             informations(shapes),
@@ -1233,6 +1264,7 @@ pub(super) fn parse_without_moves(
         )),
         |(info1, opt_board, info2, side_to_move)| {
             let info = InformationData::merged(info1, info2);
+            let has_a_board = opt_board.is_some();
             let initial = if let Some(board) = opt_board {
                 Some(Initial {
                     preset: Preset::PresetOther,
@@ -1258,6 +1290,10 @@ pub(super) fn parse_without_moves(
                 // starting position. The caller owns `moves`, so it puts them
                 // there.
                 info.comments,
+                // A record has one board. If it was read here, nothing below is
+                // part of one; if it was not, a `|` or `+` line below is a
+                // board this reader could not take.
+                WhereABoardCouldBe(!has_a_board),
             )
         },
     )(input)
@@ -1453,26 +1489,13 @@ mod tests {
     fn a_skipped_line_never_swallows_the_line_after_it() {
         assert_eq!(
             Ok(("   2 ３四歩(33)\n", "変化：2")),
-            not_move_line(
-                WhereInTheRecord::PastTheOpeningBlock,
-                "変化：2\n   2 ３四歩(33)\n"
-            )
+            not_move_line(WhereABoardCouldBe(false), "変化：2\n   2 ３四歩(33)\n")
         );
-        assert!(
-            not_move_line(WhereInTheRecord::PastTheOpeningBlock, "\n   2 ３四歩(33)\n").is_err()
-        );
-        assert!(not_move_line(
-            WhereInTheRecord::PastTheOpeningBlock,
-            "\r\n   2 ３四歩(33)\n"
-        )
-        .is_err());
+        assert!(not_move_line(WhereABoardCouldBe(false), "\n   2 ３四歩(33)\n").is_err());
+        assert!(not_move_line(WhereABoardCouldBe(false), "\r\n   2 ３四歩(33)\n").is_err());
         // Padding in front of a blank line does not make it a line with
         // something on it.
-        assert!(not_move_line(
-            WhereInTheRecord::PastTheOpeningBlock,
-            "　\t \n   2 ３四歩(33)\n"
-        )
-        .is_err());
+        assert!(not_move_line(WhereABoardCouldBe(false), "　\t \n   2 ３四歩(33)\n").is_err());
     }
 
     // What a line is does not change with how far in it starts. KIF writes its
@@ -1534,18 +1557,14 @@ mod tests {
 
     #[test]
     fn parse_not_move_line() {
-        assert!(not_move_line(WhereInTheRecord::PastTheOpeningBlock, "").is_err());
-        assert!(not_move_line(WhereInTheRecord::PastTheOpeningBlock, "* comment line\n").is_err());
+        assert!(not_move_line(WhereABoardCouldBe(false), "").is_err());
+        assert!(not_move_line(WhereABoardCouldBe(false), "* comment line\n").is_err());
         assert!(not_move_line(
-            WhereInTheRecord::PastTheOpeningBlock,
+            WhereABoardCouldBe(false),
             "手数----指手---------消費時間--\n"
         )
         .is_ok());
-        assert!(not_move_line(
-            WhereInTheRecord::PastTheOpeningBlock,
-            "1 ７六歩(77) ( 0:16/00:00:16)"
-        )
-        .is_err());
+        assert!(not_move_line(WhereABoardCouldBe(false), "1 ７六歩(77) ( 0:16/00:00:16)").is_err());
     }
 
     #[test]
@@ -2112,6 +2131,41 @@ mod tests {
             // board gone and `preset` left at 平手.
             let ki2 = format!("{}▲７六歩 △３四歩\n", record(&rows));
             assert!(parse_ki2_str(&ki2).is_err(), "{name}, as a KI2");
+        }
+        // A record whose diagram is broken and which has no moves at all — a
+        // 詰将棋 figure and its hands, and nothing else. Nothing downstream ever
+        // reads the diagram again (GAP-007), so a skip that takes its lines
+        // takes the position, and `to_ki2` saves 平手 over the original (D4).
+        for (name, broken, line) in [
+            ("a short frame", 1, "+--------------------------+\n"),
+            ("a half-width rank", 2, "| ・ ・ ・ ・ ・ ・ ・ ・ ・|1\n"),
+        ] {
+            let rows: Vec<String> = ROWS
+                .iter()
+                .enumerate()
+                .map(|(i, l)| {
+                    if i == broken {
+                        String::from(line)
+                    } else {
+                        format!("{l}\n")
+                    }
+                })
+                .collect();
+            assert!(
+                parse_ki2_str(&record(&rows)).is_err(),
+                "{name}, as a KI2 with no moves"
+            );
+            // And with the last game's outcome line left above it. An outcome
+            // is not a move: the diagram below it is still a diagram.
+            let with_an_outcome = format!("まで122手で先手の勝ち\n{}", record(&rows));
+            assert!(
+                parse_ki2_str(&with_an_outcome).is_err(),
+                "{name}, as a KI2 under a まで line"
+            );
+            assert!(
+                parse_kif_str(&with_an_outcome).is_err(),
+                "{name}, as a KIF under a まで line"
+            );
         }
         // Including one that stops in the middle of the file.
         let cut: Vec<String> = ROWS[..6].iter().map(|l| format!("{l}\n")).collect();

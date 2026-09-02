@@ -2,7 +2,7 @@ use super::kakinoki::{
     an_empty_block_here_is_worth_reporting, blank_line, branch_header_ply, broken_line,
     comments_on_the_starting_position, ends_here, move_comment_line, move_special, move_time,
     move_to, not_move_line, opens_a_branch_header, opens_a_numbered_line, opens_a_shared_line,
-    padding, parse_without_moves, piece_kind, side_mark, LineShapes, WhereInTheRecord,
+    padding, parse_without_moves, piece_kind, side_mark, LineShapes, WhereABoardCouldBe,
 };
 use crate::jkf::*;
 use crate::notation::is_padding;
@@ -84,9 +84,12 @@ fn branch_header_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
 /// Only used before the main line, where a `変化：` is nothing to act on: a
 /// branch cannot come before the moves it is an alternative to, and one written
 /// there anyway is what tsshogi skips as well.
-fn skippable_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
+fn skippable_line(
+    where_a_board_could_be: WhereABoardCouldBe,
+    input: &str,
+) -> IResult<&str, &str, VerboseError<&str>> {
     alt((blank_line, branch_header_line, |input| {
-        not_move_line(WhereInTheRecord::BeforeTheFirstMove, input)
+        not_move_line(where_a_board_could_be, input)
     }))(input)
 }
 
@@ -97,7 +100,7 @@ fn skippable_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
 /// declined too: a header the reader refuses ([`branch_header_line`]) has to
 /// reach that loop to be refused, not be skipped as unreadable prose.
 fn skippable_line_except_a_branch_header(
-    where_it_is: WhereInTheRecord,
+    where_a_board_could_be: WhereABoardCouldBe,
     input: &str,
 ) -> IResult<&str, &str, VerboseError<&str>> {
     if opens_a_branch_header(input) {
@@ -106,7 +109,9 @@ fn skippable_line_except_a_branch_header(
             nom::error::ErrorKind::Not,
         )));
     }
-    alt((blank_line, |input| not_move_line(where_it_is, input)))(input)
+    alt((blank_line, |input| {
+        not_move_line(where_a_board_could_be, input)
+    }))(input)
 }
 
 /// Skips the blank lines and `#` lines that may sit between two moves of a run
@@ -250,6 +255,7 @@ fn next_side(mf: &MoveFormat, side: Color) -> Color {
 
 fn moves_with_index(
     start: Color,
+    where_a_board_could_be: WhereABoardCouldBe,
     input: &str,
 ) -> IResult<&str, (usize, Vec<MoveFormat>), VerboseError<&str>> {
     // A run can open with comment lines, and the node they make carries no ply:
@@ -293,17 +299,22 @@ fn moves_with_index(
             Err(err) => return Err(err),
         }
     }
-    // This run has read at least one move — `move_with_comments` above
-    // returns on failure — so the opening block, and any board that was in
-    // it, is behind us.
-    let where_it_is = WhereInTheRecord::PastTheOpeningBlock;
-    let (input, _) = opt(|input| skippable_line_except_a_branch_header(where_it_is, input))(input)?;
+    // This run has read at least one move — `move_with_comments` above returns
+    // on failure — so the opening block, and any board that was in it, is
+    // behind us.
+    let where_a_board_could_be = where_a_board_could_be.after_a_move();
+    let (input, _) =
+        opt(|input| skippable_line_except_a_branch_header(where_a_board_could_be, input))(input)?;
     Ok((input, (first_ply, out)))
 }
 
-fn main_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
+fn main_moves(
+    start: Color,
+    where_a_board_could_be: WhereABoardCouldBe,
+    input: &str,
+) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
     let (input, comments) = opt(many1(move_comment_line))(input)?;
-    let (input, run) = match moves_with_index(start, input) {
+    let (input, run) = match moves_with_index(start, where_a_board_could_be, input) {
         Ok((rest, (_, v))) => (rest, v),
         Err(nom::Err::Error(_)) => (input, Vec::new()),
         Err(err) => return Err(err),
@@ -321,7 +332,11 @@ fn main_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Verbo
     ))
 }
 
-fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
+fn entire_moves(
+    start: Color,
+    where_a_board_could_be: WhereABoardCouldBe,
+    input: &str,
+) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
     /// Where in `run` the node at ply `at` sits, `base` being the ply of the
     /// run's first numbered line.
     ///
@@ -385,20 +400,15 @@ fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Ver
         moves
     }
 
-    let (input, _) = many0(skippable_line)(input)?;
-    let (mut input, main) = main_moves(start, input)?;
-    // Where the record is, for the skips below. A board is read once, by
-    // `parse_without_moves`, and until a move has been read the lines it is made
-    // of may still be arriving — so a `|` or `+` line before the first move is
-    // a board this reader could not take, and one after it cannot be (D1,
-    // GAP-007). See `not_move_line`.
-    let where_it_is = if main
-        .iter()
-        .any(|mf| mf.move_.is_some() || mf.special.is_some())
-    {
-        WhereInTheRecord::PastTheOpeningBlock
+    let (input, _) = many0(|input| skippable_line(where_a_board_could_be, input))(input)?;
+    let (mut input, main) = main_moves(start, where_a_board_could_be, input)?;
+    // Only a move puts the opening block behind us. An outcome line or a
+    // comment can sit above a board — a record that carries the last game's
+    // `まで…` line still has its diagram below it (GAP-007).
+    let where_a_board_could_be = if main.iter().any(|mf| mf.move_.is_some()) {
+        where_a_board_could_be.after_a_move()
     } else {
-        WhereInTheRecord::BeforeTheFirstMove
+        where_a_board_could_be
     };
     let mut forks = Vec::new();
     // One `変化：N手` header and the run under it per turn. Reading them one at a
@@ -407,7 +417,9 @@ fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Ver
     // goes missing without a word.
     loop {
         let (rest, _) =
-            many0(|input| skippable_line_except_a_branch_header(where_it_is, input))(input)?;
+            many0(|input| skippable_line_except_a_branch_header(where_a_board_could_be, input))(
+                input,
+            )?;
         // Headers in a row, taken as one. KIF does not read the declaration at
         // all — the tree comes from the ply numbers (D3) — so a second `変化：`
         // over the first is a spare line, not a branch that went missing.
@@ -417,10 +429,9 @@ fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Ver
             match branch_header_line(rest) {
                 Ok((after, line)) => {
                     header = Some(line);
-                    let (after, _) =
-                        many0(|input| skippable_line_except_a_branch_header(where_it_is, input))(
-                            after,
-                        )?;
+                    let (after, _) = many0(|input| {
+                        skippable_line_except_a_branch_header(where_a_board_could_be, input)
+                    })(after)?;
                     rest = after;
                 }
                 // The header is there and cannot be read — it ran into the moves
@@ -431,7 +442,7 @@ fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Ver
                 Err(_) => break,
             }
         }
-        match moves_with_index(start, rest) {
+        match moves_with_index(start, where_a_board_could_be, rest) {
             Ok((after_run, run)) => {
                 forks.push(run);
                 input = after_run;
@@ -479,12 +490,13 @@ fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Ver
 /// else is set. Only the reader knows the difference — one consumed a line and
 /// the other did not — so it has to say so here (D1, `parse_kif_str`).
 pub(crate) fn parse(input: &str) -> IResult<&str, (JsonKifuFormat, bool), VerboseError<&str>> {
-    let (rest, (mut jkf, header_comments)) = parse_without_moves(SHAPES, input)?;
+    let (rest, (mut jkf, header_comments, where_a_board_could_be)) =
+        parse_without_moves(SHAPES, input)?;
     let read_header = rest.len() < input.len();
     // The side has to come from the starting position, not the ply parity: a
     // handicap record has White at every odd ply (R-HC-001).
     let start = crate::handicap::starting_side(jkf.initial.as_ref());
-    let (input, moves) = entire_moves(start, rest)?;
+    let (input, moves) = entire_moves(start, where_a_board_could_be, rest)?;
     jkf.moves.extend(moves);
     comments_on_the_starting_position(header_comments, &mut jkf.moves);
     Ok((input, (jkf, read_header)))
@@ -881,6 +893,7 @@ mod tests {
             )),
             main_moves(
                 Color::Black,
+                WhereABoardCouldBe::past_a_board_for_tests(),
                 &r#"
 1 ７六歩(77) ( 0:16/00:00:16)
 2 ３四歩(33) ( 0:00/00:00:00)
@@ -924,6 +937,7 @@ mod tests {
             )),
             main_moves(
                 Color::Black,
+                WhereABoardCouldBe::past_a_board_for_tests(),
                 &r#"
 *開始局面のコメント
   1 ２六歩(27) ( 0:01/00:00:01)
@@ -975,7 +989,11 @@ mod tests {
   14 同　金(32)    (00:00 / 00:00:00)
   15 ７七銀(68)    (00:00 / 00:00:00)
 "#[1..];
-        let ret = entire_moves(Color::Black, input);
+        let ret = entire_moves(
+            Color::Black,
+            WhereABoardCouldBe::past_a_board_for_tests(),
+            input,
+        );
         let (rest, moves) = ret.expect("failed to parse");
         assert!(rest.is_empty());
         assert_eq!(13, moves.len());
@@ -1020,7 +1038,12 @@ mod tests {
 変化：5
    5 投了 ( 0:00/ 0:00:00)
 "#[1..];
-        let (_, moves) = entire_moves(Color::Black, input).expect("parses");
+        let (_, moves) = entire_moves(
+            Color::Black,
+            WhereABoardCouldBe::past_a_board_for_tests(),
+            input,
+        )
+        .expect("parses");
         let forks = moves[2]
             .forks
             .as_ref()
@@ -1050,7 +1073,12 @@ mod tests {
 変化：9
    9 ３四歩(33)    (00:00 / 00:00:00)
 "#[1..];
-        let (_, moves) = entire_moves(Color::Black, input).expect("parses");
+        let (_, moves) = entire_moves(
+            Color::Black,
+            WhereABoardCouldBe::past_a_board_for_tests(),
+            input,
+        )
+        .expect("parses");
         assert_eq!(3, moves.len(), "index 0 plus two moves");
         assert!(
             moves.iter().all(|m| m.forks.is_none()),
