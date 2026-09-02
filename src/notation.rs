@@ -12,6 +12,12 @@
 //!
 //! What the notation can and cannot say about a move lives here too, for the
 //! same reason: the normalizer and the writers have to answer it the same way.
+//!
+//! So do the lexical answers every side shares — where a line ends
+//! ([`LINE_ENDS`]) and what counts as padding ([`is_padding`]). Kept inside one
+//! format's parser instead, they make the tables that have nothing to do with
+//! parsing reach into it: `handicap::is_a_known_name` has to trim a value before
+//! it can match a name, and the handicap table is a leaf.
 
 /// The characters a line ending is made of, whichever of them a file or a value
 /// carries.

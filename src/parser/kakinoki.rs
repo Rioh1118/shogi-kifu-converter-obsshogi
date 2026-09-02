@@ -97,12 +97,19 @@ pub(super) const SIDE_MARKS: [(char, Color); 2] = [('▲', Color::Black), ('△'
 
 /// The mark a KIF move line may carry in front of the move (R-KIF-005).
 ///
-/// KIF numbers its lines, so whose move it is comes from the ply and not from
-/// the mark — R-KIF-007 reads the side off the ply because an interrupted game
-/// numbers its outcome as a ply of its own and the parity stops matching. What
-/// the mark needs from this reader is to be allowed: tsshogi's move pattern has
-/// `[▲△▼▽]?` in it, so a record that opens on the consumer's TS side has to
-/// open here too, and refusing it refuses the file whole (D1).
+/// Read and dropped. Whose move it is comes from the run: the first line of one
+/// takes its side from the ply (`handicap::side_to_move_at_ply`, which is the
+/// parity, corrected for a handicap by R-HC-001), and every line after it from
+/// the move before (`kif::move_line`'s `known_side`). An outcome line takes a
+/// ply without taking a turn, so past one the parity is wrong and only the chain
+/// is right — which matters because 反則勝ち names its loser through whose turn
+/// it is (R-KIF-007).
+///
+/// What the mark needs from this reader is to be allowed. tsshogi's move pattern
+/// has `[▲△▼▽]?` in it, so a record that opens on the consumer's TS side has to
+/// open here too, and refusing it refuses the file whole (D1). `▼` and `▽` are
+/// not in [`SIDE_MARKS`] yet, so those two are still refused
+/// (`research/90-gaps.md` GAP-024).
 pub(super) fn side_mark(input: &str) -> IResult<&str, char, VerboseError<&str>> {
     satisfy(|c| SIDE_MARKS.iter().any(|(mark, _)| *mark == c))(input)
 }
@@ -403,7 +410,7 @@ fn move_time_format(input: &str) -> IResult<&str, TimeFormat, VerboseError<&str>
 }
 
 /// The `( 0:03/00:00:03)` a KIF move line may carry after the move or the
-/// outcome word (R-KIF-005).
+/// outcome word (R-KIF-007 / R-KIF-008).
 ///
 /// Here rather than beside the reader that consumes it, because the shared
 /// question "does this line hold a move" has to be answered with the same shape
@@ -2180,9 +2187,9 @@ mod tests {
                 })
                 .collect();
             assert!(parse_kif_str(&record(&rows)).is_err(), "{name}");
-            // D18: the same record, and the same answer. A `.ki2` whose diagram
-            // is broken above its first move used to come back `Ok` with the
-            // board gone and `preset` left at 平手.
+            // D18: the same record, and the same answer. A diagram is read or
+            // reported, in either format — never skipped, which would leave the
+            // record as an empty 平手 (GAP-007, D4).
             let ki2 = format!("{}▲７六歩 △３四歩\n", record(&rows));
             assert!(parse_ki2_str(&ki2).is_err(), "{name}, as a KI2");
         }

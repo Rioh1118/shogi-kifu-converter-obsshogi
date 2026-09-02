@@ -275,14 +275,15 @@ fn branch_header(input: &str) -> IResult<&str, (usize, &str), VerboseError<&str>
     Ok((rest, (ply, line)))
 }
 
-/// Reads one line of the record: the moves and any outcome lines among them.
+/// Reads one run of moves — the main line, or one `変化：` block — with the
+/// outcome lines among them.
 ///
 /// An outcome does not end the run. A game that was interrupted and resumed
 /// records `中断` in the middle and keeps going, and stopping at the first
 /// `まで…` line drops every move after it without saying so.
 ///
-/// `where_it_starts` is where in the record the run begins, and it holds only
-/// until the run reads something: a board diagram can still be arriving above
+/// `where_a_board_could_be` is what the run starts with, and it holds only until
+/// the run reads a move: a board diagram can still be arriving above
 /// the first move of the main line, and the skip below must leave its `|` and
 /// `+` lines alone (GAP-007). Deciding that inside the run rather than at the
 /// call would make this the second answer to "have we passed the opening block"
