@@ -600,22 +600,17 @@ mod tests {
         }
     }
 
-    // Every line `move_line` can take has to be one `opens_a_numbered_line`
-    // counts. A line it does not count goes to the skip, and the move — or the
-    // outcome of the game — is gone from a record that still comes back `Ok`
-    // (D1, D21). This is the invariant that keeps the two in step; nothing in
-    // the types does.
-    //
-    // The other direction is deliberately loose in one place only. `   2 パス`
-    // is counted and cannot be read, which is how it reaches the leftover-input
-    // check instead of being skipped (D8, GAP-020). What must not happen is the
-    // reader getting *part way* into a line and then saying it was never one of
-    // its lines: that is the same silence, arriving through `Err(Error)`.
     #[test]
-    fn every_line_the_reader_takes_is_a_line_the_skip_counts() {
+    fn what_the_reader_takes_and_what_the_skip_counts_are_the_same_set() {
+        // The two questions — "is this one of my lines" and "what does it say" —
+        // have one answer (D21). Counted-but-unreadable is allowed in one place
+        // only (`   2 パス` reaches the leftover-input check instead of the
+        // skip, D8); *read but not counted* is the silence D1 exists to remove,
+        // and so is a reader that gets part way in and then says the line was
+        // never one of its lines.
         const PLIES: [&str; 4] = ["1", "  1", "   12", "99999999999999999999"];
         const SEPARATORS: [&str; 3] = ["", " ", "\u{3000}"];
-        const BODIES: [&str; 22] = [
+        const BODIES: [&str; 26] = [
             "投了",
             "中断",
             "詰み",
@@ -628,9 +623,8 @@ mod tests {
             "▲７六歩(77)",
             "△３四歩(33)",
             "５五馬(66)",
-            // Move lines a writer got wrong. Each one is broken past the point
-            // where the line has said what it is, so each has to be reported
-            // rather than skipped.
+            // Move lines a writer got wrong. Each says what it is and then
+            // fails, so each has to be reported rather than skipped.
             "７六歩(999)",
             "７六歩(256)",
             "７六歩(1234)",
@@ -641,40 +635,103 @@ mod tests {
             "７六歩()",
             "７六歩（88）",
             "７六歩(八八)",
+            "７六歩[88]",
+            "７六歩 (77)",
+            "７六歩",
+            // Prose: the digits are not followed by a move at all.
+            "図以下、先手優勢",
         ];
         const TIMES: [&str; 4] = ["", " ( 0:03/00:00:03)", " (00:01/00:00:01)", " ( 0:03)"];
         const TAILS: [&str; 6] = ["", "+", " ▲有利", "（まで先手良し）", "※注記", "もあった"];
 
-        let mut checked = 0;
+        let (mut read, mut reported, mut prose) = (0, 0, 0);
         for ply in PLIES {
             for separator in SEPARATORS {
                 for body in BODIES {
                     for time in TIMES {
                         for tail in TAILS {
                             let line = format!("{ply}{separator}{body}{time}{tail}\n");
+                            let counted = opens_a_numbered_line(&line);
                             match move_line(Color::Black, None, &line) {
                                 Ok(_) => {
-                                    checked += 1;
-                                    assert!(
-                                        opens_a_numbered_line(&line),
-                                        "{line:?} is read but not counted"
-                                    );
+                                    read += 1;
+                                    assert!(counted, "{line:?} is read but not counted");
                                 }
-                                // A line the reader started on and could not
-                                // finish is still one of its lines.
-                                Err(nom::Err::Failure(_)) => assert!(
-                                    opens_a_numbered_line(&line),
-                                    "{line:?} is reported but not counted"
-                                ),
-                                Err(_) => {}
+                                Err(nom::Err::Failure(_)) => {
+                                    reported += 1;
+                                    assert!(counted, "{line:?} is reported but not counted");
+                                }
+                                // The other direction, which is what let a
+                                // reader that stopped half way call the line
+                                // prose: what the reader declines outright, the
+                                // skip is free to take, and nothing else.
+                                Err(_) => {
+                                    prose += 1;
+                                    assert!(!counted, "{line:?} is counted but declined");
+                                }
                             }
+                            // And the same line as the last one in a file. A
+                            // record that stops inside a move line is cut short,
+                            // not a shorter game (D1).
+                            let cut = line.trim_end_matches('\n');
+                            assert!(
+                                opens_a_numbered_line(cut) || prose_opens(cut),
+                                "{cut:?} at the end of a file is neither counted nor prose"
+                            );
                         }
                     }
                 }
             }
         }
-        // The loop is worth nothing if the reader took none of them.
-        assert!(checked > 500, "only {checked} lines were read at all");
+        // The loop is worth nothing if every line landed in one bucket.
+        assert!(
+            read > 500 && reported > 500 && prose > 50,
+            "{read} / {reported} / {prose}"
+        );
+    }
+
+    /// Whether the line was prose to begin with — digits and then something that
+    /// is not a move, which stays prose however the file ends.
+    fn prose_opens(line: &str) -> bool {
+        !opens_a_numbered_line(&format!("{line}\n"))
+    }
+
+    #[test]
+    fn a_record_that_stops_inside_a_move_line_says_so() {
+        // A file cut short is the one thing a reader must not hand back as a
+        // shorter game: nothing downstream can tell the two apart (D1). Every
+        // prefix of a move line, taken as the end of the file, has to be either
+        // read or reported — never skipped.
+        const HEAD: &str = "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n";
+        for line in [
+            "   2 ８四歩(83)",
+            "   2 投了 ( 0:03/00:00:03)",
+            "2８四歩(83)",
+            "   2 ８四歩(83) ( 0:03/00:00:03)",
+        ] {
+            for cut in 1..=line.len() {
+                if !line.is_char_boundary(cut) {
+                    continue;
+                }
+                let piece = &line[..cut];
+                // Up to the first digit there is nothing to have started.
+                if !piece
+                    .trim_start_matches(is_padding)
+                    .starts_with(|c: char| c.is_ascii_digit())
+                {
+                    continue;
+                }
+                let record = format!("{HEAD}{piece}");
+                let plies = match crate::parser::parse_kif_str(&record) {
+                    Ok(jkf) => jkf.moves.len() - 1,
+                    Err(_) => continue,
+                };
+                assert_eq!(
+                    2, plies,
+                    "{piece:?} at the end of the file came back as a shorter game"
+                );
+            }
+        }
     }
 
     // The shared reader is where the spelling lives now

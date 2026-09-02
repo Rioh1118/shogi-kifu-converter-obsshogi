@@ -517,19 +517,39 @@ pub(super) fn numbered_line(
     input: &str,
 ) -> IResult<&str, (usize, NumberedBody, Option<Time>), VerboseError<&str>> {
     let line = input;
-    let (input, digits) = preceded(padding, digit1)(input)?;
+    let (rest, digits) = preceded(padding, digit1)(input)?;
     // A number too long to hold is still a ply number, so the line is still one
     // of these lines. Answering `Error` would hand it to the skip and lose
     // whatever it says (D19 keeps a record over a number it cannot use).
     let ply: usize = digits
         .parse()
         .map_err(|_| broken_line(line, "this line's ply number is too large to read"))?;
-    let (input, body) = preceded(
-        padding,
-        alt((map(outcome_word, NumberedBody::Outcome), move_body)),
-    )(input)?;
-    let (input, time) = preceded(padding, opt(move_time))(input)?;
-    Ok((input, (ply, body, time)))
+    // The number and then padding is the whole of the commitment: a ply number
+    // and then anything at all is the shape of a move line, and a word this
+    // reader has no meaning for (`   2 パス`) has to reach the leftover-input
+    // check rather than be skipped as prose (D1, D8). The cost is a note written
+    // in the same shape — `　1 序盤の課題` — refused with it; the two cannot be
+    // told apart by what they say (GAP-020).
+    let (rest, gap) = padding(rest)?;
+    let aligned = !gap.is_empty() && !line_ends_here(rest);
+    let committed = |what| move |_| broken_line(line, what);
+    let (rest, body) = alt((map(outcome_word, NumberedBody::Outcome), move_body))(rest).map_err(
+        |err| match err {
+            nom::Err::Error(_) if aligned => broken_line(line, "this move cannot be read"),
+            // Past the number the file simply stopped. That is a record cut
+            // short, not a line this reader has no shape for — and a reader that
+            // cannot tell the two apart hands a truncated file back as a shorter
+            // game (D1).
+            nom::Err::Error(_) if !rest.contains(crate::notation::LINE_ENDS) => {
+                broken_line(line, "this record ends inside a move line")
+            }
+            err => err,
+        },
+    )?;
+    let (rest, _) = padding(rest)?;
+    let (rest, time) =
+        opt(move_time)(rest).map_err(committed("this move's clock cannot be read"))?;
+    Ok((rest, (ply, body, time)))
 }
 
 fn move_body(input: &str) -> IResult<&str, NumberedBody, VerboseError<&str>> {
@@ -542,16 +562,13 @@ fn move_body(input: &str) -> IResult<&str, NumberedBody, VerboseError<&str>> {
     // a reader that counts only what a correct writer produces hands the line to
     // the skip, which drops the move (R-REQ-004).
     let (input, promote) = opt(alt((value(false, tag("不成")), value(true, tag("成")))))(input)?;
-    // Past a promotion word the line has said it is a move, so a missing origin
-    // is a broken move line and not prose. A note that quotes a move —
-    // `2同銀と取れば` — stops at the piece and never reaches here.
-    let (input, from) = match move_origin(input) {
-        Ok(found) => found,
-        Err(nom::Err::Error(_)) if promote.is_some() => {
-            return Err(broken_line(input, "this move has no origin square"))
-        }
-        Err(err) => return Err(err),
-    };
+    // Past the destination and the piece the line has said what it is, so a
+    // missing or unreadable origin is this move line being broken and not a note
+    // that happens to quote a move. Both are the same characters — `1同歩` is a
+    // note and `2７六歩` is a move line whose origin went — so one of the two has
+    // to give, and D1 gives the note (GAP-020 records the trade).
+    let (input, from) =
+        move_origin(input).map_err(|_| broken_line(input, "this move has no origin square"))?;
     Ok((
         input,
         NumberedBody::Move {
@@ -563,54 +580,33 @@ fn move_body(input: &str) -> IResult<&str, NumberedBody, VerboseError<&str>> {
     ))
 }
 
+/// Whether what is left is the end of a line rather than more of it.
+///
+/// Emptiness is not one: the file stopping in the middle of a line is a record
+/// cut short, and a reader that reads it as "the line ended here" hands back a
+/// shorter game (D1).
+fn line_ends_here(rest: &str) -> bool {
+    rest.starts_with(crate::notation::LINE_ENDS)
+}
+
 /// Whether `head` is the beginning of a `<手数> <指し手>` line
 /// (R-KIF-005 / R-KIF-008).
 ///
-/// The number on its own is not the shape. A `( 0:01)` this reader has no shape
-/// for, a bare `55`, and a note that opens `1図以下、先手優勢` all carry digits
-/// and none of them is a line — what makes one is a number and then a move.
+/// **[`numbered_line`]'s verdict, and nothing else.** The two questions — "is
+/// this one of my lines" and "what does it say" — have one answer, because a
+/// predicate with a spelling of its own drifts from the reader and the drift is
+/// silent in one direction: a line the reader would have taken but the predicate
+/// does not count is skipped as prose, and the move is gone from a record that
+/// still comes back `Ok` (D1, D21).
 ///
-/// Padding after the number is enough to call it one, whatever follows: a ply
-/// number and then anything at all is the shape of a move line, and a word this
-/// reader has no meaning for (`   2 パス`) has to reach the leftover-input check
-/// rather than be skipped as prose (D1, D8). The cost is that a note written in
-/// the same shape — `　1 序盤の課題` — is refused too; the two cannot be told
-/// apart by what they say (`research/90-gaps.md` GAP-020).
-///
-/// Without padding the question has to be asked of the reader that would
-/// consume the line, because `35手目まで` is a note and `2８四歩(83)` is a move
-/// line a writer left unaligned. `kif::move_line` takes any amount
-/// of padding including none, so a question that demanded some would call the
-/// second one prose and hand it to the skip, which drops the move.
+/// Anything except `Err(Error)` counts, so a line that is broken past the point
+/// where it said what it is stays here and is reported.
 ///
 /// Shared, though only KIF writes such a line: a KI2 that holds one is a record
 /// something went wrong with, and skipping it as prose would take the move with
 /// it (D1).
 pub(super) fn opens_a_numbered_line(head: &str) -> bool {
-    // This line only. `head` is the rest of the input, and padding stops at the
-    // newline but emptiness does not — asking "is there anything after the
-    // number" of the whole rest makes `  55 ` a move line because the line
-    // *below* it has something on it, while `  55` is prose.
-    let line = head
-        .split(crate::notation::LINE_ENDS)
-        .next()
-        .unwrap_or(head);
-    let past_the_indentation = line.trim_start_matches(is_padding);
-    let after_digits = past_the_indentation.trim_start_matches(|c: char| c.is_ascii_digit());
-    if after_digits.len() == past_the_indentation.len() {
-        return false;
-    }
-    // A number and then padding is the shape of a move line whatever follows —
-    // including a word this reader has no meaning for (`   2 パス`), which the
-    // leftover-input check then names rather than the skip taking it (D1, D8).
-    // The cost is that a note written in the same shape — `　1 序盤の課題` — is
-    // refused too; the two cannot be told apart by what they say (GAP-020).
-    if after_digits.starts_with(is_padding) {
-        return !after_digits.trim_start_matches(is_padding).is_empty();
-    }
-    // Otherwise ask the reader. Anything except "not one of my lines" counts, so
-    // a move line that is broken stays here and is reported rather than skipped.
-    !matches!(numbered_line(line), Err(nom::Err::Error(_)))
+    !matches!(numbered_line(head), Err(nom::Err::Error(_)))
 }
 
 /// Whether `tail` — what is left of a line the reader has finished with —
@@ -1977,7 +1973,7 @@ mod tests {
             (ki2::SHAPES, " 変化：２手を参照"),
         ] {
             assert!(
-                !begins_the_line_below(shapes, tail),
+                !begins_the_line_below(shapes, &format!("{tail}\n")),
                 "{tail:?} is an annotation, and dropping it loses nothing"
             );
         }
@@ -2135,12 +2131,6 @@ mod tests {
             "  55 ",
             "  55　",
             "   3   ",
-            // A number and then something that is not a whole move: the origin
-            // is what makes a move line one, and a note that quotes a move
-            // does not carry it.
-            "2同銀と取れば",
-            "1同歩",
-            "2２六歩が本筋",
         ] {
             assert!(
                 parse_kif_str(&format!("{KIF}{prose}\n")).is_ok(),
@@ -2585,10 +2575,25 @@ mod tests {
                 "{line:?}"
             );
         }
-        // A note that quotes a move stops at the piece and stays a note.
-        for note in ["2同銀と取れば", "2２六歩が本筋", "1同歩"] {
+        // A note that quotes a move, written in the shape of one, is refused
+        // with it. `1同歩` and `2７六歩` — a note and a move line whose origin
+        // went missing — are the same characters, so one of the two has to give,
+        // and D1 gives the note: a refused note is loud, a dropped move is not
+        // (GAP-020 records the trade, and `main` refuses these too).
+        for note in ["2同銀と取れば", "2２六歩が本筋", "1同歩", "12３四歩は疑問"]
+        {
+            assert!(
+                parse_kif_str(&format!("{KIF}{note}\n")).is_err(),
+                "{note:?}"
+            );
+            assert!(
+                parse_ki2_str(&format!("{KI2}{note}\n")).is_err(),
+                "{note:?}"
+            );
+        }
+        // A note that does not open with a move is still a note.
+        for note in ["35手目まで", "　1図以下、先手優勢", "  55", "1図以下"] {
             assert!(parse_kif_str(&format!("{KIF}{note}\n")).is_ok(), "{note:?}");
-            assert!(parse_ki2_str(&format!("{KI2}{note}\n")).is_ok(), "{note:?}");
         }
     }
 
@@ -2643,8 +2648,11 @@ mod tests {
             " 1図以下",
             "55",
         ] {
+            // Asked of the rest of the input, so the line it is about has to
+            // end somewhere: a file that stops mid-line is a record cut short,
+            // not a line the reader has no shape for.
             assert!(
-                !opens_a_numbered_line(note.trim_start_matches(is_padding)),
+                !opens_a_numbered_line(&format!("{}\n", note.trim_start_matches(is_padding))),
                 "{note:?}"
             );
             let kif = parse_kif_str(&format!("{KIF}{note}\n"))
