@@ -534,37 +534,52 @@ pub(super) fn numbered_line(
 ) -> IResult<&str, (usize, NumberedBody, Option<Time>), VerboseError<&str>> {
     let line = input;
     let (rest, digits) = preceded(padding, digit1)(input)?;
-    // A number too long to hold is still a ply number, so the line is still one
-    // of these lines. Answering `Error` would hand it to the skip and lose
-    // whatever it says (D19 keeps a record over a number it cannot use).
-    let ply: usize = digits
-        .parse()
-        .map_err(|_| broken_line(line, "this line's ply number is too large to read"))?;
-    // The number and then padding is the whole of the commitment: a ply number
-    // and then anything at all is the shape of a move line, and a word this
-    // reader has no meaning for (`   2 パス`) has to reach the leftover-input
-    // check rather than be skipped as prose (D1, D8). The cost is a note written
-    // in the same shape — `　1 序盤の課題` — refused with it; the two cannot be
-    // told apart by what they say (GAP-020).
     let (rest, gap) = padding(rest)?;
-    let aligned = !gap.is_empty() && !line_ends_here(rest);
-    let committed = |what| move |_| broken_line(line, what);
+    // Whether this line has said it is one of these lines, decided here and
+    // nowhere else. **Only what is on the line decides it** — asking whether the
+    // file ends here makes the same characters a move line or prose depending on
+    // a trailing newline, which is not part of the record (`end_of_line`).
+    //
+    // A number and then padding is the shape whatever follows, because a word
+    // this reader has no meaning for (`   2 パス`) has to reach the
+    // leftover-input check rather than be skipped as prose (D1, D8). The cost is
+    // a note written in the same shape — `　1 序盤の課題` — refused with it; the
+    // two cannot be told apart by what they say (GAP-020). Without padding the
+    // move itself has to start, which is what tells `2７六歩` (a move line whose
+    // origin went) from `1図以下、先手優勢` (prose).
+    // `rest.is_empty()` is the third: a line with no end is not a line this
+    // reader can call prose. `   3` as the last thing in a file is a record cut
+    // inside a move line, and calling it a note hands the file back as a shorter
+    // game (D1). A line that ends — even at the end of the file, with a newline
+    // — is judged by what it says.
+    let committed = !gap.is_empty() || a_move_body_opens(rest) || rest.is_empty();
+    let broken = |what| move |_| broken_line(line, what);
+    // A number too long to hold is still a ply number (D19 keeps a record over a
+    // number it cannot use), so it is only prose if nothing else on the line
+    // said this was a move line.
+    let ply: usize = match digits.parse() {
+        Ok(ply) => ply,
+        Err(_) if committed => {
+            return Err(broken_line(
+                line,
+                "this line's ply number is too large to read",
+            ))
+        }
+        Err(_) => {
+            return Err(nom::Err::Error(VerboseError::from_error_kind(
+                input,
+                ErrorKind::Digit,
+            )))
+        }
+    };
     let (rest, body) = alt((map(outcome_word, NumberedBody::Outcome), move_body))(rest).map_err(
         |err| match err {
-            nom::Err::Error(_) if aligned => broken_line(line, "this move cannot be read"),
-            // Past the number the file simply stopped. That is a record cut
-            // short, not a line this reader has no shape for — and a reader that
-            // cannot tell the two apart hands a truncated file back as a shorter
-            // game (D1).
-            nom::Err::Error(_) if !rest.contains(crate::notation::LINE_ENDS) => {
-                broken_line(line, "this record ends inside a move line")
-            }
+            nom::Err::Error(_) if committed => broken_line(line, "this move cannot be read"),
             err => err,
         },
     )?;
     let (rest, _) = padding(rest)?;
-    let (rest, time) =
-        opt(move_time)(rest).map_err(committed("this move's clock cannot be read"))?;
+    let (rest, time) = opt(move_time)(rest).map_err(broken("this move's clock cannot be read"))?;
     Ok((rest, (ply, body, time)))
 }
 
@@ -583,8 +598,12 @@ fn move_body(input: &str) -> IResult<&str, NumberedBody, VerboseError<&str>> {
     // that happens to quote a move. Both are the same characters — `1同歩` is a
     // note and `2７六歩` is a move line whose origin went — so one of the two has
     // to give, and D1 gives the note (GAP-020 records the trade).
-    let (input, from) =
-        move_origin(input).map_err(|_| broken_line(input, "this move has no origin square"))?;
+    let (input, from) = move_origin(input).map_err(|err| match err {
+        // `move_origin` names what it could not read; only "there is no origin
+        // here at all" is left for this to say.
+        nom::Err::Error(_) => broken_line(input, "this move has no origin square"),
+        err => err,
+    })?;
     Ok((
         input,
         NumberedBody::Move {
@@ -596,13 +615,14 @@ fn move_body(input: &str) -> IResult<&str, NumberedBody, VerboseError<&str>> {
     ))
 }
 
-/// Whether what is left is the end of a line rather than more of it.
+/// Whether a move starts here — the question that tells a move line a writer
+/// left unaligned from prose that opens with a number.
 ///
-/// Emptiness is not one: the file stopping in the middle of a line is a record
-/// cut short, and a reader that reads it as "the line ended here" hands back a
-/// shorter game (D1).
-fn line_ends_here(rest: &str) -> bool {
-    rest.starts_with(crate::notation::LINE_ENDS)
+/// The shapes the reader itself uses, not a spelling of their own: a mark
+/// (R-KIF-005), a destination, or the file of one (`2８` is a move line the file
+/// stopped inside of).
+fn a_move_body_opens(rest: &str) -> bool {
+    side_mark(rest).is_ok() || move_to(rest).is_ok() || place_x(rest).is_ok()
 }
 
 /// Whether `head` is the beginning of a `<手数> <指し手>` line
@@ -2139,16 +2159,7 @@ mod tests {
         // prose, and a number followed by padding is a move line whatever comes
         // after — including a word this reader has no meaning for, which the
         // leftover-input check then names (D1, D8, GAP-020).
-        for prose in [
-            "　35手目まで",
-            "　1図以下、先手優勢",
-            "  55",
-            // Padding at the end of the line does not make the line below it
-            // into what the number is about.
-            "  55 ",
-            "  55　",
-            "   3   ",
-        ] {
+        for prose in ["　35手目まで", "　1図以下、先手優勢", "  55"] {
             assert!(
                 parse_kif_str(&format!("{KIF}{prose}\n")).is_ok(),
                 "{prose:?}"
@@ -2158,7 +2169,11 @@ mod tests {
                 "{prose:?} in a KI2"
             );
         }
-        for line in ["   2 パス", "   1 ７六歩(00)"] {
+        // A number and then padding is the shape of a move line whatever comes
+        // after — the trailing space is not what the line says, it is what the
+        // reader has to decide about, and D8 sends it to the leftover-input
+        // check rather than the skip (`main` refuses these too).
+        for line in ["   2 パス", "   1 ７六歩(00)", "  55 ", "  55　", "   3   "] {
             assert!(
                 parse_kif_str(&format!("{KIF}{line}\n")).is_err(),
                 "{line:?}"
