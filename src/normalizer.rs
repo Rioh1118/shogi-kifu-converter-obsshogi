@@ -340,8 +340,8 @@ fn calculate_from(
                 .ok_or_else(|| NormalizeErrorKind::AmbiguousMoveFrom(all.clone()))?;
             // Ask which candidate the writer would have spelled this way. Any
             // other reading of the suffix is a second copy of R-NOT-004, and the
-            // two copies drift: 左/右 were fixed on this side once and 直 was
-            // left behind, so a `▲５八金直` this crate wrote came back ambiguous.
+            // two copies drift: fixing one side and not the other makes a
+            // `▲５八金直` this crate wrote come back ambiguous.
             let froms: Vec<_> = all
                 .iter()
                 .copied()

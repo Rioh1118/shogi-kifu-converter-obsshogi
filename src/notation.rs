@@ -87,8 +87,8 @@ pub(crate) const KANSUJI: [char; 10] = ['一', '二', '三', '四', '五', '六'
 ///
 /// One table, for the same reason as [`move_word`]: the reader and the writer
 /// have to agree letter for letter, and two tables only disagree when someone
-/// reads back a file this crate wrote. `左引` and `右引` were spelled twice and
-/// nothing tied the two together.
+/// reads back a file this crate wrote. Nothing else in the suite reaches `左引`
+/// and `右引`, so a second copy of them can be wrong without a test noticing.
 ///
 /// The normal form only. What a reader may *also* accept — `行` for `上`
 /// (R-NOT-006 / R-KI2-005) — is a different question and belongs to the reader.

@@ -271,7 +271,10 @@ pub fn parse_ki2_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
 ///
 /// # Errors
 ///
-/// This function returns [`ParseError`] if it fails to parse the file.
+/// Returns [`ParseError::Io`] when the file cannot be read *or* when its bytes
+/// are not UTF-8 — JSON is UTF-8 by definition, so unlike KIF and KI2 no other
+/// encoding is tried (R-REQ-003, D14) — and otherwise whatever
+/// [`parse_jkf_str`] returns.
 pub fn parse_jkf_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseError> {
     // Through the string reader, like every other format, so that what is
     // decided about the bytes is decided in one place: a byte-order mark left on

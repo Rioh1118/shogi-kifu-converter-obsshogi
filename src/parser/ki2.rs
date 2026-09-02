@@ -631,8 +631,8 @@ mod tests {
 
     // Every spelling the writer writes, the reader reads back as the same thing
     // (R-NOT-004). Two tables of these 13 words is how a file this crate wrote
-    // stops opening: nothing else in the suite reaches 左引 / 右引, so swapping
-    // them used to leave all the tests green.
+    // stops opening. Nothing else in the suite reaches 左引 / 右引, so this is
+    // the only test that tells the two words apart.
     #[test]
     fn every_relative_word_reads_back_as_itself() {
         for relative in Relative::ALL {

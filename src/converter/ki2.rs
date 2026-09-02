@@ -213,7 +213,9 @@ fn write_line<'a, W: Write>(
                         }
                     }
                 }
-                // No position to ask, so the record itself is all there is —
+                // No position to ask — either none was tracked, or this move
+                // cannot be made into one (`同` with the square not filled in
+                // yet) — so the record itself is all there is —
                 // and what it says about a drop is the absence of `from`
                 // (R-JKF-003). `relative` is worked out from a board, so where
                 // the two disagree the record wins (D23).
