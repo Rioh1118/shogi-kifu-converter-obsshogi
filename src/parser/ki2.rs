@@ -449,7 +449,7 @@ fn moves(
     // Comments belong to the starting position (R-KIF-010) and are kept; the
     // rest is read and dropped. A `変化：` among them names no move to be an
     // alternative to, so there is nothing to act on — KIF does the same
-    // (`kif::skippable_line`), and tsshogi does it deliberately: its
+    // (`kif::skippable_line_above_the_main_line`), and tsshogi does it deliberately: its
     // `kakinoki.mjs` cites shogihome #570 for records whose header block holds
     // one, and says a `変化：` before the moves start must be ignored. Left in
     // place it reaches the branch loop below, which reads the whole game as a
@@ -876,7 +876,7 @@ mod tests {
 
     // A `変化：` above the first move names no move to be an alternative to.
     // tsshogi reads such records deliberately (shogihome #570) and ignores the
-    // line; KIF has always done the same (`kif::skippable_line`). Left in, it
+    // line; KIF has always done the same (`kif::skippable_line_above_the_main_line`). Left in, it
     // makes the whole game a branch of a main line with no node to hang it on,
     // and `attach_branch` drops it without a word — `Ok`, no moves at all.
     #[test]

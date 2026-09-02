@@ -768,7 +768,7 @@ impl WhereABoardCouldBe {
 /// and the move must not go with the line), `*` and `&` (a comment and a bookmark,
 /// R-KIF-010 / R-KIF-011), and [`SIDE_MARKS`] (a KI2 move). `#`, `変化：` and
 /// `まで…` are **not** among them, so a caller that wants one of those read as
-/// itself has to try it before this (`kif::skippable_line`).
+/// itself has to try it before this (`kif::skippable_line_above_the_main_line`).
 ///
 /// `where_a_board_could_be` adds `|` and `+` to that list while a board could
 /// still be arriving. They are the frame and the ranks of a diagram, which

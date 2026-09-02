@@ -51,14 +51,14 @@ fn branch_header_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
     Ok((rest, input))
 }
 
-/// A line between the runs of moves: blank, a `変化：<N>手` header, or one the
-/// move list has no shape for — `まで<N>手で<結末>`, the `手数----指手---` rule,
-/// a closing remark.
+/// A line above the main line: blank, a `変化：<N>手` header, or one the move
+/// list has no shape for — `まで<N>手で<結末>`, the `手数----指手---` rule, a
+/// closing remark.
 ///
-/// Only used before the main line, where a `変化：` is nothing to act on: a
+/// Above it, and only there, because a `変化：` there is nothing to act on: a
 /// branch cannot come before the moves it is an alternative to, and one written
 /// there anyway is what tsshogi skips as well.
-fn skippable_line(
+fn skippable_line_above_the_main_line(
     where_a_board_could_be: WhereABoardCouldBe,
     input: &str,
 ) -> IResult<&str, &str, VerboseError<&str>> {
@@ -73,7 +73,7 @@ fn skippable_line(
 /// that knows whether a run follows. A line that merely looks like one is
 /// declined too: a header the reader refuses ([`branch_header_line`]) has to
 /// reach that loop to be refused, not be skipped as unreadable prose.
-fn skippable_line_except_a_branch_header(
+fn skippable_line_between_runs(
     where_a_board_could_be: WhereABoardCouldBe,
     input: &str,
 ) -> IResult<&str, &str, VerboseError<&str>> {
@@ -270,7 +270,7 @@ fn moves_with_index(
     // behind us.
     let where_a_board_could_be = where_a_board_could_be.after_a_move();
     let (input, _) =
-        opt(|input| skippable_line_except_a_branch_header(where_a_board_could_be, input))(input)?;
+        opt(|input| skippable_line_between_runs(where_a_board_could_be, input))(input)?;
     Ok((input, (first_ply, out)))
 }
 
@@ -366,7 +366,8 @@ fn entire_moves(
         moves
     }
 
-    let (input, _) = many0(|input| skippable_line(where_a_board_could_be, input))(input)?;
+    let (input, _) =
+        many0(|input| skippable_line_above_the_main_line(where_a_board_could_be, input))(input)?;
     let (mut input, main) = main_moves(start, where_a_board_could_be, input)?;
     // Only a move puts the opening block behind us. An outcome line or a
     // comment can sit above a board — a record that carries the last game's
@@ -383,9 +384,7 @@ fn entire_moves(
     // goes missing without a word.
     loop {
         let (rest, _) =
-            many0(|input| skippable_line_except_a_branch_header(where_a_board_could_be, input))(
-                input,
-            )?;
+            many0(|input| skippable_line_between_runs(where_a_board_could_be, input))(input)?;
         // Headers in a row, taken as one. KIF does not read the declaration at
         // all — the tree comes from the ply numbers (D3) — so a second `変化：`
         // over the first is a spare line, not a branch that went missing.
@@ -395,9 +394,10 @@ fn entire_moves(
             match branch_header_line(rest) {
                 Ok((after, line)) => {
                     header = Some(line);
-                    let (after, _) = many0(|input| {
-                        skippable_line_except_a_branch_header(where_a_board_could_be, input)
-                    })(after)?;
+                    let (after, _) =
+                        many0(|input| skippable_line_between_runs(where_a_board_could_be, input))(
+                            after,
+                        )?;
                     rest = after;
                 }
                 // The header is there and cannot be read — it ran into the moves

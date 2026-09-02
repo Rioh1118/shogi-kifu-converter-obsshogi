@@ -71,9 +71,9 @@ shogi_kifu_converter_obsshogi = { git = "...", tag = "v0.3.1", package = "shogi-
 
 - **`moves[0]` は指し手ではない。** 初期局面のコメントを持つ枠。指し手は添字 1 から
 - **駒落ちでは1手目が後手（上手）。** 手数の偶奇だけで手番を決めると全反転する（R-RULE-006）
-- **`Preset` は 16 種あるが、盤面へ展開できるのは 10 種しかない。** 残り 5 種は
-  `src/shogi_core/from.rs` と `src/converter/csa.rs` で `unimplemented!()` に落ちて panic する
-  （`research/90-gaps.md` GAP-001）
+- **`Preset::PresetOther` は盤面を持たない。** 手合割の表（`src/handicap.rs`）が
+  残り 15 種を展開する。`その他` だけは `ConvertError` になる。**panic はしない**
+  （`research/90-gaps.md` GAP-001 は解消済み）
 - **KIF の「打」「不成」は伝統形式と規則が違う。** KIF は打に必ず「打」を付け、
   「不成」を書かない。KI2 は逆（R-KIF-006 / R-NOT-003 / R-NOT-005）。
   KIF ↔ KI2 の変換でここを素通しにすると壊れる
