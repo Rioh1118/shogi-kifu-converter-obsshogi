@@ -162,7 +162,7 @@ pub(crate) fn is_a_known_name(name: &str) -> bool {
     // reaches `initial` as `PresetKY`, and a gate that answers `false` for the
     // string `header` happens to hold would drop the preset line from a record
     // whose preset the reader *did* read (D16).
-    let name = name.trim_matches(crate::parser::is_padding);
+    let name = name.trim_matches(crate::notation::is_padding);
     name == OTHER_NAME || HANDICAPS.iter().any(|h| h.kif_name == name)
 }
 

@@ -2,11 +2,6 @@
 
 mod kakinoki;
 
-/// Where padding is defined for the whole crate — see
-/// [`kakinoki::is_padding`]. The writers ask it too: a `手合割` value the reader
-/// folded into a [`Preset`] has to be recognised as that name however it was
-/// padded (D16, `handicap::is_a_known_name`).
-pub(crate) use kakinoki::is_padding;
 mod ki2;
 mod kif;
 

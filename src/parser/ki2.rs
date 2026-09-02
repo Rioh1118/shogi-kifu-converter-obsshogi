@@ -1,10 +1,11 @@
 use super::kakinoki::{
     an_empty_block_here_is_worth_reporting, branch_header_ply, broken_line,
-    comments_on_the_starting_position, ends_a_word, ends_here, is_padding, move_comment_line,
-    move_to, not_move_line, opens_a_shared_line, parse_without_moves, piece_kind,
-    program_comment_line, LineShapes, Position, SIDE_MARKS,
+    comments_on_the_starting_position, ends_a_word, ends_here, move_comment_line, move_to,
+    not_move_line, opens_a_shared_line, parse_without_moves, piece_kind, program_comment_line,
+    LineShapes, WhereInTheRecord, SIDE_MARKS,
 };
 use crate::jkf::*;
+use crate::notation::is_padding;
 use crate::notation::LINE_ENDS;
 use nom::branch::alt;
 use nom::bytes::complete::tag;
@@ -289,7 +290,7 @@ fn branch_header(input: &str) -> IResult<&str, (usize, &str), VerboseError<&str>
 fn move_run(
     start: Color,
     first_ply: usize,
-    where_it_starts: Position,
+    where_it_starts: WhereInTheRecord,
 ) -> impl FnMut(&str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
     move |mut input| {
         let mut out = Vec::new();
@@ -297,7 +298,7 @@ fn move_run(
             let where_it_is = if out.is_empty() {
                 where_it_starts
             } else {
-                Position::PastTheOpeningBlock
+                WhereInTheRecord::PastTheOpeningBlock
             };
             // R-KI2-002: blank lines sit between runs of moves — the
             // specification's own example is written that way. R-KI2-001: KI2 is
@@ -367,7 +368,7 @@ fn move_run(
 /// carrying `▲` or `△` is therefore never skippable, and the leftover-input
 /// check reports it instead.
 fn a_line_only_prose_opens(
-    where_it_is: Position,
+    where_it_is: WhereInTheRecord,
     input: &str,
 ) -> IResult<&str, &str, VerboseError<&str>> {
     // Past the padding, the same as `begins_the_line_below` looks past it. A
@@ -463,7 +464,7 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
             nom::combinator::recognize(branch_header),
             nom::combinator::recognize(program_comment_line),
             nom::combinator::recognize(|input| {
-                a_line_only_prose_opens(Position::WhereABoardCouldStill, input)
+                a_line_only_prose_opens(WhereInTheRecord::BeforeTheFirstMove, input)
             }),
             line_ending,
         ))(input)
@@ -474,7 +475,7 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
         }
     }
     let comments = (!comments.is_empty()).then_some(comments);
-    let (mut input, main) = move_run(start, 1, Position::WhereABoardCouldStill)(input)?;
+    let (mut input, main) = move_run(start, 1, WhereInTheRecord::BeforeTheFirstMove)(input)?;
     let mut out = vec![MoveFormat {
         comments,
         ..Default::default()
@@ -505,7 +506,7 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
                     }
                 }
                 let (rest, branch) =
-                    move_run(start, start_ply, Position::PastTheOpeningBlock)(rest)?;
+                    move_run(start, start_ply, WhereInTheRecord::PastTheOpeningBlock)(rest)?;
                 if branch.is_empty() {
                     // The header says a branch follows. Reading nothing under it
                     // means the branch is gone, and carrying on returns a record
@@ -542,7 +543,7 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
         // `not_move_line` under the skip consumes a line at a time, so this
         // cannot spin.
         match alt((nom::combinator::recognize(program_comment_line), |input| {
-            a_line_only_prose_opens(Position::PastTheOpeningBlock, input)
+            a_line_only_prose_opens(WhereInTheRecord::PastTheOpeningBlock, input)
         }))(input)
         {
             Ok((rest, _)) => input = rest,

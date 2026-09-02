@@ -30,6 +30,24 @@
 /// answer either way.
 pub(crate) const LINE_ENDS: [char; 2] = ['\n', '\r'];
 
+/// Whether `c` is padding — space a line can carry without saying anything.
+///
+/// A predicate rather than a table of the three characters a keyboard makes
+/// easily. KI2 is a record people read (R-KI2-001) and paste from wherever they
+/// read it, and a web page pads with `\u{a0}` and `\u{2009}` as readily as an
+/// editor pads with a tab. A reader whose idea of padding is narrower than the
+/// writer's reads the padding as content, and then says the record is wrong
+/// about something it is right about — `まで2手で投了\u{a0}` came back as
+/// "this outcome is not one of the words KI2 has", naming `投了`, which is one
+/// of them.
+///
+/// Line endings are not padding. Whatever else this takes, it must not take
+/// those: `parser::kakinoki::begins_the_line_below` steps over one character looking for the
+/// newline that was lost, and a newline that is still there was never lost.
+pub(crate) fn is_padding(c: char) -> bool {
+    c.is_whitespace() && !LINE_ENDS.contains(&c)
+}
+
 /// Whether the notation has a `成` / `不成` for this move at all (R-NOT-005).
 ///
 /// A promotable piece, with the enemy camp at one end of the move. A gold, a

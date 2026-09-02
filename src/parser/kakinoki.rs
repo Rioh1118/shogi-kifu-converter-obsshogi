@@ -1,4 +1,5 @@
 use crate::jkf::*;
+use crate::notation::is_padding;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_while, take_while1};
 use nom::character::complete::{char, digit1, line_ending, not_line_ending, one_of, satisfy};
@@ -94,22 +95,16 @@ pub(super) fn end_of_line(input: &str) -> IResult<&str, &str, VerboseError<&str>
 /// new one together — the KI2 writer among them.
 pub(super) const SIDE_MARKS: [(char, Color); 2] = [('▲', Color::Black), ('△', Color::White)];
 
-/// Whether `c` is padding — space a line can carry without saying anything.
+/// The mark a KIF move line may carry in front of the move (R-KIF-005).
 ///
-/// A predicate rather than a table of the three characters a keyboard makes
-/// easily. KI2 is a record people read (R-KI2-001) and paste from wherever they
-/// read it, and a web page pads with `\u{a0}` and `\u{2009}` as readily as an
-/// editor pads with a tab. A reader whose idea of padding is narrower than the
-/// writer's reads the padding as content, and then says the record is wrong
-/// about something it is right about — `まで2手で投了\u{a0}` came back as
-/// "this outcome is not one of the words KI2 has", naming `投了`, which is one
-/// of them.
-///
-/// Line endings are not padding. Whatever else this takes, it must not take
-/// those: [`begins_the_line_below`] steps over one character looking for the
-/// newline that was lost, and a newline that is still there was never lost.
-pub(crate) fn is_padding(c: char) -> bool {
-    c.is_whitespace() && !crate::notation::LINE_ENDS.contains(&c)
+/// KIF numbers its lines, so whose move it is comes from the ply and not from
+/// the mark — R-KIF-007 reads the side off the ply because an interrupted game
+/// numbers its outcome as a ply of its own and the parity stops matching. What
+/// the mark needs from this reader is to be allowed: tsshogi's move pattern has
+/// `[▲△▼▽]?` in it, so a record that opens on the consumer's TS side has to
+/// open here too, and refusing it refuses the file whole (D1).
+pub(super) fn side_mark(input: &str) -> IResult<&str, char, VerboseError<&str>> {
+    satisfy(|c| SIDE_MARKS.iter().any(|(mark, _)| *mark == c))(input)
 }
 
 /// The colon a `<keyword>：<value>` line is split on (R-KIF-004).
@@ -464,6 +459,7 @@ fn a_move_follows_the_number(after_digits: &str) -> bool {
             tuple((padding, opt(move_time), padding, nom::combinator::eof)),
         )),
         recognize(tuple((
+            opt(side_mark),
             move_to,
             piece_kind,
             // What tells a move from a note that quotes one. `2同銀と取れば`
@@ -660,9 +656,9 @@ fn comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
 /// question everywhere would refuse `|先手|後手|` and `+123` after the moves,
 /// where they cannot be a board and the format has always allowed them.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Position {
+pub(super) enum WhereInTheRecord {
     /// Before the first move: the opening block may still be arriving.
-    WhereABoardCouldStill,
+    BeforeTheFirstMove,
     /// Past it.
     PastTheOpeningBlock,
 }
@@ -698,7 +694,7 @@ pub(super) enum Position {
 /// content, and swallows two lines where one was meant — so a blank line in the
 /// middle of a record destroys the move that follows it.
 pub(super) fn not_move_line(
-    where_it_is: Position,
+    where_it_is: WhereInTheRecord,
     input: &str,
 ) -> IResult<&str, &str, VerboseError<&str>> {
     // Asked past the indentation. What a line *is* does not change with how far
@@ -727,7 +723,7 @@ pub(super) fn not_move_line(
     // been read no `|` or `+` line can be a piece of one, and refusing them
     // buys nothing — it just drops `|先手|後手|` and `+123` from records the
     // format has always allowed.
-    if where_it_is == Position::WhereABoardCouldStill && head.starts_with(['|', '+']) {
+    if where_it_is == WhereInTheRecord::BeforeTheFirstMove && head.starts_with(['|', '+']) {
         return Err(nom::Err::Error(VerboseError::from_error_kind(
             input,
             ErrorKind::Not,
@@ -1457,13 +1453,26 @@ mod tests {
     fn a_skipped_line_never_swallows_the_line_after_it() {
         assert_eq!(
             Ok(("   2 ３四歩(33)\n", "変化：2")),
-            not_move_line(Position::PastTheOpeningBlock, "変化：2\n   2 ３四歩(33)\n")
+            not_move_line(
+                WhereInTheRecord::PastTheOpeningBlock,
+                "変化：2\n   2 ３四歩(33)\n"
+            )
         );
-        assert!(not_move_line(Position::PastTheOpeningBlock, "\n   2 ３四歩(33)\n").is_err());
-        assert!(not_move_line(Position::PastTheOpeningBlock, "\r\n   2 ３四歩(33)\n").is_err());
+        assert!(
+            not_move_line(WhereInTheRecord::PastTheOpeningBlock, "\n   2 ３四歩(33)\n").is_err()
+        );
+        assert!(not_move_line(
+            WhereInTheRecord::PastTheOpeningBlock,
+            "\r\n   2 ３四歩(33)\n"
+        )
+        .is_err());
         // Padding in front of a blank line does not make it a line with
         // something on it.
-        assert!(not_move_line(Position::PastTheOpeningBlock, "　\t \n   2 ３四歩(33)\n").is_err());
+        assert!(not_move_line(
+            WhereInTheRecord::PastTheOpeningBlock,
+            "　\t \n   2 ３四歩(33)\n"
+        )
+        .is_err());
     }
 
     // What a line is does not change with how far in it starts. KIF writes its
@@ -1525,15 +1534,15 @@ mod tests {
 
     #[test]
     fn parse_not_move_line() {
-        assert!(not_move_line(Position::PastTheOpeningBlock, "").is_err());
-        assert!(not_move_line(Position::PastTheOpeningBlock, "* comment line\n").is_err());
+        assert!(not_move_line(WhereInTheRecord::PastTheOpeningBlock, "").is_err());
+        assert!(not_move_line(WhereInTheRecord::PastTheOpeningBlock, "* comment line\n").is_err());
         assert!(not_move_line(
-            Position::PastTheOpeningBlock,
+            WhereInTheRecord::PastTheOpeningBlock,
             "手数----指手---------消費時間--\n"
         )
         .is_ok());
         assert!(not_move_line(
-            Position::PastTheOpeningBlock,
+            WhereInTheRecord::PastTheOpeningBlock,
             "1 ７六歩(77) ( 0:16/00:00:16)"
         )
         .is_err());
@@ -2270,6 +2279,39 @@ mod tests {
             assert!(parse_kif_str(&format!("{KIF}{note}\n")).is_ok(), "{note:?}");
             assert!(parse_ki2_str(&format!("{KI2}{note}\n")).is_ok(), "{note:?}");
         }
+    }
+
+    // R-KIF-005: `[<手番>]<移動先座標><駒>…` — the mark is optional and this
+    // reader ignores it, taking the side from the ply (R-KIF-007). tsshogi reads
+    // such a line, so a file that opens on the consumer's TS side has to open
+    // here; refusing the mark refused the record whole.
+    #[test]
+    fn a_kif_move_line_may_carry_the_mark_the_format_allows() {
+        use crate::parser::parse_kif_str;
+        let marked = parse_kif_str(concat!(
+            "手合割：平手\n手数----指手---------消費時間--\n",
+            "   1 ▲７六歩(77)\n   2 △３四歩(33)\n"
+        ))
+        .expect("a marked record reads");
+        let plain = parse_kif_str(concat!(
+            "手合割：平手\n手数----指手---------消費時間--\n",
+            "   1 ７六歩(77)\n   2 ３四歩(33)\n"
+        ))
+        .expect("reads");
+        assert_eq!(plain, marked);
+        // Including where the writer left no padding after the number, which is
+        // where the skip decides whether the line holds a move at all.
+        assert!(
+            parse_kif_str("手合割：平手\n手数----指手---------消費時間--\n1▲７六歩(77)\n").is_ok()
+        );
+        // The mark says nothing about the side. Marked the wrong way round, the
+        // record still reads as the plies say it does.
+        let backwards = parse_kif_str(concat!(
+            "手合割：平手\n手数----指手---------消費時間--\n",
+            "   1 △７六歩(77)\n   2 ▲３四歩(33)\n"
+        ))
+        .expect("reads");
+        assert_eq!(plain, backwards);
     }
 
     // A digit at the head of a line is a KIF move line only when a move follows

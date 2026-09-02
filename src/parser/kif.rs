@@ -1,10 +1,11 @@
 use super::kakinoki::{
     an_empty_block_here_is_worth_reporting, blank_line, branch_header_ply, broken_line,
-    comments_on_the_starting_position, ends_here, is_padding, move_comment_line, move_special,
-    move_time, move_to, not_move_line, opens_a_branch_header, opens_a_numbered_line,
-    opens_a_shared_line, padding, parse_without_moves, piece_kind, LineShapes, Position,
+    comments_on_the_starting_position, ends_here, move_comment_line, move_special, move_time,
+    move_to, not_move_line, opens_a_branch_header, opens_a_numbered_line, opens_a_shared_line,
+    padding, parse_without_moves, piece_kind, side_mark, LineShapes, WhereInTheRecord,
 };
 use crate::jkf::*;
+use crate::notation::is_padding;
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::character::complete::digit1;
@@ -85,7 +86,7 @@ fn branch_header_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
 /// there anyway is what tsshogi skips as well.
 fn skippable_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
     alt((blank_line, branch_header_line, |input| {
-        not_move_line(Position::WhereABoardCouldStill, input)
+        not_move_line(WhereInTheRecord::BeforeTheFirstMove, input)
     }))(input)
 }
 
@@ -96,7 +97,7 @@ fn skippable_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
 /// declined too: a header the reader refuses ([`branch_header_line`]) has to
 /// reach that loop to be refused, not be skipped as unreadable prose.
 fn skippable_line_except_a_branch_header(
-    where_it_is: Position,
+    where_it_is: WhereInTheRecord,
     input: &str,
 ) -> IResult<&str, &str, VerboseError<&str>> {
     if opens_a_branch_header(input) {
@@ -139,8 +140,18 @@ fn skip_interruptions(mut input: &str) -> &str {
 
 fn move_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
     map(
-        tuple((move_to, piece_kind, opt(tag("成")), move_from)),
-        |(to, kind, promote, from)| {
+        tuple((
+            // R-KIF-005 allows the mark and this reader ignores it: the side
+            // comes from the ply (R-KIF-007, `side_to_move_at_ply`), which is
+            // the only one of the two that stays right when an outcome line
+            // takes a ply of its own.
+            opt(side_mark),
+            move_to,
+            piece_kind,
+            opt(tag("成")),
+            move_from,
+        )),
+        |(_, to, kind, promote, from)| {
             MoveFormat {
                 move_: Some(MoveMoveFormat {
                     color: Color::Black, // To be replaced
@@ -285,7 +296,7 @@ fn moves_with_index(
     // This run has read at least one move — `move_with_comments` above
     // returns on failure — so the opening block, and any board that was in
     // it, is behind us.
-    let where_it_is = Position::PastTheOpeningBlock;
+    let where_it_is = WhereInTheRecord::PastTheOpeningBlock;
     let (input, _) = opt(|input| skippable_line_except_a_branch_header(where_it_is, input))(input)?;
     Ok((input, (first_ply, out)))
 }
@@ -385,9 +396,9 @@ fn entire_moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, Ver
         .iter()
         .any(|mf| mf.move_.is_some() || mf.special.is_some())
     {
-        Position::PastTheOpeningBlock
+        WhereInTheRecord::PastTheOpeningBlock
     } else {
-        Position::WhereABoardCouldStill
+        WhereInTheRecord::BeforeTheFirstMove
     };
     let mut forks = Vec::new();
     // One `変化：N手` header and the run under it per turn. Reading them one at a
