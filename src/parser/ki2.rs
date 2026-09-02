@@ -355,6 +355,19 @@ fn move_run(
             let ply = first_ply.saturating_add(numbered);
             let (rest, end) = opt(end_of_game_line(start, ply))(rest)?;
             let read_end = end.is_some();
+            // The comments under the outcome are the outcome's, the same as the
+            // ones under a move are that move's (R-KIF-010) — `single_move`
+            // reads its own the same way. Left for the next turn of this loop
+            // they become a node of their own, and the record that comes back
+            // from `.ki2` has a node the one from `.kif` does not (D18).
+            let (rest, end) = match end {
+                Some(mut end) => {
+                    let (rest, comments) = opt(many1(move_comment_line))(rest)?;
+                    end.comments = comments;
+                    (rest, Some(end))
+                }
+                None => (rest, None),
+            };
             out.extend(end);
             input = rest;
             if !read_comments && !read_moves && !read_end {
@@ -593,6 +606,28 @@ pub(crate) fn parse(input: &str) -> IResult<&str, (JsonKifuFormat, bool), Verbos
 
 #[cfg(test)]
 mod tests {
+
+    // The same record read as `.kif` and as `.ki2` is the same record (D18).
+    // What the two readers disagreed about was where a comment under the
+    // outcome belongs: KIF put it on the outcome (R-KIF-010) and KI2 made a node
+    // of its own for it, so a game saved as `.ki2` and opened again had a node
+    // the KIF did not — and the consumer's pointer into the tree moved with it.
+    #[test]
+    fn a_comment_under_an_outcome_belongs_to_the_outcome() {
+        use crate::converter::ToKi2;
+        use crate::parser::{parse_ki2_str, parse_kif_str};
+        let kif = parse_kif_str(concat!(
+            "手合割：平手\n手数----指手---------消費時間--\n",
+            "   1 ７六歩(77)\n   2 ３四歩(33)\n   3 投了\n*感想戦のメモ\n"
+        ))
+        .expect("reads");
+        assert_eq!(
+            Some(&vec![String::from("感想戦のメモ")]),
+            kif.moves[3].comments.as_ref()
+        );
+        let ki2 = kif.try_to_ki2_owned().expect("writes");
+        assert_eq!(kif, parse_ki2_str(&ki2).expect("reads back"), "{ki2}");
+    }
 
     // Every spelling the writer writes, the reader reads back as the same thing
     // (R-NOT-004). Two tables of these 13 words is how a file this crate wrote
