@@ -213,7 +213,16 @@ fn write_line<'a, W: Write>(
                         }
                     }
                 }
-                _ => mv.relative,
+                // No position to ask, so the record itself is all there is.
+                // R-NOT-003 lets 打 be left out when no piece of the same kind
+                // could have reached the square, but that is a claim about the
+                // board — without one it cannot be checked, and leaving 打 out
+                // makes the drop read back as a move from nowhere
+                // (`from: (0, 0)`), which `to_kif` then refuses outright.
+                // R-KI2-003: too little cannot be recovered, too much can.
+                _ => mv
+                    .relative
+                    .or_else(|| mv.from.is_none().then_some(Relative::H)),
             };
             if let Some(relative) = relative {
                 match relative {
@@ -366,6 +375,36 @@ mod tests {
     // The disambiguating suffix comes from the position, not from `relative`,
     // so a value that never went through `populate_relative` still produces KI2
     // that can be read back. Two black bishops on 7a and 3a both reach 5c.
+    // A drop is a drop however far the writer got with the board. Position
+    // tracking stops at the first move that cannot be played — an illegal move
+    // is a legitimate record (R-RULE-002) — and past that point the only thing
+    // that says "this was a drop" is `from: None` (R-JKF-003). Dropping 打 there
+    // makes the move read back as coming from `(0, 0)`, and `to_kif` then
+    // refuses the whole record (R-KI2-003, D4).
+    #[test]
+    fn a_drop_keeps_its_mark_after_the_board_is_lost() {
+        use crate::parser::{parse_ki2_str, parse_kif_str};
+        // `９九角(88)` cannot be played, so the writer has no position after it.
+        let jkf = parse_kif_str(concat!(
+            "手合割：平手\n手数----指手---------消費時間--\n",
+            "   1 ７六歩(77)\n   2 中断\n   3 ９九角(88)\n   4 ５五歩打\n"
+        ))
+        .expect("an illegal move is still a record");
+        assert!(jkf.moves[4].move_.as_ref().expect("a move").from.is_none());
+        let ki2 = jkf.try_to_ki2_owned().expect("writes");
+        assert!(ki2.contains('打'), "{ki2}");
+        let read_back = parse_ki2_str(&ki2).expect("reads back");
+        assert!(
+            read_back.moves[4]
+                .move_
+                .as_ref()
+                .expect("a move")
+                .from
+                .is_none(),
+            "the drop stopped being a drop: {ki2}"
+        );
+    }
+
     #[test]
     fn disambiguation_does_not_depend_on_relative_field() {
         let src = "\
