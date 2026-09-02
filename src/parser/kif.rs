@@ -627,6 +627,59 @@ mod tests {
         }
     }
 
+    // **The invariant the last five rounds kept breaking.** Every line
+    // `move_line` can take has to be one `opens_a_numbered_line` counts:
+    // a line it does not count goes to the skip, and the move — or the outcome
+    // of the game — is gone from a record that still comes back `Ok` (D1).
+    //
+    // The other direction is deliberately loose. `   2 パス` is counted and
+    // cannot be read, which is how it reaches the leftover-input check instead
+    // of being skipped (D8, GAP-020).
+    #[test]
+    fn every_line_the_reader_takes_is_a_line_the_skip_counts() {
+        const PLIES: [&str; 3] = ["1", "  1", "   12"];
+        const SEPARATORS: [&str; 3] = ["", " ", "\u{3000}"];
+        const BODIES: [&str; 12] = [
+            "投了",
+            "中断",
+            "詰み",
+            "反則勝ち",
+            "７六歩(77)",
+            "同　銀(68)",
+            "１三角打",
+            "２二角成(88)",
+            "２二角不成(88)",
+            "▲７六歩(77)",
+            "△３四歩(33)",
+            "５五馬(66)",
+        ];
+        const TIMES: [&str; 4] = ["", " ( 0:03/00:00:03)", " (00:01/00:00:01)", " ( 0:03)"];
+        const TAILS: [&str; 6] = ["", "+", " ▲有利", "（まで先手良し）", "※注記", "もあった"];
+
+        let mut checked = 0;
+        for ply in PLIES {
+            for separator in SEPARATORS {
+                for body in BODIES {
+                    for time in TIMES {
+                        for tail in TAILS {
+                            let line = format!("{ply}{separator}{body}{time}{tail}\n");
+                            if move_line(Color::Black, None, &line).is_err() {
+                                continue;
+                            }
+                            checked += 1;
+                            assert!(
+                                opens_a_numbered_line(&line),
+                                "{line:?} is read but not counted"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // The loop is worth nothing if the reader took none of them.
+        assert!(checked > 500, "only {checked} lines were read at all");
+    }
+
     // The shared reader is where the spelling lives now
     // (`kakinoki::numbered_line`); what this side owns is the `MoveFormat` built
     // out of it, including R-KIF-006's reading of a missing `成`.
