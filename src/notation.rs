@@ -9,8 +9,72 @@
 //!
 //! One table, not one per caller. A writer and an error message that disagree
 //! about which character a rank is point a reader at the wrong line.
+//!
+//! What the notation can and cannot say about a move lives here too, for the
+//! same reason: the normalizer and the writers have to answer it the same way.
+//!
+//! So do the lexical answers every side shares — where a line ends
+//! ([`LINE_ENDS`]) and what counts as padding ([`is_padding`]). Kept inside one
+//! format's parser instead, they make the tables that have nothing to do with
+//! parsing reach into it: `handicap::is_a_known_name` has to trim a value before
+//! it can match a name, and the handicap table is a leaf.
 
-use crate::jkf::Kind;
+/// The characters a line ending is made of, whichever of them a file or a value
+/// carries.
+///
+/// R-CSA-001 leaves the newline to the environment, and a JKF built elsewhere
+/// carries whatever that environment used — a lone `\r` among them. What the
+/// writers do with this is decide what cannot go on one line (a header value,
+/// R-KIF-004 / R-CSA-004), and they have to agree with each other: a value one
+/// of them splits and another writes through comes back as a header nobody
+/// wrote.
+///
+/// It is not where a reader stops. `parser::kakinoki` decides that, and it
+/// takes what `nom`'s `line_ending` does — `\n` and `\r\n`, not a lone `\r`
+/// (`research/90-gaps.md` GAP-027). The readers ask this table whether a
+/// character *is* one of those two, which is a narrower question and the same
+/// answer either way.
+pub(crate) const LINE_ENDS: [char; 2] = ['\n', '\r'];
+
+/// Whether `c` is padding — space a line can carry without saying anything.
+///
+/// A predicate rather than a table of the three characters a keyboard makes
+/// easily. KI2 is a record people read (R-KI2-001) and paste from wherever they
+/// read it, and a web page pads with `\u{a0}` and `\u{2009}` as readily as an
+/// editor pads with a tab. A reader whose idea of padding is narrower than the
+/// writer's reads the padding as content, and then says the record is wrong
+/// about something it is right about — `まで2手で投了\u{a0}` came back as
+/// "this outcome is not one of the words KI2 has", naming `投了`, which is one
+/// of them.
+///
+/// Line endings are not padding. Whatever else this takes, it must not take
+/// those: `parser::kakinoki::begins_the_line_below` steps over one character looking for the
+/// newline that was lost, and a newline that is still there was never lost.
+pub(crate) fn is_padding(c: char) -> bool {
+    c.is_whitespace() && !LINE_ENDS.contains(&c)
+}
+
+/// Whether the notation has a `成` / `不成` for this move at all (R-NOT-005).
+///
+/// A promotable piece, with the enemy camp at one end of the move. A gold, a
+/// king or an already-promoted piece has neither word, and neither has a move
+/// that goes nowhere near the camp.
+///
+/// One home, because both directions need it: the normalizer to know whether a
+/// move that did not promote is worth recording as `false`, and the KI2 writer
+/// to know whether a `false` in the record has a word to be written with. Two
+/// copies drift apart, and the writer then spells `△６八玉不成`, which the
+/// notation has no word for.
+pub(crate) fn promotion_is_spellable(
+    piece: shogi_core::PieceKind,
+    from: shogi_core::Square,
+    to: shogi_core::Square,
+    side: shogi_core::Color,
+) -> bool {
+    piece.promote().is_some() && (from.relative_rank(side) <= 3 || to.relative_rank(side) <= 3)
+}
+
+use crate::jkf::{Kind, Relative};
 use std::fmt;
 
 /// Files, as the full-width digits `１`-`９`.
@@ -19,11 +83,72 @@ pub(crate) const SANYOU_SUJI: [char; 9] = ['１', '２', '３', '４', '５', '�
 /// Numbers 1-10 in kanji. Ranks use 1-9; hand counts reach 18 via `十`.
 pub(crate) const KANSUJI: [char; 10] = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
 
-/// The character a board diagram and a move both give `kind` (R-NOT-006).
+/// How a move says which of several pieces made it (R-NOT-004).
 ///
-/// This is the *board* spelling, in which a promoted piece is one character
-/// (`杏` `圭` `全`). KIF's move text may instead write it out as `成香`, which
-/// is a different table and lives with the writer that needs it (R-KI2-005).
+/// One table, for the same reason as [`move_word`]: the reader and the writer
+/// have to agree letter for letter, and two tables only disagree when someone
+/// reads back a file this crate wrote. Nothing else in the suite reaches `左引`
+/// and `右引`, so a second copy of them can be wrong without a test noticing.
+///
+/// The normal form only. What a reader may *also* accept — `行` for `上`
+/// (R-NOT-006 / R-KI2-005) — is a different question and belongs to the reader.
+pub(crate) const fn relative_word(relative: Relative) -> &'static str {
+    match relative {
+        Relative::L => "左",
+        Relative::C => "直",
+        Relative::R => "右",
+        Relative::U => "上",
+        Relative::M => "寄",
+        Relative::D => "引",
+        Relative::LU => "左上",
+        Relative::LM => "左寄",
+        Relative::LD => "左引",
+        Relative::RU => "右上",
+        Relative::RM => "右寄",
+        Relative::RD => "右引",
+        // R-NOT-003. KIF spells it too, under a different rule (R-KIF-006).
+        Relative::H => "打",
+    }
+}
+
+/// The word a move gives `kind` — the standard form of it (R-NOT-006).
+///
+/// The *move* spelling, in which a promoted minor piece is written out
+/// (`成香` `成桂` `成銀`). A board diagram has room for one character per piece
+/// and squeezes it ([`board_word`], R-KIF-014 / D6); nothing else does.
+///
+/// One table for both writers, because they are writing the same notation.
+/// Two would not be caught by reading the files back: the reader takes every
+/// variant R-NOT-006 lists (R-KI2-005), so a writer that drifted to `竜` where
+/// the other writes `龍` still produces something readable — and the consumer
+/// saving one game as `.kif` and as `.ki2` gets two different files
+/// (R-REQ-002).
+pub(crate) const fn move_word(kind: Kind) -> &'static str {
+    match kind {
+        Kind::FU => "歩",
+        Kind::KY => "香",
+        Kind::KE => "桂",
+        Kind::GI => "銀",
+        Kind::KI => "金",
+        Kind::KA => "角",
+        Kind::HI => "飛",
+        Kind::OU => "玉",
+        Kind::TO => "と",
+        Kind::NY => "成香",
+        Kind::NK => "成桂",
+        Kind::NG => "成銀",
+        Kind::UM => "馬",
+        Kind::RY => "龍",
+    }
+}
+
+/// The character a board diagram gives `kind`.
+///
+/// The *board* spelling, in which a promoted piece is one character
+/// (`杏` `圭` `全`) — not because those are the standard forms (R-NOT-006 has
+/// them the other way round) but because a KIF board diagram is two characters
+/// per square and nine squares per line (R-KIF-014, D6). A move has room for
+/// the standard form and writes it: [`move_word`], the other table.
 pub(crate) const fn board_word(kind: Kind) -> char {
     match kind {
         Kind::FU => '歩',
@@ -112,7 +237,7 @@ impl fmt::Display for MoveText {
                     f,
                     "{}{}打",
                     Coordinate(to),
-                    board_word(pk2k(piece.piece_kind()))
+                    move_word(pk2k(piece.piece_kind()))
                 )
             }
         }

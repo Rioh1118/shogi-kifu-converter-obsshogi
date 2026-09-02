@@ -1,6 +1,6 @@
 use crate::error::ParseError;
+use crate::handicap::HIRATE_BOARD;
 use crate::jkf::*;
-use crate::normalizer::HIRATE_BOARD;
 use csa::{GameRecord, Position};
 use std::collections::HashMap;
 use std::time::Duration;

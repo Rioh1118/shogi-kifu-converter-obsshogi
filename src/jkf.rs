@@ -1,4 +1,4 @@
-//! [`JsonKifuFormat`](crate::jkf::JsonKifuFormat) types
+//! [`JsonKifuFormat`] types
 //!
 //! Reference: [https://apps.81.la/json-kifu-format/docs/modules/Formats.html](https://apps.81.la/json-kifu-format/docs/modules/Formats.html)
 
@@ -189,14 +189,137 @@ pub enum MoveSpecial {
     SpecialFusenpai,
 }
 
+impl Kind {
+    /// Every piece, so that a table over them can be checked for gaps.
+    ///
+    /// The spellings live in [`crate::notation`]; what this is for is the test
+    /// that puts each piece on the board, in a hand and in a move and reads the
+    /// record back (`converter::tests::every_piece_survives_every_format`). A
+    /// writer's table that no reader is tied to drifts in silence: `杏` and `全`
+    /// could be swapped with every test still green.
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 14] = [
+        Self::FU,
+        Self::KY,
+        Self::KE,
+        Self::GI,
+        Self::KI,
+        Self::KA,
+        Self::HI,
+        Self::OU,
+        Self::TO,
+        Self::NY,
+        Self::NK,
+        Self::NG,
+        Self::UM,
+        Self::RY,
+    ];
+}
+
+impl Relative {
+    /// Every way a move can say which piece made it, so that a table over them
+    /// can be checked for gaps (R-NOT-004).
+    ///
+    /// Longest first, because that is the order the reader has to try them in:
+    /// `左上` before `左`, or it takes the `左` and leaves `上` for the next rule
+    /// (`parser::ki2::relative_word_here` walks this).
+    ///
+    /// Not `#[cfg(test)]`. A table the production code cannot see is a table the
+    /// production code writes out again.
+    pub(crate) const ALL: [Self; 13] = [
+        Self::LU,
+        Self::LM,
+        Self::LD,
+        Self::RU,
+        Self::RM,
+        Self::RD,
+        Self::L,
+        Self::C,
+        Self::R,
+        Self::U,
+        Self::M,
+        Self::D,
+        Self::H,
+    ];
+
+    /// Where `self` sits in [`Self::ALL`].
+    ///
+    /// Written out rather than `self as usize`, because [`Self::ALL`] is in
+    /// longest-spelling order and not declaration order. Exhaustive, so a
+    /// variant added to the enum stops the build here, and
+    /// `parser::ki2::tests::every_relative_word_reads_back_as_itself` checks the
+    /// two against each other.
+    #[cfg(test)]
+    pub(crate) const fn ordinal(self) -> usize {
+        match self {
+            Self::LU => 0,
+            Self::LM => 1,
+            Self::LD => 2,
+            Self::RU => 3,
+            Self::RM => 4,
+            Self::RD => 5,
+            Self::L => 6,
+            Self::C => 7,
+            Self::R => 8,
+            Self::U => 9,
+            Self::M => 10,
+            Self::D => 11,
+            Self::H => 12,
+        }
+    }
+}
+
 impl MoveSpecial {
+    /// Where `self` sits in [`Self::ALL`].
+    ///
+    /// The enum is unit-only, so the discriminant is the position in the
+    /// declaration and [`Self::ALL`] is checked against it
+    /// (`every_outcome_is_in_the_list_of_every_outcome`).
+    #[cfg(test)]
+    pub(crate) const fn ordinal(self) -> usize {
+        self as usize
+    }
+
+    /// Every outcome, so that a table over them can be checked for gaps.
+    ///
+    /// A `match` on this enum is exhaustive by construction; a hand-written list
+    /// of the words is not, and the reader's `KIF_SPECIAL_WORDS` is one
+    /// (`parser::kakinoki::tests::the_reader_looks_for_every_word_the_writer_writes`).
+    ///
+    /// This list is hand-written too, and nothing in the language makes it
+    /// follow the enum: a variant appended at the end leaves it short and the
+    /// build passes. What holds it is that this vocabulary is not ours to
+    /// extend — 14 outcomes are JKF's and the other two are what KIF spells
+    /// (R-KIF-007, D7) — plus `every_outcome_is_in_the_list_of_every_outcome`,
+    /// which catches a variant inserted anywhere but the end.
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 16] = [
+        Self::SpecialToryo,
+        Self::SpecialChudan,
+        Self::SpecialSennichite,
+        Self::SpecialTimeUp,
+        Self::SpecialIllegalMove,
+        Self::SpecialIllegalActionBlack,
+        Self::SpecialIllegalActionWhite,
+        Self::SpecialJishogi,
+        Self::SpecialKachi,
+        Self::SpecialHikiwake,
+        Self::SpecialMatta,
+        Self::SpecialTsumi,
+        Self::SpecialFuzumi,
+        Self::SpecialError,
+        Self::SpecialFusensho,
+        Self::SpecialFusenpai,
+    ];
+
     /// The KIF word for this outcome, or `None` when KIF has no word for it.
     ///
     /// This and [`Self::from_kif_word`] are the only mapping between
     /// [`MoveSpecial`] and the KIF vocabulary. Every reader and writer goes
     /// through them, so that the two directions cannot disagree. The KIF
-    /// parser's `KIF_SPECIAL_WORDS` lists which of them it looks for, and a
-    /// word added here has to be added there too or it is never read.
+    /// shared reader's `KIF_SPECIAL_WORDS` lists which of them it looks for, and
+    /// a word added here has to be added there too or it is never read — which
+    /// is what `MoveSpecial::ALL` and the test that walks it are for.
     ///
     /// R-KIF-007 has no word for `HIKIWAKE`, `MATTA` or `ERROR`. Where they
     /// land is D7's decision, not a rule: `HIKIWAKE` to 持将棋 so that the game
@@ -515,6 +638,16 @@ pub struct TimeFormat {
 
 #[cfg(test)]
 mod tests {
+
+    // `ALL` is the list every table over outcomes is checked against, and it is
+    // hand-written. `ordinal` is exhaustive, so a variant added to the enum
+    // stops the build there; this pairs the two so the list cannot be short.
+    #[test]
+    fn every_outcome_is_in_the_list_of_every_outcome() {
+        for (i, special) in MoveSpecial::ALL.into_iter().enumerate() {
+            assert_eq!(i, special.ordinal(), "{special:?} is out of place");
+        }
+    }
     use super::*;
     use crate::parser::{parse_csa_file, parse_ki2_file, parse_kif_file};
     use jsonschema::JSONSchema;

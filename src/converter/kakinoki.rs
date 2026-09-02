@@ -1,7 +1,8 @@
+use super::on_one_line;
 use super::WriteResult as Result;
 use crate::error::ConvertError;
 use crate::jkf::*;
-use crate::notation::{board_word, KANSUJI, SANYOU_SUJI};
+use crate::notation::{board_word, KANSUJI, LINE_ENDS, SANYOU_SUJI};
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -47,17 +48,20 @@ fn write_board_kind<W: Write>(kind: Kind, sink: &mut W) -> Result {
 }
 
 fn write_hand<W: Write>(hand: &Hand, sink: &mut W) -> Result {
-    for (c, num) in [
-        ('飛', hand.HI),
-        ('角', hand.KA),
-        ('金', hand.KI),
-        ('銀', hand.GI),
-        ('桂', hand.KE),
-        ('香', hand.KY),
-        ('歩', hand.FU),
+    // The spelling comes from `notation`, where the reader takes it from as
+    // well. A hand holds no promoted piece, so `board_word` and `move_word` are
+    // the same character here; the order is R-KIF-014's and not a spelling.
+    for (kind, num) in [
+        (Kind::HI, hand.HI),
+        (Kind::KA, hand.KA),
+        (Kind::KI, hand.KI),
+        (Kind::GI, hand.GI),
+        (Kind::KE, hand.KE),
+        (Kind::KY, hand.KY),
+        (Kind::FU, hand.FU),
     ] {
         if num > 0 {
-            sink.write_char(c)?;
+            sink.write_char(crate::notation::board_word(kind))?;
             if num > 1 {
                 write_kansuji(num, sink)?;
             }
@@ -68,7 +72,12 @@ fn write_hand<W: Write>(hand: &Hand, sink: &mut W) -> Result {
 }
 
 fn write_initial_data<W: Write>(data: &StateFormat, sink: &mut W) -> Result {
-    sink.write_str("手合割：その他\n")?;
+    // `その他` is the one name the table has no entry for — it is not a
+    // handicap, it is "the board says it" (`handicap::lookup`).
+    sink.write_str(crate::handicap::KIF_KEYWORD)?;
+    sink.write_char('：')?;
+    sink.write_str(crate::handicap::OTHER_NAME)?;
+    sink.write_char('\n')?;
     sink.write_str("後手の持駒：")?;
     if data.hands[1] != Hand::default() {
         write_hand(&data.hands[1], sink)?;
@@ -115,14 +124,40 @@ fn write_initial_data<W: Write>(data: &StateFormat, sink: &mut W) -> Result {
 }
 
 fn write_initial_preset<W: Write>(preset: Preset, sink: &mut W) -> Result {
-    // `その他` never reaches here — it carries a board instead.
+    // A `その他` with a board never reaches here — the board is written instead.
     let name = match crate::handicap::lookup(preset) {
         Some(handicap) => handicap.kif_name,
         None => return Err(ConvertError::UnknownPreset(preset)),
     };
-    sink.write_str("手合割：")?;
+    sink.write_str(crate::handicap::KIF_KEYWORD)?;
+    sink.write_char('：')?;
     sink.write_str(name)?;
     sink.write_char('\n')?;
+    Ok(())
+}
+
+/// Writes one comment, as as many lines as it takes.
+///
+/// A comment is one line: `*` or `&` opens it and the newline ends it
+/// (R-KIF-010 / R-KIF-011). A value carrying a newline of its own — JKF puts no
+/// limit on one, and the consumer builds its own — leaves the text after it
+/// outside any `*`, where the KIF reader skips it as a line it has no shape for
+/// and the KI2 reader stops on it. The record either comes back short or does
+/// not come back at all, and it is this crate's own writer that made the file.
+///
+/// Each line gets its own marker. `&` is a bookmark and marks a position rather
+/// than the text (R-KIF-011), so only the line that carried it keeps it.
+///
+/// An empty comment is a `*` on its own, which is what the reader gives back for
+/// one: dropping it instead would make a record the writer quietly shortens.
+pub(super) fn write_comment<W: Write>(comment: &str, sink: &mut W) -> Result {
+    for (i, line) in comment.split(LINE_ENDS).enumerate() {
+        if i > 0 || !line.starts_with('&') {
+            sink.write_char('*')?;
+        }
+        sink.write_str(line)?;
+        sink.write_char('\n')?;
+    }
     Ok(())
 }
 
@@ -135,30 +170,67 @@ pub(super) fn write_header<W: Write>(header: &HashMap<String, String>, sink: &mu
         // the header block early, and the reader skips what follows as a
         // non-move line. Which header survives then depends on `HashMap`
         // iteration order, so the same record loses a different one each save.
-        for line in v.lines() {
-            sink.write_str(line)?;
-        }
+        sink.write_str(&on_one_line(v))?;
         sink.write_char('\n')?;
     }
     Ok(())
 }
 
+/// Writes the line, or the board, that names the position the record starts
+/// from (D13).
+///
+/// A record that leaves its starting position unsaid is read back as the even
+/// game, which is what it means (`initial` is optional in JKF), but a file that
+/// does not say so on its own is one nothing distinguishes from a save that was
+/// cut short — and for KI2, where a hirate opening leaves nothing else to write,
+/// a record with no header and no moves would be zero bytes.
+///
+/// `header` decides one case, and only one. A `手合割` this crate could not fold
+/// into a `Preset` is kept as text (`手合割：詰将棋`, `parser::kakinoki`), which
+/// leaves `preset` at the even game — not because the record says so, but
+/// because that is what a reader takes from a line it cannot read. Writing the
+/// even game under it makes the file say two different things about the one
+/// thing this is here to state, and the fallback is exactly what leaving the
+/// line out already means. A `手合割` that *is* a name this crate knows did not
+/// come from that reader, so it does not get to speak for `initial` (D16).
+///
+/// A `preset` that names a handicap is not dropped for a header, and neither is
+/// a board. Those say something the header does not, and a file that repeats
+/// itself is better than one that reads back as a different game.
+///
+/// # Errors
+///
+/// [`ConvertError::UnknownPreset`] for `Initial { preset: PresetOther, data:
+/// None }` — `その他` says the position is spelled out as a board, and without
+/// one there is no word for it (`research/90-gaps.md` GAP-001). Every other
+/// `Preset` has a name in `40-handicap.md`.
 pub(super) fn write_initial<W: Write>(
+    header: &HashMap<String, String>,
     initial: &Option<Initial>,
-    omit_hirate: bool,
     sink: &mut W,
 ) -> Result {
-    if let Some(initial) = initial {
-        if let Some(data) = &initial.data {
-            write_initial_data(data, sink)?;
-        } else {
-            if omit_hirate && initial.preset == Preset::PresetHirate {
-                return Ok(());
-            }
-            write_initial_preset(initial.preset, sink)?;
-        }
+    let preset = match initial {
+        Some(Initial {
+            data: Some(data), ..
+        }) => return write_initial_data(data, sink),
+        Some(initial) => initial.preset,
+        // R-JKF-001: `initial` is optional, and its absence is the even game.
+        None => Preset::PresetHirate,
+    };
+    // Only a `手合割` the reader could not fold into a `Preset` leaves `preset`
+    // at the even game by default. A name this table knows would have been
+    // folded, so finding one in `header` means the two came from different
+    // places — and then the record's own is the one to write, or a handicap
+    // turns into a hirate game where Black opens (R-HC-001) and the file no
+    // longer reads back.
+    if preset == Preset::PresetHirate
+        && header
+            .get(crate::handicap::KIF_KEYWORD)
+            .is_some_and(|name| !crate::handicap::is_a_known_name(name))
+    {
+        return Ok(());
     }
-    Ok(())
+    write_initial_preset(preset, sink)
 }
 
 #[cfg(test)]
@@ -187,6 +259,92 @@ mod tests {
 手数----指手---------消費時間--
    1 ５三飛(52)   ( 0:00/00:00:00)
 ";
+
+    // A `手合割` whose value is not one of the handicaps in `40-handicap.md` is
+    // kept as text (R-KIF-004) and `initial` falls back to the even game, which
+    // is what the reader does with a record that names no handicap it knows.
+    // Writing the preset line under it leaves the file saying two different
+    // things about the one thing D13 is there to state.
+    #[test]
+    fn a_handicap_kept_as_text_is_not_written_over() {
+        let kif = "手合割：詰将棋
+先手：Ａ
+手数----指手---------消費時間--
+   1 ７六歩(77)
+";
+        let jkf = parse_kif_str(kif).expect("parses");
+        for text in [
+            jkf.try_to_kif_owned().expect("writes KIF"),
+            jkf.try_to_ki2_owned().expect("writes KI2"),
+        ] {
+            assert_eq!(
+                1,
+                text.matches("手合割").count(),
+                "one and only one: {text}"
+            );
+            assert!(
+                text.contains("手合割：詰将棋"),
+                "and it is the one read: {text}"
+            );
+        }
+    }
+
+    // The other way round, the header does not get to decide. A record that
+    // names a handicap says something the header does not, and dropping the
+    // line for it reads back as the even game — where Black moves first, not
+    // the upper hand (R-HC-001), so every move changes sides.
+    #[test]
+    fn a_handicap_the_record_names_is_written_whatever_the_header_says() {
+        let kif = "手合割：香落ち
+手合割：詰将棋
+手数----指手---------消費時間--
+   1 ３四歩(33)
+";
+        let jkf = parse_kif_str(kif).expect("parses");
+        let text = jkf.try_to_kif_owned().expect("writes KIF");
+        assert!(text.contains("手合割：香落ち"), "{text}");
+        let back = parse_kif_str(&text).expect("reads back");
+        assert_eq!(jkf.initial, back.initial);
+        assert_eq!(
+            jkf.moves[1].move_.map(|mv| mv.color),
+            back.moves[1].move_.map(|mv| mv.color),
+            "R-HC-001: the upper hand moves first"
+        );
+    }
+
+    // A comment is one line (R-KIF-010 / R-KIF-011). A JKF comment carrying a
+    // newline of its own splits it, and what falls outside the `*` is skipped by
+    // the KIF reader and stops the KI2 one — a file this crate wrote and cannot
+    // read back. The header block next door has had the same rule for as long.
+    #[test]
+    fn a_comment_with_a_newline_in_it_is_written_as_lines() {
+        use crate::jkf::*;
+        let json = r#"{"header":{},"initial":{"preset":"HIRATE"},"moves":[{},
+            {"move":{"color":0,"from":{"x":7,"y":7},"to":{"x":7,"y":6},"piece":"FU"},
+             "comments":["囲い\n穴熊","&しおり\nつづき"]},
+            {"move":{"color":1,"from":{"x":3,"y":3},"to":{"x":3,"y":4},"piece":"FU"}}]}"#;
+        let jkf: JsonKifuFormat = serde_json::from_str(json).expect("reads the JKF");
+
+        let kif = jkf.try_to_kif_owned().expect("writes KIF");
+        let back = parse_kif_str(&kif).expect("reads the KIF back");
+        assert_eq!(2, back.moves.len() - 1, "{kif}");
+        assert_eq!(
+            Some(vec![
+                "囲い".to_owned(),
+                "穴熊".to_owned(),
+                "&しおり".to_owned(),
+                "つづき".to_owned(),
+            ]),
+            back.moves[1].comments,
+            "{kif}"
+        );
+
+        // KI2 does not merely lose the tail: the line outside the `*` ends the
+        // move list, and the record cannot be read back at all.
+        let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
+        let back = parse_ki2_str(&ki2).expect("reads the KI2 back");
+        assert_eq!(2, back.moves.len() - 1, "{ki2}");
+    }
 
     /// R-KIF-004: a header is one line. A value with a newline in it splits the
     /// header block, and everything after the split is skipped as a non-move

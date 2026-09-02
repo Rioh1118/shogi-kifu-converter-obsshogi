@@ -1,4 +1,6 @@
-use super::kakinoki::{write_header, write_initial, write_kansuji, write_sanyou_suji};
+use super::kakinoki::{
+    write_comment, write_header, write_initial, write_kansuji, write_sanyou_suji,
+};
 use super::WriteResult as Result;
 use crate::error::ConvertError;
 use crate::jkf::*;
@@ -51,23 +53,53 @@ pub trait ToKi2 {
 }
 
 fn write_move_kind<W: Write>(kind: Kind, sink: &mut W) -> Result {
-    match kind {
-        Kind::FU => sink.write_str("歩"),
-        Kind::KY => sink.write_str("香"),
-        Kind::KE => sink.write_str("桂"),
-        Kind::GI => sink.write_str("銀"),
-        Kind::KI => sink.write_str("金"),
-        Kind::KA => sink.write_str("角"),
-        Kind::HI => sink.write_str("飛"),
-        Kind::OU => sink.write_str("玉"),
-        Kind::TO => sink.write_str("と"),
-        Kind::NY => sink.write_str("成香"),
-        Kind::NK => sink.write_str("成桂"),
-        Kind::NG => sink.write_str("成銀"),
-        Kind::UM => sink.write_str("馬"),
-        Kind::RY => sink.write_str("竜"),
-    }?;
+    sink.write_str(crate::notation::move_word(kind))?;
     Ok(())
+}
+
+/// Whether this move has a `不成` to write (R-NOT-005,
+/// [`promotion_is_spellable`](crate::notation::promotion_is_spellable)).
+///
+/// The rule is asked here, and not left to the normalizer, because a record
+/// reaches a writer without having been through it: past an outcome the first
+/// move the board cannot explain ends the tracking (R-RULE-002), a branch that
+/// could not be normalized is kept as it was, and a JKF the consumer built never
+/// went through it at all (R-REQ-002). What the record says a move did is
+/// `promote` (D12); whether the notation has a word for it is what the piece and
+/// the squares say.
+fn promotion_was_on_the_table(mv: &MoveMoveFormat) -> bool {
+    // A drop enters the board unpromoted, and R-NOT-005 has no word for one
+    // whichever end of it the camp is at (R-JKF-003: no origin is what says a
+    // move is a drop).
+    let Some(from) = &mv.from else {
+        return false;
+    };
+    let piece = shogi_core::PieceKind::from(mv.piece);
+    let color = shogi_core::Color::from(mv.color);
+    match (
+        shogi_core::Square::try_from(from),
+        shogi_core::Square::try_from(&mv.to),
+    ) {
+        (Ok(from), Ok(to)) => crate::notation::promotion_is_spellable(piece, from, to, color),
+        // The record stated an origin and the destination is the one that went
+        // missing: a `同` nothing resolved, because past an outcome the position
+        // stops being tracked and `to` stays at (0, 0)
+        // (`research/90-gaps.md` GAP-025). R-NOT-005 asks which end of the move
+        // the enemy camp is at, and this move has no end to name. Nothing is
+        // lost by leaving the word out — the origin the record did state is not
+        // a word, so there is no wording of the record's to keep.
+        (Ok(_), Err(_)) => false,
+        // The origin is off the board — `normalizer::ORIGIN_UNSTATED`, the
+        // record never stated one (KI2 has no origins, R-KI2-003) and the
+        // position could not supply it. The rule cannot be asked either way, but
+        // here the record may have written `不成` itself, and that word is all
+        // there is: between dropping one it wrote and writing one a known
+        // position would not have, the first loses something and the second does
+        // not (D4). Both arms, because a `同` read from KI2 has neither end —
+        // asking about the destination alone drops the word this reader's own
+        // output put there.
+        (Err(_), Ok(_)) | (Err(_), Err(_)) => piece.promote().is_some(),
+    }
 }
 
 /// Writes the KI2 notation for `moves`, deriving the disambiguating suffix from
@@ -92,11 +124,7 @@ fn write_moves<W: Write>(
     };
     if let Some(comments) = &head.comments {
         for comment in comments {
-            if !comment.starts_with('&') {
-                sink.write_char('*')?;
-            }
-            sink.write_str(comment)?;
-            sink.write_char('\n')?;
+            write_comment(comment, sink)?;
         }
     }
     // The main line, then one `変化：N手` block per branch.
@@ -185,31 +213,27 @@ fn write_line<'a, W: Write>(
                         }
                     }
                 }
+                // No position to ask — either none was tracked, or this move
+                // cannot be made into one (`同` with the square not filled in
+                // yet) — so the record itself is all there is —
+                // and what it says about a drop is the absence of `from`
+                // (R-JKF-003). `relative` is worked out from a board, so where
+                // the two disagree the record wins (D23).
+                _ if mv.from.is_none() => Some(Relative::H),
                 _ => mv.relative,
             };
             if let Some(relative) = relative {
-                match relative {
-                    Relative::L => sink.write_str("左")?,
-                    Relative::C => sink.write_str("直")?,
-                    Relative::R => sink.write_str("右")?,
-                    Relative::U => sink.write_str("上")?,
-                    Relative::M => sink.write_str("寄")?,
-                    Relative::D => sink.write_str("引")?,
-                    Relative::LU => sink.write_str("左上")?,
-                    Relative::LM => sink.write_str("左寄")?,
-                    Relative::LD => sink.write_str("左引")?,
-                    Relative::RU => sink.write_str("右上")?,
-                    Relative::RM => sink.write_str("右寄")?,
-                    Relative::RD => sink.write_str("右引")?,
-                    Relative::H => sink.write_str("打")?,
-                }
+                // The spelling belongs to `notation`, where the reader takes it
+                // from as well: two tables of the same 13 words only disagree
+                // when someone reads back a file this crate wrote.
+                sink.write_str(crate::notation::relative_word(relative))?;
             }
-            if let Some(promote) = mv.promote {
-                if promote {
-                    sink.write_str("成")?;
-                } else {
-                    sink.write_str("不成")?;
-                }
+            match mv.promote {
+                // D12: a promotion is what the record says, and it is spelled
+                // whatever the board makes of it.
+                Some(true) => sink.write_str("成")?,
+                Some(false) if promotion_was_on_the_table(mv) => sink.write_str("不成")?,
+                _ => {}
             }
             position = position.and_then(|mut pos| {
                 let core_move = core_move?;
@@ -243,11 +267,7 @@ fn write_line<'a, W: Write>(
                 sink.write_char('\n')?;
             }
             for comment in comments {
-                if !comment.starts_with('&') {
-                    sink.write_char('*')?;
-                }
-                sink.write_str(comment)?;
-                sink.write_char('\n')?;
+                write_comment(comment, sink)?;
             }
             at_line_start = true;
         }
@@ -269,7 +289,7 @@ fn write_line<'a, W: Write>(
 impl ToKi2 for JsonKifuFormat {
     fn to_ki2<W: Write>(&self, sink: &mut W) -> Result {
         write_header(&self.header, sink)?;
-        write_initial(&self.initial, true, sink)?;
+        write_initial(&self.header, &self.initial, sink)?;
         // R-HC-001: only the even game starts with Black. The board says so too
         // when there is one, but a record this crate cannot turn into a position
         // still has to name the right side at its outcome.
@@ -339,8 +359,38 @@ mod tests {
             .join(" ")
     }
 
-    // The disambiguating suffix comes from the position, not from `relative`,
-    // so a value that never went through `populate_relative` still produces KI2
+    // A drop is a drop however far the writer got with the board. Position
+    // tracking stops at the first move that cannot be played — an illegal move
+    // is a legitimate record (R-RULE-002) — and past that point the only thing
+    // that says "this was a drop" is `from: None` (R-JKF-003). Dropping 打 there
+    // makes the move read back as coming from `(0, 0)`, and `to_kif` then
+    // refuses the whole record (R-KI2-003, D4).
+    #[test]
+    fn a_drop_keeps_its_mark_after_the_board_is_lost() {
+        use crate::parser::{parse_ki2_str, parse_kif_str};
+        // `９九角(88)` cannot be played, so the writer has no position after it.
+        let jkf = parse_kif_str(concat!(
+            "手合割：平手\n手数----指手---------消費時間--\n",
+            "   1 ７六歩(77)\n   2 中断\n   3 ９九角(88)\n   4 ５五歩打\n"
+        ))
+        .expect("an illegal move is still a record");
+        assert!(jkf.moves[4].move_.as_ref().expect("a move").from.is_none());
+        let ki2 = jkf.try_to_ki2_owned().expect("writes");
+        assert!(ki2.contains('打'), "{ki2}");
+        let read_back = parse_ki2_str(&ki2).expect("reads back");
+        assert!(
+            read_back.moves[4]
+                .move_
+                .as_ref()
+                .expect("a move")
+                .from
+                .is_none(),
+            "the drop stopped being a drop: {ki2}"
+        );
+    }
+
+    // The disambiguating suffix comes from the position, not from `relative`, so
+    // a value that never went through `populate_relative` still produces KI2
     // that can be read back. Two black bishops on 7a and 3a both reach 5c.
     #[test]
     fn disambiguation_does_not_depend_on_relative_field() {
@@ -477,8 +527,12 @@ mod tests {
     }
 
     // A game can be interrupted and resumed, so `中断` shows up in the middle of
-    // a move list. The reader takes the whole line after `まで` as the outcome
-    // phrase, so a run of moves continuing on that line disappears into it.
+    // a move list. KI2 records an outcome as a `まで…` line and nothing else
+    // (R-KI2-006 / D5), and the moves after it have to go on their own line: the
+    // reader treats a run of moves that fills the rest of a `まで…` line as the
+    // line below, whose newline is gone, and refuses the record (D17). So the
+    // writer's newline there is not cosmetic — without it the file it produces
+    // does not read back.
     #[test]
     fn an_outcome_in_the_middle_does_not_swallow_the_moves_after_it() {
         let kif = "手合割：平手
@@ -799,23 +853,137 @@ mod tests {
         assert_eq!(shape(&jkf.moves[1..], 1), shape(&back.moves[1..], 1));
     }
 
-    // A record with no header, no starting position and no moves writes
-    // nothing at all: a move run that never opened a line has none to end.
+    // R-NOT-005: `不成` exists only for a promotable piece with the enemy camp at
+    // one end of the move. `△６八玉不成` is not something the notation can say.
+    //
+    // The moves after an outcome are where this shows. `中断` takes a ply without
+    // taking a turn, so ply 3 is read as White's while its gold is Black's: the
+    // board cannot explain that move, tracking ends there (R-RULE-002), and
+    // nothing rewrites what the record said from then on. What the record said is
+    // `promote: false`, because a KIF states 不成 by leaving `成` off
+    // (R-KIF-006).
     #[test]
-    fn to_ki2_default() {
-        assert_eq!(
-            "",
-            JsonKifuFormat::default()
-                .try_to_ki2_owned()
-                .expect("writes KI2")
+    fn a_piece_with_no_promoted_form_gets_no_不成() {
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77)
+   2 中断
+   3 ５八金(69)
+   4 ３四歩(33)
+";
+        let jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
+        assert!(
+            ki2.contains("△５八金 ") || ki2.ends_with("△５八金\n"),
+            "a gold has no 成 and no 不成: {ki2:?}"
         );
-        assert!(crate::parser::parse_ki2_str("").is_ok());
+        // What the pawn on the line after it gets is not fixed here. The side it
+        // is written on comes out wrong past an outcome (`research/90-gaps.md`
+        // GAP-025), and which end of the move the enemy camp is at follows from
+        // the side — so pinning it would pin the wrong turn as correct.
+    }
+
+    // A drop has an origin at neither end (R-JKF-003), so there is no move for
+    // R-NOT-005 to be asked about and the enemy camp under it changes nothing.
+    #[test]
+    fn a_drop_gets_no_不成() {
+        let drop = r#"{"color":0,"to":{"x":2,"y":2},"piece":"GI","promote":false}"#;
+        assert!(!written(drop).contains("不成"), "{}", written(drop));
+    }
+
+    // An origin the record never stated (`normalizer::ORIGIN_UNSTATED`) leaves
+    // R-NOT-005 with no square to ask about, and then the record's own word is
+    // all there is: dropping one it wrote loses something, writing one a known
+    // position would not have does not (D4).
+    #[test]
+    fn an_origin_the_record_never_stated_keeps_the_word_it_wrote() {
+        let unstated =
+            r#"{"color":0,"from":{"x":0,"y":0},"to":{"x":5,"y":6},"piece":"FU","promote":false}"#;
+        assert!(written(unstated).contains("不成"), "{}", written(unstated));
+    }
+
+    // A destination nothing resolved is not the same question. There is no
+    // square to say which end of the move the camp is at, `同` is how the move
+    // is spelled — the word would be about nowhere — and the origin the record
+    // did state is not a word, so there is nothing of the record's to keep.
+    #[test]
+    fn a_destination_nothing_resolved_gets_no_不成() {
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77)
+   2 中断
+   3 ２二角成(88)
+   4 同　銀(31)
+";
+        let jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
+        assert!(ki2.contains("▲同銀"), "{ki2:?}");
+        assert!(!ki2.contains("不成"), "{ki2:?}");
+    }
+
+    // A `同` read from KI2 has neither end: KI2 states no origin (R-KI2-003) and
+    // past an outcome nothing resolves the destination either (GAP-025). The
+    // record's own `不成` is then the only thing that says what the move did
+    // (D4), so a writer that asks only about the destination writes a file
+    // shorter than the one it read — and the consumer saves over the original
+    // (R-REQ-002).
+    #[test]
+    fn a_同不成_read_from_ki2_keeps_the_word_the_record_wrote() {
+        let ki2 = "手合割：平手\n▲７六歩 △３四歩\nまで2手で中断\n▲９九角 △同銀不成\n";
+        let jkf = crate::parser::parse_ki2_str(ki2).expect("parses");
+        let written = jkf.try_to_ki2_owned().expect("writes KI2");
+        assert!(written.contains("△同銀不成"), "{written:?}");
+        let back = crate::parser::parse_ki2_str(&written).expect("reads back");
+        assert_eq!(jkf, back, "{written:?}");
+    }
+
+    /// The KI2 for a record of one move, spelled as JKF.
+    fn written(mv: &str) -> String {
+        let json = format!(
+            r#"{{"header":{{}},"initial":{{"preset":"HIRATE"}},"moves":[{{}},{{"move":{mv}}}]}}"#
+        );
+        let jkf: JsonKifuFormat = serde_json::from_str(&json).expect("reads the JKF");
+        jkf.try_to_ki2_owned().expect("writes KI2")
+    }
+
+    // A header value the consumer filled in can hold anything (R-KIF-004), moves
+    // among them. What this crate writes, this crate has to be able to read:
+    // refusing the file it just produced is the one thing a round trip cannot
+    // survive.
+    #[test]
+    fn a_header_value_that_quotes_moves_is_written_and_read_back() {
+        let mut jkf =
+            crate::parser::parse_ki2_str("手合割：平手\n▲７六歩 △３四歩\n").expect("parses");
+        jkf.header.insert(
+            "note".to_owned(),
+            "序盤は▲７六歩 △３四歩 の出だし".to_owned(),
+        );
+        let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
+        let back = crate::parser::parse_ki2_str(&ki2).expect("reads its own file back");
+        assert_eq!(2, back.moves.len() - 1, "{ki2}");
+        assert_eq!(jkf.header, back.header, "{ki2}");
+    }
+
+    // A record with no header, no starting position and no moves has the
+    // starting position as the only thing left to write. Without it the file is
+    // zero bytes and the `Ok` says nothing is wrong, which no caller can tell
+    // from a save that was cut short. Naming where the game starts is the least
+    // a kifu can say, and it is what KIF and CSA write for the same record.
+    #[test]
+    fn to_ki2_names_the_starting_position_of_an_empty_record() {
+        let ki2 = JsonKifuFormat::default()
+            .try_to_ki2_owned()
+            .expect("writes KI2");
+        assert_eq!("手合割：平手\n", ki2);
+        let back = crate::parser::parse_ki2_str(&ki2).expect("reads back");
+        assert_eq!(1, back.moves.len(), "R-JKF-001: the slot, and no move");
+        assert_eq!(Some(Preset::PresetHirate), back.initial.map(|i| i.preset));
     }
 
     #[test]
     fn to_ki2_moves() {
         assert_eq!(
-            "▲２六歩 △８四歩 ▲２五歩\n",
+            "手合割：平手\n▲２六歩 △８四歩 ▲２五歩\n",
             JsonKifuFormat {
                 moves: vec![
                     MoveFormat::default(),

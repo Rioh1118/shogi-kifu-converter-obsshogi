@@ -13,7 +13,69 @@
 //! (R-HC-003).
 
 use crate::jkf::{Color, Initial, Kind, Piece, Preset};
-use crate::normalizer::HIRATE_BOARD;
+
+/// The even game, which every handicap is this minus a set of pieces
+/// (R-HC-003).
+///
+/// Here because it is the first row of this table — `PresetHirate`, nothing
+/// removed (R-HC-003). Every other entry is this minus a set of pieces, so the
+/// two belong in one place.
+pub(crate) const HIRATE_BOARD: [[Piece; 9]; 9] = {
+    #[rustfmt::skip]
+    const EMP: Piece = Piece { color: None, kind: None };
+    #[rustfmt::skip]
+    const BFU: Piece = Piece { color: Some(Color::Black), kind: Some(Kind::FU) };
+    #[rustfmt::skip]
+    const BKY: Piece = Piece { color: Some(Color::Black), kind: Some(Kind::KY) };
+    #[rustfmt::skip]
+    const BKE: Piece = Piece { color: Some(Color::Black), kind: Some(Kind::KE) };
+    #[rustfmt::skip]
+    const BGI: Piece = Piece { color: Some(Color::Black), kind: Some(Kind::GI) };
+    #[rustfmt::skip]
+    const BKI: Piece = Piece { color: Some(Color::Black), kind: Some(Kind::KI) };
+    #[rustfmt::skip]
+    const BKA: Piece = Piece { color: Some(Color::Black), kind: Some(Kind::KA) };
+    #[rustfmt::skip]
+    const BHI: Piece = Piece { color: Some(Color::Black), kind: Some(Kind::HI) };
+    #[rustfmt::skip]
+    const BOU: Piece = Piece { color: Some(Color::Black), kind: Some(Kind::OU) };
+    #[rustfmt::skip]
+    const WFU: Piece = Piece { color: Some(Color::White), kind: Some(Kind::FU) };
+    #[rustfmt::skip]
+    const WKY: Piece = Piece { color: Some(Color::White), kind: Some(Kind::KY) };
+    #[rustfmt::skip]
+    const WKE: Piece = Piece { color: Some(Color::White), kind: Some(Kind::KE) };
+    #[rustfmt::skip]
+    const WGI: Piece = Piece { color: Some(Color::White), kind: Some(Kind::GI) };
+    #[rustfmt::skip]
+    const WKI: Piece = Piece { color: Some(Color::White), kind: Some(Kind::KI) };
+    #[rustfmt::skip]
+    const WKA: Piece = Piece { color: Some(Color::White), kind: Some(Kind::KA) };
+    #[rustfmt::skip]
+    const WHI: Piece = Piece { color: Some(Color::White), kind: Some(Kind::HI) };
+    #[rustfmt::skip]
+    const WOU: Piece = Piece { color: Some(Color::White), kind: Some(Kind::OU) };
+    [
+        [WKY, EMP, WFU, EMP, EMP, EMP, BFU, EMP, BKY],
+        [WKE, WKA, WFU, EMP, EMP, EMP, BFU, BHI, BKE],
+        [WGI, EMP, WFU, EMP, EMP, EMP, BFU, EMP, BGI],
+        [WKI, EMP, WFU, EMP, EMP, EMP, BFU, EMP, BKI],
+        [WOU, EMP, WFU, EMP, EMP, EMP, BFU, EMP, BOU],
+        [WKI, EMP, WFU, EMP, EMP, EMP, BFU, EMP, BKI],
+        [WGI, EMP, WFU, EMP, EMP, EMP, BFU, EMP, BGI],
+        [WKE, WHI, WFU, EMP, EMP, EMP, BFU, BKA, BKE],
+        [WKY, EMP, WFU, EMP, EMP, EMP, BFU, EMP, BKY],
+    ]
+};
+
+/// The keyword a KIF line names a handicap with, and the key it is kept under
+/// in `header` when the name is not one of these.
+///
+/// One spelling, because two sides of the crate depend on it being the same
+/// one: the reader files a `手合割` it cannot fold into a [`Preset`] under this
+/// key, and the writer looks for it there before deciding whether to name the
+/// starting position itself (D16).
+pub(crate) const KIF_KEYWORD: &str = "手合割";
 
 /// A handicap: the name KIF gives it and what the upper hand takes off.
 pub(crate) struct Handicap {
@@ -133,6 +195,28 @@ pub(crate) const HANDICAPS: [Handicap; 16] = [
 /// is carried in the data rather than named.
 pub(crate) fn lookup(preset: Preset) -> Option<&'static Handicap> {
     HANDICAPS.iter().find(|h| h.preset == preset)
+}
+
+/// The name a record gives its starting position when it spells the board out
+/// instead of naming a handicap.
+///
+/// Not a handicap, so it has no row in the table (R-HC-003 has 16) — but it is a
+/// `手合割` value the reader turns into a [`Preset`], which is what
+/// [`is_a_known_name`] is asked about.
+pub(crate) const OTHER_NAME: &str = "その他";
+
+/// Whether `name` is a `手合割` value the reader turns into a [`Preset`].
+///
+/// A `手合割` that is *both* in `header` and one of these came from somewhere
+/// other than that reader, which leaves `header` alone for the names it folds —
+/// and then the record's own `initial` is the one to write (D16).
+pub(crate) fn is_a_known_name(name: &str) -> bool {
+    // Trimmed, because the reader folds a padded value too: `手合割： 香落ち`
+    // reaches `initial` as `PresetKY`, and a gate that answers `false` for the
+    // string `header` happens to hold would drop the preset line from a record
+    // whose preset the reader *did* read (D16).
+    let name = name.trim_matches(crate::notation::is_padding);
+    name == OTHER_NAME || HANDICAPS.iter().any(|h| h.kif_name == name)
 }
 
 /// The KIF names, longest first, so a name is never cut short by a prefix of

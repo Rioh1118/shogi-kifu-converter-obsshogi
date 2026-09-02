@@ -1,4 +1,6 @@
-use super::kakinoki::{write_header, write_initial, write_kansuji, write_sanyou_suji};
+use super::kakinoki::{
+    write_comment, write_header, write_initial, write_kansuji, write_sanyou_suji,
+};
 use super::WriteResult as Result;
 use crate::error::ConvertError;
 use crate::jkf::*;
@@ -48,39 +50,20 @@ pub trait ToKif {
 impl ToKif for JsonKifuFormat {
     fn to_kif<W: Write>(&self, sink: &mut W) -> Result {
         write_header(&self.header, sink)?;
-        write_initial(&self.initial, false, sink)?;
+        write_initial(&self.header, &self.initial, sink)?;
         write_moves(&self.moves, sink)?;
         Ok(())
     }
 }
 
 fn write_move_kind<W: Write>(kind: Kind, sink: &mut W, offset: &mut usize) -> Result {
-    match kind {
-        Kind::FU => sink.write_str("歩")?,
-        Kind::KY => sink.write_str("香")?,
-        Kind::KE => sink.write_str("桂")?,
-        Kind::GI => sink.write_str("銀")?,
-        Kind::KI => sink.write_str("金")?,
-        Kind::KA => sink.write_str("角")?,
-        Kind::HI => sink.write_str("飛")?,
-        Kind::OU => sink.write_str("玉")?,
-        Kind::TO => sink.write_str("と")?,
-        Kind::NY => {
-            sink.write_str("成香")?;
-            *offset += 2;
-        }
-        Kind::NK => {
-            sink.write_str("成桂")?;
-            *offset += 2;
-        }
-        Kind::NG => {
-            sink.write_str("成銀")?;
-            *offset += 2;
-        }
-        Kind::UM => sink.write_str("馬")?,
-        Kind::RY => sink.write_str("龍")?,
-    }
-    *offset += 2;
+    // The offset is the width the move text takes in the column KIF pads the
+    // consumed time into, counted from the word rather than kept beside it: a
+    // table with the widths in it is a second place to remember that `成香` is
+    // two characters wide.
+    let word = crate::notation::move_word(kind);
+    sink.write_str(word)?;
+    *offset += word.chars().count() * 2;
     Ok(())
 }
 
@@ -157,11 +140,7 @@ fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) 
         }
         if let Some(comments) = &mf.comments {
             for comment in comments {
-                if !comment.starts_with('&') {
-                    sink.write_char('*')?;
-                }
-                sink.write_str(comment)?;
-                sink.write_char('\n')?;
+                write_comment(comment, sink)?;
             }
         }
         if let Some(ref forks) = mf.forks {
@@ -188,11 +167,7 @@ fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
     };
     if let Some(comments) = &head.comments {
         for comment in comments {
-            if !comment.starts_with('&') {
-                sink.write_char('*')?;
-            }
-            sink.write_str(comment)?;
-            sink.write_char('\n')?;
+            write_comment(comment, sink)?;
         }
     }
     write_move_lines(rest, 1, sink)
@@ -368,6 +343,7 @@ mod tests {
     fn to_kif_default() {
         assert_eq!(
             r#"
+手合割：平手
 手数----指手---------消費時間--
 "#[1..],
             JsonKifuFormat::default()

@@ -1,12 +1,22 @@
+use super::on_one_line;
 use super::WriteResult as Result;
 use crate::error::ConvertError;
 use crate::jkf::*;
+use crate::notation::LINE_ENDS;
 use std::collections::HashMap;
 use std::fmt::Write;
 
 /// A type that is convertible to CSA format.
 pub trait ToCsa {
     /// Write `self` in CSA format.
+    ///
+    /// # What CSA has no place for
+    ///
+    /// A `header` key that is not one of the five R-CSA-004 names (`先手` /
+    /// `後手` / `棋戦` / `場所` / `戦型`) is not written. CSA has no `$キーワード`
+    /// for it, and a record built elsewhere carries whatever its own maker put
+    /// there — obs-shogi's own new-file form writes `tags` and `note`
+    /// (`research/90-gaps.md` GAP-026). Saving as `.csa` is where those stop.
     ///
     /// # Errors
     ///
@@ -100,24 +110,16 @@ fn write_place<W: Write>(place: &Option<PlaceFormat>, sink: &mut W) -> Result {
 
 fn write_header<W: Write>(header: &HashMap<String, String>, sink: &mut W) -> Result {
     sink.write_str("V2.2\n")?;
-    if let Some(s) = header.get("先手").or_else(|| header.get("下手")) {
-        if !s.is_empty() {
-            sink.write_fmt(format_args!("N+{}\n", s))?;
+    for (prefix, value) in [
+        ("N+", header.get("先手").or_else(|| header.get("下手"))),
+        ("N-", header.get("後手").or_else(|| header.get("上手"))),
+        ("$EVENT:", header.get("棋戦")),
+        ("$SITE:", header.get("場所")),
+        ("$OPENING:", header.get("戦型")),
+    ] {
+        if let Some(value) = value {
+            write_header_value(prefix, value, sink)?;
         }
-    }
-    if let Some(s) = header.get("後手").or_else(|| header.get("上手")) {
-        if !s.is_empty() {
-            sink.write_fmt(format_args!("N-{}\n", s))?;
-        }
-    }
-    if let Some(s) = header.get("棋戦") {
-        sink.write_fmt(format_args!("$EVENT:{}\n", s))?;
-    }
-    if let Some(s) = header.get("場所") {
-        sink.write_fmt(format_args!("$SITE:{}\n", s))?;
-    }
-    if let Some(s) = header.get("戦型") {
-        sink.write_fmt(format_args!("$OPENING:{}\n", s))?;
     }
     Ok(())
 }
@@ -148,13 +150,24 @@ fn write_initial_data<W: Write>(data: &StateFormat, sink: &mut W) -> Result {
         } else {
             sink.write_str("P-")?;
         }
-        (0..hand.HI).try_for_each(|_| sink.write_str("00HI"))?;
-        (0..hand.KA).try_for_each(|_| sink.write_str("00KA"))?;
-        (0..hand.KI).try_for_each(|_| sink.write_str("00KI"))?;
-        (0..hand.GI).try_for_each(|_| sink.write_str("00GI"))?;
-        (0..hand.KE).try_for_each(|_| sink.write_str("00KE"))?;
-        (0..hand.KY).try_for_each(|_| sink.write_str("00KY"))?;
-        (0..hand.FU).try_for_each(|_| sink.write_str("00FU"))?;
+        // `00` is the hand a piece comes from (R-CSA-007), and the code comes
+        // from `write_kind` — spelling the pair out here would be a second table
+        // that only disagrees with the first one when someone reads back a file
+        // this crate wrote.
+        for (kind, num) in [
+            (Kind::HI, hand.HI),
+            (Kind::KA, hand.KA),
+            (Kind::KI, hand.KI),
+            (Kind::GI, hand.GI),
+            (Kind::KE, hand.KE),
+            (Kind::KY, hand.KY),
+            (Kind::FU, hand.FU),
+        ] {
+            for _ in 0..num {
+                sink.write_str("00")?;
+                write_kind(kind, sink)?;
+            }
+        }
         sink.write_char('\n')?;
     }
     write_color(data.color, sink)?;
@@ -191,6 +204,64 @@ fn write_initial<W: Write>(initial: &Option<Initial>, sink: &mut W) -> Result {
     Ok(())
 }
 
+/// Writes one comment, as as many `'` lines as it takes.
+///
+/// A comment runs from the `'` to the end of the line (R-CSA-008), and `,` ends
+/// a statement as surely as a newline does (R-CSA-009). Either one inside a
+/// comment leaves the text after it outside the `'`, and this crate's reader
+/// drops the rest of the file from there without a word (`research/90-gaps.md`
+/// GAP-023).
+///
+/// What ends a line ([`LINE_ENDS`]) and what ends a statement are the only
+/// things CSA has nowhere to put here. What sits either side of one it does, so
+/// each piece becomes a line of its own rather than the record ending there.
+fn write_comment<W: Write>(comment: &str, sink: &mut W) -> Result {
+    // A piece with nothing in it gets no line. A bare `'` is a comment CSA
+    // cannot read back — the reader stops there and the rest of the record goes
+    // with it — and a comment that ends in a newline, which is what a text box
+    // gives you, has one at the end. An empty comment says nothing; the moves
+    // after it do (D4).
+    //
+    // KIF and KI2 write the bare marker instead, because there `*` on its own
+    // reads back as the empty comment it was.
+    for piece in comment
+        .split(|c| c == ',' || LINE_ENDS.contains(&c))
+        .filter(|piece| !piece.is_empty())
+    {
+        sink.write_fmt(format_args!("'{piece}\n"))?;
+    }
+    Ok(())
+}
+
+/// Writes `prefix` and a header value, which CSA gives one line and no more
+/// (R-CSA-004), or nothing at all when the value flattens to nothing.
+///
+/// `,` ends a statement (R-CSA-009) and cannot be spelled in a value the way it
+/// can in a comment — `N+` and `$EVENT` have nowhere to continue onto — so it
+/// becomes the full-width form. What ends a line is dropped for the same reason
+/// ([`LINE_ENDS`]).
+///
+/// A value that is nothing but those gets no line at all. `N+` with nothing
+/// after it is not a record with no player name — it is a file this crate's own
+/// reader refuses whole.
+///
+/// Altering a value is not nothing. It is less than the alternative: a `,` left
+/// in makes that same unreadable file, and D4 puts the record above its
+/// punctuation.
+fn write_header_value<W: Write>(prefix: &str, value: &str, sink: &mut W) -> Result {
+    let value: String = on_one_line(value)
+        .chars()
+        .map(|c| if c == ',' { '，' } else { c })
+        .collect();
+    if value.is_empty() {
+        return Ok(());
+    }
+    sink.write_str(prefix)?;
+    sink.write_str(&value)?;
+    sink.write_char('\n')?;
+    Ok(())
+}
+
 fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
     for mf in moves {
         // A node with neither a move nor an outcome carries only comments,
@@ -222,7 +293,7 @@ fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
         }
         if let Some(comments) = &mf.comments {
             for comment in comments {
-                sink.write_fmt(format_args!("'{}\n", comment))?;
+                write_comment(comment, sink)?;
             }
         }
     }
@@ -232,6 +303,86 @@ fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // R-CSA-009: `,` ends a statement, and this crate's reader drops the rest of
+    // the file from there without a word (GAP-012). The notes shogi sites write
+    // carry one (`*▲囲い：居飛車穴熊, 一枚穴熊`), so a record saved as `.csa`
+    // came back short with `Ok` (GAP-023).
+    //
+    // A header value cannot be split the way a comment can — `$EVENT` has
+    // nowhere to continue onto — so there the comma becomes the full-width form.
+    #[test]
+    fn a_comment_with_a_statement_separator_in_it_does_not_end_the_record() {
+        let kif = "手合割：平手
+手数----指手---------消費時間--
+   1 ７六歩(77)
+*囲い：居飛車穴熊, 一枚穴熊
+   2 ３四歩(33)
+   3 ２六歩(27)
+";
+        let jkf = crate::parser::parse_kif_str(kif).expect("parses");
+        let csa = jkf.try_to_csa_owned().expect("writes CSA");
+        let back = crate::parser::parse_csa_str(&csa).expect("reads back");
+        assert_eq!(3, back.moves.len() - 1, "{csa}");
+        // The text is on the file; the comma is not, because CSA has nowhere to
+        // put it. (Reading it back into the record is another matter: the `csa`
+        // crate drops `'` lines, so the round trip loses comments whatever this
+        // writes.)
+        assert!(csa.contains("'囲い：居飛車穴熊\n' 一枚穴熊\n"), "{csa}");
+
+        // A newline ends a line as surely as a comma does, and a JKF comment can
+        // hold one (nothing in JKF says otherwise, and the consumer builds its
+        // own). A piece with nothing in it gets no line at all: a bare `'` is
+        // what the reader stops on, and a comment out of a text box ends in a
+        // newline.
+        let mut jkf = jkf;
+        for comment in [
+            "ひとつ\nふたつ",
+            "感想\n",
+            "\r\n感想",
+            "ひとつ,,ふたつ",
+            ",",
+            "",
+        ] {
+            jkf.moves[1].comments = Some(vec![comment.to_owned()]);
+            let csa = jkf.try_to_csa_owned().expect("writes CSA");
+            assert_eq!(
+                3,
+                crate::parser::parse_csa_str(&csa)
+                    .expect("reads back")
+                    .moves
+                    .len()
+                    - 1,
+                "{comment:?} -> {csa}"
+            );
+        }
+        jkf.moves[1].comments = None;
+
+        // A lone `\r` ends a line too, and a value that is nothing but line ends
+        // has no line to write at all: `N+` with nothing after it is a file this
+        // crate's own reader refuses whole.
+        jkf.header
+            .insert("先手".to_owned(), "山田\r太郎".to_owned());
+        jkf.header.insert("場所".to_owned(), "\n".to_owned());
+        let csa = jkf.try_to_csa_owned().expect("writes CSA");
+        assert!(csa.contains("N+山田太郎\n"), "{csa}");
+        assert!(!csa.contains("$SITE"), "{csa}");
+        assert!(crate::parser::parse_csa_str(&csa).is_ok(), "{csa}");
+
+        // The same in a header value, which has no second line to move onto.
+        jkf.header
+            .insert("棋戦".to_owned(), "相掛かり, 横歩取り".to_owned());
+        let csa = jkf.try_to_csa_owned().expect("writes CSA");
+        assert!(csa.contains("$EVENT:相掛かり， 横歩取り\n"), "{csa}");
+        assert_eq!(
+            3,
+            crate::parser::parse_csa_str(&csa)
+                .expect("reads back")
+                .moves
+                .len()
+                - 1
+        );
+    }
 
     #[test]
     fn to_csa_default() {
