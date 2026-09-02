@@ -11,10 +11,10 @@ use nom::IResult;
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Information {
+enum Information<'a> {
     Preset(Preset),
-    HandBlack(Hand),
-    HandWhite(Hand),
+    HandBlack(Hand, &'a str),
+    HandWhite(Hand, &'a str),
     KeyValue(String, String),
     /// A comment or a bookmark standing among the header lines
     /// (R-KIF-010 / R-KIF-011).
@@ -22,22 +22,23 @@ enum Information {
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
-struct InformationData {
+struct InformationData<'a> {
     preset: Option<Preset>,
     hands: [Hand; 2],
-    /// Whether a `…の持駒：` line was read. A hand belongs to a board, and an
-    /// empty hand cannot be told from an absent one by its contents.
-    saw_a_hand_line: bool,
+    /// Where the last `…の持駒：` line started, for an error to point at. A hand
+    /// belongs to a board, and the reader that finds there is none is not the
+    /// one that read the line.
+    hand_line: Option<&'a str>,
     map: HashMap<String, String>,
     comments: Vec<String>,
 }
 
-impl InformationData {
-    fn merged(lhs: Self, rhs: Self) -> InformationData {
+impl<'a> InformationData<'a> {
+    fn merged(lhs: Self, rhs: Self) -> Self {
         InformationData {
             preset: lhs.preset.or(rhs.preset),
             hands: Self::merged_hands(lhs.hands, rhs.hands),
-            saw_a_hand_line: lhs.saw_a_hand_line || rhs.saw_a_hand_line,
+            hand_line: lhs.hand_line.or(rhs.hand_line),
             map: lhs.map.into_iter().chain(rhs.map).collect(),
             comments: lhs.comments.into_iter().chain(rhs.comments).collect(),
         }
@@ -958,7 +959,7 @@ fn information_value_hand(input: &str) -> IResult<&str, Hand, VerboseError<&str>
     ))(input)
 }
 
-fn information_value_preset(input: &str) -> IResult<&str, Information, VerboseError<&str>> {
+fn information_value_preset(input: &str) -> IResult<&str, Information<'_>, VerboseError<&str>> {
     // The padding in front of the value belongs to the value, the same as the
     // padding behind it and the padding around the key. Left out, `手合割： 香落ち`
     // falls to the key-value rule and the board is 平手 — where Black opens and
@@ -1000,7 +1001,7 @@ fn information_value_preset(input: &str) -> IResult<&str, Information, VerboseEr
 /// reads as a hirate game with Black to open (`research/90-gaps.md` GAP-021).
 /// Being strict here instead would refuse the file outright, which is worse and
 /// still not the fix — the fix is a table with an entry for what the file says.
-fn information_line_preset(input: &str) -> IResult<&str, Information, VerboseError<&str>> {
+fn information_line_preset(input: &str) -> IResult<&str, Information<'_>, VerboseError<&str>> {
     terminated(
         preceded(
             tuple((padding, tag(crate::handicap::KIF_KEYWORD), padding, colon)),
@@ -1010,7 +1011,7 @@ fn information_line_preset(input: &str) -> IResult<&str, Information, VerboseErr
     )(input)
 }
 
-fn information_line_hands(input: &str) -> IResult<&str, Information, VerboseError<&str>> {
+fn information_line_hands(input: &str) -> IResult<&str, Information<'_>, VerboseError<&str>> {
     let line = input;
     let (rest, color) = delimited(
         padding,
@@ -1034,8 +1035,8 @@ fn information_line_hands(input: &str) -> IResult<&str, Information, VerboseErro
     Ok((
         rest,
         match color {
-            Color::Black => Information::HandBlack(hand),
-            Color::White => Information::HandWhite(hand),
+            Color::Black => Information::HandBlack(hand, line),
+            Color::White => Information::HandWhite(hand, line),
         },
     ))
 }
@@ -1063,9 +1064,9 @@ fn a_key_that_names_its_line(key: &str) -> bool {
 /// nobody wrote (`*主催`). Nothing puts them back: what stops the header block in
 /// KIF is the `手数----指手---------消費時間--` line, which R-KIF-012 says a
 /// record need not have, and which KI2 has no equivalent of at all.
-fn information_line_keyvalue(
+fn information_line_keyvalue<'a>(
     shapes: LineShapes,
-) -> impl FnMut(&str) -> IResult<&str, Information, VerboseError<&str>> {
+) -> impl FnMut(&'a str) -> IResult<&'a str, Information<'a>, VerboseError<&'a str>> {
     move |input| {
         // Belt and braces: `information_lines` reads these as comments before it
         // gets here, and a reordering of that `alt` would otherwise put them
@@ -1135,16 +1136,16 @@ fn information_line_keyvalue(
     }
 }
 
-fn informations(
+fn informations<'a>(
     shapes: LineShapes,
-) -> impl FnMut(&str) -> IResult<&str, InformationData, VerboseError<&str>> {
+) -> impl FnMut(&'a str) -> IResult<&'a str, InformationData<'a>, VerboseError<&'a str>> {
     move |input| information_lines(shapes, input)
 }
 
-fn information_lines(
+fn information_lines<'a>(
     shapes: LineShapes,
-    input: &str,
-) -> IResult<&str, InformationData, VerboseError<&str>> {
+    input: &'a str,
+) -> IResult<&'a str, InformationData<'a>, VerboseError<&'a str>> {
     map(
         many0(preceded(
             many0(comment_line),
@@ -1164,13 +1165,13 @@ fn information_lines(
             v.iter().fold(InformationData::default(), |mut acc, info| {
                 match info {
                     Information::Preset(p) => acc.preset = Some(*p),
-                    Information::HandBlack(h) => {
+                    Information::HandBlack(h, line) => {
                         acc.hands[0] = *h;
-                        acc.saw_a_hand_line = true;
+                        acc.hand_line.get_or_insert(line);
                     }
-                    Information::HandWhite(h) => {
+                    Information::HandWhite(h, line) => {
                         acc.hands[1] = *h;
-                        acc.saw_a_hand_line = true;
+                        acc.hand_line.get_or_insert(line);
                     }
                     Information::KeyValue(k, v) => {
                         acc.map.insert(k.to_owned(), v.to_owned());
@@ -1386,11 +1387,15 @@ pub(super) fn parse_without_moves(
     // A hand belongs to a board. Without one there is nowhere to put it, and
     // `initial.data` comes back `None` with the pieces gone — a 詰将棋 whose
     // diagram could not be read comes back as an empty 平手, and the writer
-    // saves that over the original (D4, GAP-007). The board above it is the
-    // line that broke, so that is what the message names.
-    if info.saw_a_hand_line && !has_a_board {
+    // saves that over the original (D4, GAP-007).
+    //
+    // Only where something is actually lost. `先手の持駒：なし` above a
+    // `手合割` line states nothing the preset does not already say, and refusing
+    // it would drop records that `main` and tsshogi both read (R-KIF-014 warns
+    // about exactly that disagreement).
+    if info.hands != [Hand::default(); 2] && !has_a_board {
         return Err(broken_line(
-            start,
+            info.hand_line.unwrap_or(start),
             "this record states a hand but has no board for it",
         ));
     }
@@ -1601,12 +1606,14 @@ mod tests {
         }
     }
 
-    // A hand belongs to a board. Where the diagram could not be read the hands
-    // go with it — `initial.data` is `None` and the pieces are simply gone —
-    // and the record comes back as an empty 平手 that the writer then saves over
-    // the original (D4, GAP-007). `main` refused three of these four spellings
-    // by accident (it wanted a newline); the fourth it accepted and lost the
-    // hands.
+    // A hand belongs to a board. Where the diagram could not be read the pieces
+    // go with it — `initial.data` is `None` and they are simply gone — and the
+    // record comes back as an empty 平手 that the writer then saves over the
+    // original (D4, GAP-007).
+    //
+    // Only where something is lost. An empty hand states nothing the preset does
+    // not already say, and a reader that refuses it drops records tsshogi opens
+    // (R-KIF-014).
     #[test]
     fn a_hand_with_no_board_is_reported_rather_than_dropped() {
         for record in [
@@ -1614,10 +1621,22 @@ mod tests {
             "後手の持駒：飛二 角\n先手の持駒：\n",
             "後手の持駒：飛二 角\n先手の持駒：金",
             "後手の持駒：飛二 角\n先手の持駒：金\n",
-            "手合割：平手\n後手の持駒：なし\n手数----指手---------消費時間--\n   1 ７六歩(77)\n",
         ] {
-            assert!(crate::parser::parse_kif_str(record).is_err(), "{record:?}");
+            let message = crate::parser::parse_kif_str(record)
+                .expect_err(record)
+                .to_string();
+            assert!(message.contains("no board for it"), "{message}");
+            // And the message names the hand line, not the head of the record.
+            assert!(message.contains("後手の持駒：飛二 角"), "{message}");
             assert!(crate::parser::parse_ki2_str(record).is_err(), "{record:?}");
+        }
+        // Nothing to lose, so nothing to refuse.
+        for record in [
+            "手合割：平手\n後手の持駒：なし\n手数----指手---------消費時間--\n   1 ７六歩(77)\n",
+            "手合割：香落ち\n上手の持駒：なし\n下手の持駒：なし\n手数----指手---------消費時間--\n   1 ３四歩(33)\n",
+            "後手の持駒：\n手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n",
+        ] {
+            assert!(crate::parser::parse_kif_str(record).is_ok(), "{record:?}");
         }
     }
 
@@ -1789,57 +1808,61 @@ mod tests {
     #[test]
     fn parse_information_hand() {
         assert!(information_line_hands("").is_err());
-        assert_eq!(
-            Ok((
-                "",
-                Information::HandBlack(Hand {
+        // The line comes back with the hand: a hand needs a board, and the
+        // reader that finds there is none is not the one that read this line.
+        for (line, hand) in [
+            (
+                "先手の持駒：金　桂　\n",
+                Hand {
                     KE: 1,
                     KI: 1,
                     ..Default::default()
-                })
-            )),
-            information_line_hands("先手の持駒：金　桂　\n")
-        );
-        assert_eq!(
-            Ok((
-                "",
-                Information::HandWhite(Hand {
+                },
+            ),
+            (
+                "下手の持駒：角　\n",
+                Hand {
+                    KA: 1,
+                    ..Default::default()
+                },
+            ),
+        ] {
+            assert_eq!(
+                Ok(("", Information::HandBlack(hand, line))),
+                information_line_hands(line)
+            );
+        }
+        for (line, hand) in [
+            (
+                "後手の持駒：角　金三　銀二　桂三　香二　歩十五　\n",
+                Hand {
                     FU: 15,
                     KY: 2,
                     KE: 3,
                     GI: 2,
                     KI: 3,
                     KA: 1,
-                    HI: 0
-                })
-            )),
-            information_line_hands("後手の持駒：角　金三　銀二　桂三　香二　歩十五　\n")
-        );
-        assert_eq!(
-            Ok((
-                "",
-                Information::HandWhite(Hand {
+                    HI: 0,
+                },
+            ),
+            (
+                "後手の持駒：金　桂　香三　歩十　\n",
+                Hand {
                     FU: 10,
                     KY: 3,
                     KE: 1,
                     GI: 0,
                     KI: 1,
                     KA: 0,
-                    HI: 0
-                })
-            )),
-            information_line_hands("後手の持駒：金　桂　香三　歩十　\n")
-        );
-        assert_eq!(
-            Ok((
-                "",
-                Information::HandBlack(Hand {
-                    KA: 1,
-                    ..Default::default()
-                })
-            )),
-            information_line_hands("下手の持駒：角　\n")
-        );
+                    HI: 0,
+                },
+            ),
+        ] {
+            assert_eq!(
+                Ok(("", Information::HandWhite(hand, line))),
+                information_line_hands(line)
+            );
+        }
     }
 
     /// A reader that finds no line of its own in any header value — what the
