@@ -1,8 +1,8 @@
 use super::kakinoki::{
     an_empty_block_here_is_worth_reporting, blank_line, branch_header_ply, broken_line,
     comments_on_the_starting_position, ends_here, is_padding, move_comment_line, move_special,
-    move_to, not_move_line, opens_a_branch_header, opens_a_numbered_line, opens_a_shared_line,
-    padding, parse_without_moves, piece_kind, LineShapes, Position,
+    move_time, move_to, not_move_line, opens_a_branch_header, opens_a_numbered_line,
+    opens_a_shared_line, padding, parse_without_moves, piece_kind, LineShapes, Position,
 };
 use crate::jkf::*;
 use nom::branch::alt;
@@ -11,7 +11,7 @@ use nom::character::complete::digit1;
 use nom::combinator::{map, map_res, opt, value};
 use nom::error::{ParseError, VerboseError};
 use nom::multi::{many0, many1};
-use nom::sequence::{delimited, preceded, separated_pair, terminated, tuple};
+use nom::sequence::{delimited, preceded, tuple};
 use nom::IResult;
 
 fn move_from(input: &str) -> IResult<&str, Option<PlaceFormat>, VerboseError<&str>> {
@@ -167,41 +167,6 @@ fn move_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
                 ..Default::default()
             }
         },
-    )(input)
-}
-
-fn move_time_format(input: &str) -> IResult<&str, TimeFormat, VerboseError<&str>> {
-    alt((
-        map(
-            tuple((
-                terminated(map_res(digit1, str::parse), tag(":")),
-                terminated(map_res(digit1, str::parse), tag(":")),
-                map_res(digit1, str::parse),
-            )),
-            |(h, m, s)| TimeFormat { h: Some(h), m, s },
-        ),
-        map(
-            tuple((
-                terminated(map_res(digit1, str::parse), tag(":")),
-                map_res(digit1, str::parse),
-            )),
-            |(m, s)| TimeFormat { h: None, m, s },
-        ),
-    ))(input)
-}
-
-fn move_time(input: &str) -> IResult<&str, Time, VerboseError<&str>> {
-    delimited(
-        tag("("),
-        map(
-            separated_pair(
-                delimited(padding, move_time_format, padding),
-                tag("/"),
-                delimited(padding, move_time_format, padding),
-            ),
-            |(now, total)| Time { now, total },
-        ),
-        tag(")"),
     )(input)
 }
 
@@ -676,33 +641,6 @@ mod tests {
                 "{special:?} writes {word}, which cannot be read"
             );
         }
-    }
-
-    #[test]
-    fn parse_move_time_format() {
-        assert!(move_time_format("").is_err());
-        assert_eq!(
-            Ok((
-                "",
-                TimeFormat {
-                    h: None,
-                    m: 0,
-                    s: 16
-                }
-            )),
-            move_time_format("0:16")
-        );
-        assert_eq!(
-            Ok((
-                "",
-                TimeFormat {
-                    h: Some(0),
-                    m: 0,
-                    s: 16
-                }
-            )),
-            move_time_format("00:00:16")
-        );
     }
 
     #[test]

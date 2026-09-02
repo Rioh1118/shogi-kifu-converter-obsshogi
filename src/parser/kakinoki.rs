@@ -5,7 +5,7 @@ use nom::character::complete::{char, digit1, line_ending, not_line_ending, one_o
 use nom::combinator::{eof, map, map_res, opt, peek, recognize, value};
 use nom::error::{ErrorKind, ParseError, VerboseError};
 use nom::multi::{count, many0, many1};
-use nom::sequence::{delimited, pair, preceded, terminated, tuple};
+use nom::sequence::{delimited, pair, preceded, separated_pair, terminated, tuple};
 use nom::IResult;
 use std::collections::HashMap;
 
@@ -394,6 +394,48 @@ pub(super) fn move_special(
     }
 }
 
+fn move_time_format(input: &str) -> IResult<&str, TimeFormat, VerboseError<&str>> {
+    alt((
+        map(
+            tuple((
+                terminated(map_res(digit1, str::parse), tag(":")),
+                terminated(map_res(digit1, str::parse), tag(":")),
+                map_res(digit1, str::parse),
+            )),
+            |(h, m, s)| TimeFormat { h: Some(h), m, s },
+        ),
+        map(
+            tuple((
+                terminated(map_res(digit1, str::parse), tag(":")),
+                map_res(digit1, str::parse),
+            )),
+            |(m, s)| TimeFormat { h: None, m, s },
+        ),
+    ))(input)
+}
+
+/// The `( 0:03/00:00:03)` a KIF move line may carry after the move or the
+/// outcome word (R-KIF-005).
+///
+/// Here rather than beside the reader that consumes it, because the shared
+/// question "does this line hold a move" has to be answered with the same shape
+/// the reader will take: a `1投了 ( 0:03/00:00:03)` counted as prose is skipped,
+/// and the outcome of the game goes with it (D1).
+pub(super) fn move_time(input: &str) -> IResult<&str, Time, VerboseError<&str>> {
+    delimited(
+        tag("("),
+        map(
+            separated_pair(
+                delimited(padding, move_time_format, padding),
+                tag("/"),
+                delimited(padding, move_time_format, padding),
+            ),
+            |(now, total)| Time { now, total },
+        ),
+        tag(")"),
+    )(input)
+}
+
 /// The half of [`opens_a_numbered_line`] that answers when nothing separates
 /// the number from what follows it. A writer that aligned its columns leaves
 /// padding there and the question does not reach here; without it, `35手目まで`
@@ -419,17 +461,29 @@ pub(super) fn a_move_follows_the_number(after_digits: &str) -> bool {
         // note about an outcome and not a line that names one.
         recognize(terminated(
             move_special(Color::Black),
-            pair(padding, nom::combinator::eof),
+            tuple((padding, opt(move_time), padding, nom::combinator::eof)),
         )),
         recognize(tuple((
             move_to,
             piece_kind,
-            opt(tag("成")),
+            // What tells a move from a note that quotes one. `2同銀と取れば`
+            // stops at the piece and is prose; a move says what happened to it
+            // — where it came from, that it was dropped, or that it promoted.
+            //
             // The *shape* of an origin, not `move_from` itself: that one raises
             // a `Failure` for `(00)`, and `.is_ok()` would fold it into "not a
             // move line" — sending `1７六歩(00)` to the skip, which drops it
             // (D1, `an_origin_off_the_board_is_an_error_not_a_drop`).
-            alt((tag("打"), recognize(delimited(tag("("), digit1, tag(")"))))),
+            alt((
+                tag("打"),
+                recognize(delimited(tag("("), digit1, tag(")"))),
+                // R-KIF-006 says a KIF writes neither, but a reader that counts
+                // only what a writer should produce drops what other software
+                // wrote: `3２二角不成(88)` is a move line spelled wrong, and
+                // skipping it as prose loses the move without a word (D1).
+                tag("不成"),
+                tag("成"),
+            )),
         ))),
     ))(after_digits)
     .is_ok()
@@ -1275,6 +1329,33 @@ mod tests {
         assert!(message.contains("at line 13"), "{message}");
     }
 
+    #[test]
+    fn parse_move_time_format() {
+        assert!(move_time_format("").is_err());
+        assert_eq!(
+            Ok((
+                "",
+                TimeFormat {
+                    h: None,
+                    m: 0,
+                    s: 16
+                }
+            )),
+            move_time_format("0:16")
+        );
+        assert_eq!(
+            Ok((
+                "",
+                TimeFormat {
+                    h: Some(0),
+                    m: 0,
+                    s: 16
+                }
+            )),
+            move_time_format("00:00:16")
+        );
+    }
+
     // A hand line whose count cannot be read must not fall through to the
     // key-value rule: that files the whole line under `header` and leaves the
     // hand empty — including the pieces written before the broken one. A drop
@@ -2063,6 +2144,92 @@ mod tests {
                 .expect("a board")
                 .hands[1];
             assert_eq!((fu, ka), (hand.FU, hand.KA), "{value:?}");
+        }
+    }
+
+    // The first line of a run is the one the skip sees before any reader does,
+    // so what counts as a move line there has to be what `kif::move_line` will
+    // consume — including the `( 0:03/00:00:03)` a KIF writes after an outcome
+    // (R-KIF-007). Counting it as prose skips the line, and the game comes back
+    // `Ok` with no outcome at all (D1).
+    #[test]
+    fn an_outcome_at_the_head_of_a_run_keeps_its_clock() {
+        use crate::parser::{parse_ki2_str, parse_kif_str};
+        const HEAD: &str = "手合割：平手\n手数----指手---------消費時間--\n";
+        for (line, special) in [
+            ("1投了 ( 0:03/00:00:03)", Some(MoveSpecial::SpecialToryo)),
+            ("1投了", Some(MoveSpecial::SpecialToryo)),
+            ("1中断 ( 0:00/00:00:00)", Some(MoveSpecial::SpecialChudan)),
+            (
+                "1千日手 ( 0:00/00:00:00)",
+                Some(MoveSpecial::SpecialSennichite),
+            ),
+            (
+                "   1 投了 ( 0:03/00:00:03)",
+                Some(MoveSpecial::SpecialToryo),
+            ),
+            // An outcome word owns its line, so a note *about* one is a note.
+            ("1投了もあった", None),
+        ] {
+            let jkf = parse_kif_str(&format!("{HEAD}{line}\n"))
+                .unwrap_or_else(|e| panic!("{line:?}: {e}"));
+            assert_eq!(
+                special,
+                jkf.moves.last().and_then(|mf| mf.special),
+                "{line:?}"
+            );
+        }
+        // D18: a `変化：` block whose only line is an outcome is a branch, not
+        // an empty block.
+        let branched = parse_kif_str(concat!(
+            "手合割：平手\n手数----指手---------消費時間--\n",
+            "   1 ７六歩(77)\n   2 ８四歩(83)\n\n変化：2手\n2投了 ( 0:03/00:00:03)\n"
+        ))
+        .expect("reads");
+        assert_eq!(
+            1,
+            branched
+                .moves
+                .iter()
+                .filter(|mf| mf.forks.is_some())
+                .count()
+        );
+        // And a KIF move line that ends up in a `.ki2` is reported, never
+        // skipped — the outcome would go with it.
+        assert!(parse_ki2_str("手合割：平手\n▲７六歩 △８四歩\n3投了 ( 0:03/00:00:03)\n").is_err());
+    }
+
+    // A move spelled the way KIF does not spell it (R-KIF-006 forbids 不成) is
+    // still a move line: other software writes it, and a reader that counts only
+    // what a KIF writer should produce hands it to the skip, which drops the
+    // move without a word (D1). What separates it from a note that quotes a move
+    // is that a move says what happened to the piece.
+    #[test]
+    fn a_move_line_written_the_wrong_way_is_reported_not_dropped() {
+        use crate::parser::{parse_ki2_str, parse_kif_str};
+        const KIF: &str =
+            "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n   2 ８四歩(83)\n";
+        const KI2: &str = "手合割：平手\n▲７六歩 △８四歩\n";
+        // Unaligned and unreadable: reported in both formats, as it is when the
+        // writer did align it.
+        for line in ["3２二角不成(88)", "3２二角成(８８)", "3２二角不成"] {
+            assert!(
+                parse_kif_str(&format!("{KIF}{line}\n")).is_err(),
+                "{line:?}"
+            );
+            assert!(
+                parse_kif_str(&format!("{KIF}   3 {}\n", &line[1..])).is_err(),
+                "{line:?}, aligned"
+            );
+            assert!(
+                parse_ki2_str(&format!("{KI2}{line}\n")).is_err(),
+                "{line:?}"
+            );
+        }
+        // A note that quotes a move stops at the piece and stays a note.
+        for note in ["2同銀と取れば", "2２六歩が本筋", "1同歩"] {
+            assert!(parse_kif_str(&format!("{KIF}{note}\n")).is_ok(), "{note:?}");
+            assert!(parse_ki2_str(&format!("{KI2}{note}\n")).is_ok(), "{note:?}");
         }
     }
 
