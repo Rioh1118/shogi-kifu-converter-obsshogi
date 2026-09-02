@@ -150,13 +150,24 @@ fn write_initial_data<W: Write>(data: &StateFormat, sink: &mut W) -> Result {
         } else {
             sink.write_str("P-")?;
         }
-        (0..hand.HI).try_for_each(|_| sink.write_str("00HI"))?;
-        (0..hand.KA).try_for_each(|_| sink.write_str("00KA"))?;
-        (0..hand.KI).try_for_each(|_| sink.write_str("00KI"))?;
-        (0..hand.GI).try_for_each(|_| sink.write_str("00GI"))?;
-        (0..hand.KE).try_for_each(|_| sink.write_str("00KE"))?;
-        (0..hand.KY).try_for_each(|_| sink.write_str("00KY"))?;
-        (0..hand.FU).try_for_each(|_| sink.write_str("00FU"))?;
+        // `00` is the hand a piece comes from (R-CSA-007), and the code comes
+        // from `write_kind` — spelling the pair out here would be a second table
+        // that only disagrees with the first one when someone reads back a file
+        // this crate wrote.
+        for (kind, num) in [
+            (Kind::HI, hand.HI),
+            (Kind::KA, hand.KA),
+            (Kind::KI, hand.KI),
+            (Kind::GI, hand.GI),
+            (Kind::KE, hand.KE),
+            (Kind::KY, hand.KY),
+            (Kind::FU, hand.FU),
+        ] {
+            for _ in 0..num {
+                sink.write_str("00")?;
+                write_kind(kind, sink)?;
+            }
+        }
         sink.write_char('\n')?;
     }
     write_color(data.color, sink)?;

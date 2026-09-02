@@ -206,6 +206,119 @@ mod tests {
     /// between a known limit of a format and a writer quietly changing what a
     /// record says is the whole point. Pinning `to_kif` to `中断` for every
     /// outcome has to fail here, and so does pinning `to_csa` to `%CHUDAN`.
+    // Every piece, in every place a piece can be, through every format.
+    //
+    // A writer's table that no reader is tied to drifts in silence: swapping
+    // `杏` and `全` in the board table, or `FU` and `KY` in the CSA table,
+    // changes what this crate writes and nothing else notices — the reader takes
+    // the wrong word as the wrong piece and comes back consistent. What catches
+    // it is reading the record back and comparing the position, so this walks
+    // the places rather than the tables and holds for tables not written yet.
+    #[test]
+    fn every_piece_survives_every_format() {
+        use crate::jkf::{Color, Hand, Initial, Kind, Piece, Preset, StateFormat};
+        use crate::parser::{parse_csa_str, parse_ki2_str, parse_kif_str};
+        use std::collections::HashMap;
+
+        // All 14 kinds on the board at once — one of each, since the piece
+        // counts of shogi do not allow two full sets — plus one of each a hand
+        // can hold, and a king for each side so the position is one a reader
+        // will replay.
+        let mut board = [[Piece {
+            color: None,
+            kind: None,
+        }; 9]; 9];
+        for (i, kind) in Kind::ALL.into_iter().enumerate() {
+            board[i % 9][6 - i / 9] = Piece {
+                color: Some(Color::Black),
+                kind: Some(kind),
+            };
+        }
+        board[4][0] = Piece {
+            color: Some(Color::White),
+            kind: Some(Kind::OU),
+        };
+        let hand = Hand {
+            FU: 1,
+            KY: 1,
+            KE: 1,
+            GI: 1,
+            KI: 1,
+            KA: 1,
+            HI: 1,
+        };
+        let jkf = JsonKifuFormat {
+            header: HashMap::new(),
+            initial: Some(Initial {
+                preset: Preset::PresetOther,
+                data: Some(StateFormat {
+                    color: Color::Black,
+                    board,
+                    hands: [hand, Hand::default()],
+                }),
+            }),
+            moves: vec![MoveFormat::default()],
+        };
+
+        let kif = jkf.try_to_kif_owned().expect("writes KIF");
+        assert_eq!(
+            jkf.initial,
+            parse_kif_str(&kif).expect("reads KIF back").initial,
+            "{kif}"
+        );
+        let ki2 = jkf.try_to_ki2_owned().expect("writes KI2");
+        assert_eq!(
+            jkf.initial,
+            parse_ki2_str(&ki2).expect("reads KI2 back").initial,
+            "{ki2}"
+        );
+        let csa = jkf.try_to_csa_owned().expect("writes CSA");
+        assert_eq!(
+            jkf.initial,
+            parse_csa_str(&csa).expect("reads CSA back").initial,
+            "{csa}"
+        );
+
+        // And the words a round trip cannot pin, because the reader accepts more
+        // than the writer writes: `王` reads as `OU` exactly as `玉` does
+        // (R-NOT-006), so writing the wrong one of the pair still reads back the
+        // same piece. What the writer owes is the normal form (R-KIF-014 / D6).
+        assert_eq!(
+            [
+                '歩', '香', '桂', '銀', '金', '角', '飛', '玉', 'と', '杏', '圭', '全', '馬', '龍'
+            ],
+            Kind::ALL.map(crate::notation::board_word)
+        );
+        assert_eq!(
+            [
+                "歩", "香", "桂", "銀", "金", "角", "飛", "玉", "と", "成香", "成桂", "成銀", "馬",
+                "龍"
+            ],
+            Kind::ALL.map(crate::notation::move_word)
+        );
+        // And the CSA codes themselves, which no round trip can pin either: the
+        // reader takes them from the `csa` crate, so a wrong code here reads
+        // back as the wrong piece and agrees with itself (R-CSA-005).
+        for (kind, code) in [
+            (Kind::FU, "FU"),
+            (Kind::KY, "KY"),
+            (Kind::KE, "KE"),
+            (Kind::GI, "GI"),
+            (Kind::KI, "KI"),
+            (Kind::KA, "KA"),
+            (Kind::HI, "HI"),
+            (Kind::OU, "OU"),
+            (Kind::TO, "TO"),
+            (Kind::NY, "NY"),
+            (Kind::NK, "NK"),
+            (Kind::NG, "NG"),
+            (Kind::UM, "UM"),
+            (Kind::RY, "RY"),
+        ] {
+            assert!(csa.contains(code), "{kind:?} is written {code}: {csa}");
+        }
+    }
+
     #[test]
     fn every_outcome_has_the_word_each_format_writes() {
         use crate::jkf::MoveSpecial::*;

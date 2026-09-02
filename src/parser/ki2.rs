@@ -37,24 +37,7 @@ fn side_mark(input: &str) -> IResult<&str, Color, VerboseError<&str>> {
 /// here would only disagree with the writer's when someone reads back a file
 /// this crate wrote.
 fn relative_word_here(input: &str) -> IResult<&str, Relative, VerboseError<&str>> {
-    // Longest first. The order is the table's own (`Relative::ALL` is checked
-    // against it), not a second answer written out here.
-    const IN_ORDER: [Relative; 13] = [
-        Relative::LU,
-        Relative::LM,
-        Relative::LD,
-        Relative::RU,
-        Relative::RM,
-        Relative::RD,
-        Relative::L,
-        Relative::C,
-        Relative::R,
-        Relative::U,
-        Relative::M,
-        Relative::D,
-        Relative::H,
-    ];
-    for relative in IN_ORDER {
+    for relative in Relative::ALL {
         if let Ok((rest, _)) =
             tag::<_, _, VerboseError<&str>>(crate::notation::relative_word(relative))(input)
         {

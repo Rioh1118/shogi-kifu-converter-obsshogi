@@ -48,17 +48,20 @@ fn write_board_kind<W: Write>(kind: Kind, sink: &mut W) -> Result {
 }
 
 fn write_hand<W: Write>(hand: &Hand, sink: &mut W) -> Result {
-    for (c, num) in [
-        ('飛', hand.HI),
-        ('角', hand.KA),
-        ('金', hand.KI),
-        ('銀', hand.GI),
-        ('桂', hand.KE),
-        ('香', hand.KY),
-        ('歩', hand.FU),
+    // The spelling comes from `notation`, where the reader takes it from as
+    // well. A hand holds no promoted piece, so `board_word` and `move_word` are
+    // the same character here; the order is R-KIF-014's and not a spelling.
+    for (kind, num) in [
+        (Kind::HI, hand.HI),
+        (Kind::KA, hand.KA),
+        (Kind::KI, hand.KI),
+        (Kind::GI, hand.GI),
+        (Kind::KE, hand.KE),
+        (Kind::KY, hand.KY),
+        (Kind::FU, hand.FU),
     ] {
         if num > 0 {
-            sink.write_char(c)?;
+            sink.write_char(crate::notation::board_word(kind))?;
             if num > 1 {
                 write_kansuji(num, sink)?;
             }

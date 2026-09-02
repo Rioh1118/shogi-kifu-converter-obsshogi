@@ -189,13 +189,43 @@ pub enum MoveSpecial {
     SpecialFusenpai,
 }
 
+impl Kind {
+    /// Every piece, so that a table over them can be checked for gaps.
+    ///
+    /// The spellings live in [`crate::notation`]; what this is for is the test
+    /// that puts each piece on the board, in a hand and in a move and reads the
+    /// record back (`converter::tests::every_piece_survives_every_format`). A
+    /// writer's table that no reader is tied to drifts in silence: `杏` and `全`
+    /// could be swapped with every test still green.
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 14] = [
+        Self::FU,
+        Self::KY,
+        Self::KE,
+        Self::GI,
+        Self::KI,
+        Self::KA,
+        Self::HI,
+        Self::OU,
+        Self::TO,
+        Self::NY,
+        Self::NK,
+        Self::NG,
+        Self::UM,
+        Self::RY,
+    ];
+}
+
 impl Relative {
     /// Every way a move can say which piece made it, so that a table over them
     /// can be checked for gaps (R-NOT-004).
     ///
-    /// Longest first: `左上` has to be tried before `左`, or a reader takes the
-    /// `左` and leaves `上` for the next rule.
-    #[cfg(test)]
+    /// Longest first, because that is the order the reader has to try them in:
+    /// `左上` before `左`, or it takes the `左` and leaves `上` for the next rule
+    /// (`parser::ki2::relative_word_here` walks this).
+    ///
+    /// Not `#[cfg(test)]`. A table the production code cannot see is a table the
+    /// production code writes out again.
     pub(crate) const ALL: [Self; 13] = [
         Self::LU,
         Self::LM,
