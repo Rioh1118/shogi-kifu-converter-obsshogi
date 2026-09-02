@@ -285,21 +285,13 @@ pub fn parse_jkf_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseEr
 ///
 /// This function returns [`ParseError`] if it fails to parse the string.
 pub fn parse_jkf_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
-    let mut jkf = serde_json::from_str::<JsonKifuFormat>(s)?;
+    let mut jkf = serde_json::from_str::<JsonKifuFormat>(without_a_byte_order_mark(s))?;
     jkf.normalize()?;
     Ok(jkf)
 }
 
 #[cfg(test)]
 mod tests {
-    // `parse_jkf_str` is the entry the consumer's save path feeds (R-REQ-002)
-    // and it had no test at all — GAP-013 was a fault only JKF-in could reach.
-    //
-    // A move with no origin is a drop (R-JKF-003), not a move whose origin has
-    // to be worked out. The position here is built so the difference shows: a
-    // bishop on the board reaches the square the bishop in hand is dropped on,
-    // so looking the origin up succeeds and quietly moves the wrong piece —
-    // taking it off the board and leaving the hand as it was.
     // R-KIF-001 / GAP-006: a BOM is not part of the record. Left on, it joins
     // the first line — the handicap goes missing and the record reads as 平手
     // with every side reversed (R-HC-001) — while everything below it reads, so
@@ -324,6 +316,14 @@ mod tests {
         );
     }
 
+    // `parse_jkf_str` is the entry the consumer's save path feeds (R-REQ-002)
+    // and it had no test at all — GAP-013 was a fault only JKF-in could reach.
+    //
+    // A move with no origin is a drop (R-JKF-003), not a move whose origin has
+    // to be worked out. The position here is built so the difference shows: a
+    // bishop on the board reaches the square the bishop in hand is dropped on,
+    // so looking the origin up succeeds and quietly moves the wrong piece —
+    // taking it off the board and leaving the hand as it was.
     #[test]
     fn jkf_keeps_a_drop_a_drop() {
         let mut board = [[Piece::empty(); 9]; 9];

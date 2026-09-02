@@ -282,12 +282,12 @@ fn branch_header(input: &str) -> IResult<&str, (usize, &str), VerboseError<&str>
 /// records `中断` in the middle and keeps going, and stopping at the first
 /// `まで…` line drops every move after it without saying so.
 ///
-/// `where_a_board_could_be` is what the run starts with, and it holds only until
-/// the run reads a move: a board diagram can still be arriving above
-/// the first move of the main line, and the skip below must leave its `|` and
-/// `+` lines alone (GAP-007). Deciding that inside the run rather than at the
-/// call would make this the second answer to "have we passed the opening block"
-/// — and the one the callers cannot see.
+/// `where_a_board_could_be` is what the run starts with, and the run narrows its
+/// own copy as it reads (`WhereABoardCouldBe::after`): a board diagram can still
+/// be arriving above the first move of the main line, and the skip below must
+/// leave its `|` and `+` lines alone (GAP-007). What counts as "a move was read"
+/// is that method's to answer, not this function's — the caller asks it again of
+/// the run this returns.
 fn move_run(
     start: Color,
     first_ply: usize,
@@ -330,9 +330,7 @@ fn move_run(
             }));
             let (rest, v) = many0(single_move)(rest)?;
             let read_moves = !v.is_empty();
-            if read_moves {
-                where_a_board_could_be = where_a_board_could_be.after_a_move();
-            }
+            where_a_board_could_be = where_a_board_could_be.after(&v);
             out.extend(v);
             // The ply an outcome line names counts moves and outcomes, not
             // nodes: a comment-only node writes no line for anyone to number.
@@ -487,11 +485,7 @@ fn moves(
     let (mut input, main) = move_run(start, 1, where_a_board_could_be)(input)?;
     // What the main line read decides it for the skips below: a record whose
     // first move is still to come may have its diagram anywhere above it.
-    let where_a_board_could_be = if main.iter().any(|mf| mf.move_.is_some()) {
-        where_a_board_could_be.after_a_move()
-    } else {
-        where_a_board_could_be
-    };
+    let where_a_board_could_be = where_a_board_could_be.after(&main);
     let mut out = vec![MoveFormat {
         comments,
         ..Default::default()

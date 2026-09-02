@@ -17,10 +17,9 @@ use crate::jkf::{Color, Initial, Kind, Piece, Preset};
 /// The even game, which every handicap is this minus a set of pieces
 /// (R-HC-003).
 ///
-/// Here rather than beside the normalizer that compares against it: it is the
-/// first row of this table (`PresetHirate`, nothing removed), and having the
-/// table reach up into the normalizer for it made the two depend on each other
-/// both ways.
+/// Here because it is the first row of this table — `PresetHirate`, nothing
+/// removed (R-HC-003). Every other entry is this minus a set of pieces, so the
+/// two belong in one place.
 pub(crate) const HIRATE_BOARD: [[Piece; 9]; 9] = {
     #[rustfmt::skip]
     const EMP: Piece = Piece { color: None, kind: None };

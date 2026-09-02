@@ -378,10 +378,10 @@ const KIF_SPECIAL_WORDS: [&str; 12] = [
 
 /// Reads an outcome word, returning the word itself.
 ///
-/// The word, not a [`MoveSpecial`], because which player 反則勝ち accuses is not
-/// on the line — it is whose turn the ply is (R-KIF-007), which the caller knows
-/// and this does not. A reader that had to supply a colour here would be
-/// choosing one it does not have.
+/// The word, not a [`MoveSpecial`], because 反則勝ち does not name its loser:
+/// the line says only that the move before it was the foul (R-KIF-007), and
+/// whose move that was is the caller's to know. A reader that had to supply a
+/// colour here would be choosing one it does not have.
 fn outcome_word(input: &str) -> IResult<&str, &'static str, VerboseError<&str>> {
     for word in KIF_SPECIAL_WORDS {
         if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>(word)(input) {
@@ -471,8 +471,11 @@ fn move_origin(input: &str) -> IResult<&str, Option<PlaceFormat>, VerboseError<&
 
 /// What a `<手数> <指し手>` line says, without the parts that are not on it.
 ///
-/// The colour is not among them: 反則勝ち accuses the player whose turn it is
-/// (R-KIF-007), and it is the ply that says whose turn that is.
+/// The colour is not among them. 反則勝ち says the move *before* it was the
+/// foul, so the line names its loser only through whose turn it is (R-KIF-007),
+/// and that is the caller's to know: `kif::move_line` carries it forward move by
+/// move (`known_side`) and falls back to the ply only at the head of a run
+/// (`side_mark`).
 pub(super) enum NumberedBody {
     /// One of the outcome words.
     Outcome(&'static str),
@@ -530,9 +533,8 @@ pub(super) fn numbered_line(
 }
 
 fn move_body(input: &str) -> IResult<&str, NumberedBody, VerboseError<&str>> {
-    // R-KIF-005 allows the mark in front of the move. Read and dropped: whose
-    // move it is comes from the ply, which stays right when an outcome line
-    // takes a ply of its own.
+    // R-KIF-005 allows the mark in front of the move. Read and dropped — see
+    // [`side_mark`] for where the side comes from instead.
     let (input, _) = opt(side_mark)(input)?;
     let (input, to) = move_to(input)?;
     let (input, piece) = piece_kind(input)?;
@@ -744,7 +746,7 @@ fn comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
 /// the position gone (GAP-007, D4).
 ///
 /// There is no way to make one out of a `bool`: [`parse_without_moves`] hands
-/// out the only ones there are, and [`Self::after_a_move`] is the only thing
+/// out the only ones there are, and [`Self::after`] is the only thing
 /// that changes one. A reader that forgets to pass it on keeps guarding, which
 /// costs a refused `|先手|後手|` (D1's side of the trade) rather than a
 /// position that vanishes.
@@ -752,11 +754,23 @@ fn comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
 pub(super) struct WhereABoardCouldBe(bool);
 
 impl WhereABoardCouldBe {
-    /// Past the first move of the record. A `|先手|後手|` or `+123` here cannot
-    /// be a board — the board is above the moves — and the format has always
-    /// allowed such a line.
-    pub(super) fn after_a_move(self) -> Self {
-        Self(false)
+    /// What is left of this after reading `run`.
+    ///
+    /// A run that read a move puts the opening block behind it: a `|先手|後手|`
+    /// or `+123` below cannot be a board — the board is above the moves — and
+    /// the format has always allowed such a line. A run of comments or a `まで…`
+    /// line does not, so the diagram of a record that carries the last game's
+    /// outcome at its head is still a diagram.
+    ///
+    /// Takes the run rather than a `bool` so that "what counts as a move" is
+    /// answered here and not once per caller — four callers with four answers is
+    /// the shape this type exists to remove.
+    pub(super) fn after(self, run: &[MoveFormat]) -> Self {
+        if run.iter().any(|mf| mf.move_.is_some()) {
+            Self(false)
+        } else {
+            self
+        }
     }
 
     fn a_frame_line_is_worth_keeping(self) -> bool {
@@ -1358,7 +1372,7 @@ fn side_to_move_line(
     }
 }
 
-/// Reads the header block, the board and the side-to-move line.
+/// Reads the header block: everything above the moves, including the board.
 ///
 /// `shapes` is how the reader says what its own lines look like; see
 /// [`LineShapes`]. The block itself is the same in KIF and KI2, and the shapes
@@ -1366,11 +1380,14 @@ fn side_to_move_line(
 ///
 /// Returns the comments that stood among those lines as well — see
 /// [`comments_on_the_starting_position`].
-/// Reads the header block: everything above the moves, including the board.
 ///
 /// The third of what it hands back is [`WhereABoardCouldBe`] — this is the one
 /// place that knows whether the record's diagram was read, and the skips below
 /// have no way of finding out for themselves (GAP-007).
+///
+/// Fails where a hand was stated and no board came: the pieces have nowhere to
+/// sit, and a record that keeps neither is not the record that was written
+/// (D1, D4).
 pub(super) fn parse_without_moves(
     shapes: LineShapes,
     input: &str,
@@ -1391,8 +1408,8 @@ pub(super) fn parse_without_moves(
     //
     // Only where something is actually lost. `先手の持駒：なし` above a
     // `手合割` line states nothing the preset does not already say, and refusing
-    // it would drop records that `main` and tsshogi both read (R-KIF-014 warns
-    // about exactly that disagreement).
+    // it would drop records tsshogi opens — R-KIF-014 warns about exactly that
+    // disagreement, since the board block is a convention and not in the spec.
     if info.hands != [Hand::default(); 2] && !has_a_board {
         return Err(broken_line(
             info.hand_line.unwrap_or(start),
@@ -2240,8 +2257,9 @@ mod tests {
             .data
             .expect("a board");
         assert_eq!(Color::White, side.color);
-        // Including a hand line with nothing after the colon, which R10-04
-        // decided reads as an empty hand rather than as an error. A hand needs a
+        // Including a hand line with nothing after the colon. R-KIF-014 asks a
+        // *writer* to spell an empty hand `なし`; a reader that refuses the
+        // blank one refuses the file over a line that says nothing. A hand needs a
         // board to sit on, so the check is that the line is read — the record
         // itself is refused for having no board (D1).
         let hand_without_a_board = parse_kif_str("後手の持駒：飛\n先手の持駒：")

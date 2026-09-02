@@ -119,8 +119,7 @@ fn skip_interruptions(mut input: &str) -> &str {
 
 // The move parsers below take `(start, input)` and are applied directly rather
 // than handing back a parser value, because each needs `start` — whose turn ply
-// 1 is — and none of them is used inside a combinator. `move_special` is the
-// exception: `alt` needs a parser value, so it returns one.
+// 1 is — and none of them is used inside a combinator.
 //
 /// Reads one `<ply> <move>` line.
 ///
@@ -265,10 +264,7 @@ fn moves_with_index(
             Err(err) => return Err(err),
         }
     }
-    // This run has read at least one move — `move_with_comments` above returns
-    // on failure — so the opening block, and any board that was in it, is
-    // behind us.
-    let where_a_board_could_be = where_a_board_could_be.after_a_move();
+    let where_a_board_could_be = where_a_board_could_be.after(&out);
     let (input, _) =
         opt(|input| skippable_line_between_runs(where_a_board_could_be, input))(input)?;
     Ok((input, (first_ply, out)))
@@ -369,14 +365,7 @@ fn entire_moves(
     let (input, _) =
         many0(|input| skippable_line_above_the_main_line(where_a_board_could_be, input))(input)?;
     let (mut input, main) = main_moves(start, where_a_board_could_be, input)?;
-    // Only a move puts the opening block behind us. An outcome line or a
-    // comment can sit above a board — a record that carries the last game's
-    // `まで…` line still has its diagram below it (GAP-007).
-    let where_a_board_could_be = if main.iter().any(|mf| mf.move_.is_some()) {
-        where_a_board_could_be.after_a_move()
-    } else {
-        where_a_board_could_be
-    };
+    let where_a_board_could_be = where_a_board_could_be.after(&main);
     let mut forks = Vec::new();
     // One `変化：N手` header and the run under it per turn. Reading them one at a
     // time is what makes "this header has no moves under it" answerable: a skip
@@ -612,9 +601,10 @@ mod tests {
     }
 
     // Every line `move_line` can take has to be one `opens_a_numbered_line`
-    // counts: a line it does not count goes to the skip, and the move — or the
+    // counts. A line it does not count goes to the skip, and the move — or the
     // outcome of the game — is gone from a record that still comes back `Ok`
-    // (D1, D21).
+    // (D1, D21). This is the invariant that keeps the two in step; nothing in
+    // the types does.
     //
     // The other direction is deliberately loose in one place only. `   2 パス`
     // is counted and cannot be read, which is how it reaches the leftover-input
