@@ -477,10 +477,6 @@ fn move_origin(input: &str) -> IResult<&str, Option<PlaceFormat>, VerboseError<&
     let broken = || broken_line(input, "this move's origin square cannot be read");
     let (rest, digits) = digit1::<_, VerboseError<&str>>(rest).map_err(|_| broken())?;
     let (rest, _) = tag::<_, _, VerboseError<&str>>(")")(rest).map_err(|_| broken())?;
-    // R-KIF-005: an origin is `(11)` through `(99)`. `(00)` in particular is
-    // CSA's spelling for a drop and this crate's marker for an origin the
-    // notation does not state — reading it as either would turn "a square we
-    // could not read" into a different move.
     let square: u16 = digits.parse().map_err(|_| broken())?;
     let (x, y) = ((square / 10) as u8, (square % 10) as u8);
     if digits.len() != 2 || !(1..=9).contains(&x) || !(1..=9).contains(&y) {

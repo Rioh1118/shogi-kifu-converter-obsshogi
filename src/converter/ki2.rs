@@ -357,9 +357,6 @@ mod tests {
             .join(" ")
     }
 
-    // The disambiguating suffix comes from the position, not from `relative`,
-    // so a value that never went through `populate_relative` still produces KI2
-    // that can be read back. Two black bishops on 7a and 3a both reach 5c.
     // A drop is a drop however far the writer got with the board. Position
     // tracking stops at the first move that cannot be played — an illegal move
     // is a legitimate record (R-RULE-002) — and past that point the only thing
@@ -390,6 +387,9 @@ mod tests {
         );
     }
 
+    // The disambiguating suffix comes from the position, not from `relative`, so
+    // a value that never went through `populate_relative` still produces KI2
+    // that can be read back. Two black bishops on 7a and 3a both reach 5c.
     #[test]
     fn disambiguation_does_not_depend_on_relative_field() {
         let src = "\

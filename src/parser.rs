@@ -146,8 +146,8 @@ fn decode_kifu(buf: &[u8], first: &'static Encoding) -> Result<String, ParseErro
 /// finds out (GAP-005: 79% of `bug_big.kif` went missing this way).
 ///
 /// It also decides an encoding: the consumer tries encodings in turn and takes
-/// the first `Ok`, so a mojibake decode that yields an empty record used to win
-/// over the decode that would have read the game.
+/// the first `Ok`, so a mojibake decode that yields an empty record wins over
+/// the decode that would have read the game unless this says no.
 fn stopped_at(whole: &str, rest: &str) -> String {
     convert_error(
         whole,
@@ -587,7 +587,8 @@ mod tests {
 
     // Leftover input is not enough on its own. A line the move list has no
     // shape for is skipped whole, so an input made only of such lines leaves
-    // nothing behind to report and used to come back as an empty record.
+    // nothing behind to report — and without this check it is an empty record
+    // rather than an error.
     //
     // The consumer decides a text encoding on this answer: obs-shogi tries
     // encodings in turn and takes the first `Ok`. `bug_big.kif` is meant to be
@@ -781,8 +782,8 @@ mod tests {
 
     // R-REQ-003: the extension names an encoding but does not guarantee one, so
     // every extension has to read both. All four combinations turn up — a `.kif`
-    // holding UTF-8 above all — and three of the four used to come back as
-    // `Decode Error`.
+    // holding UTF-8 above all. Deciding on the extension alone turns three of
+    // the four into `Decode Error`.
     //
     // The decision belongs at the decode, not at a failed parse. The full-width
     // forms a kifu is written in (`７`, `：`) sit at U+FF00 and up, whose UTF-8

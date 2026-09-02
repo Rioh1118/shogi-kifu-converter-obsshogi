@@ -1118,11 +1118,10 @@ mod tests {
     // on, not an alternative to a move that is not there (D3 rule 4). Here
     // 変化:5 is three plies past 変化:2, which holds one move.
     //
-    // This test used to fix the opposite: that 変化:5 is dropped. Dropping it
-    // returns `Ok` with the moves gone, which is the silent loss this reader is
-    // being taken apart to remove — and tsshogi appends. Indexing straight into
-    // the run is what panicked with `index out of bounds` before `checked_sub`,
-    // so neither the panic nor the silent drop is the answer.
+    // Dropping it returns `Ok` with the moves gone, which is the silent loss D1
+    // exists to remove — and tsshogi appends. Indexing straight into the run
+    // panics with `index out of bounds`, which is why the lookup is
+    // `checked_sub`: neither the panic nor the silent drop is the answer.
     #[test]
     fn a_branch_numbered_past_the_end_carries_the_run_on() {
         let input = &r#"
@@ -1262,9 +1261,10 @@ mod tests {
     // branch of a ply that is not there, and dropped — the record came back
     // with one move and `Ok` (GAP-008). tsshogi reads all three.
     //
-    // The blank line is the harder of the two: `not_move_line` used to start on
-    // the newline itself and take the line after it as its content, so the move
-    // following a blank line was eaten whole.
+    // The blank line is the harder of the two: a skip that starts on the newline
+    // itself takes the line after it as this line's content, so the move
+    // following a blank line goes with it (`not_move_line` declines line ends
+    // for that reason).
     #[test]
     fn a_blank_or_program_comment_line_does_not_end_the_move_list() {
         use crate::parser::parse_kif_str;

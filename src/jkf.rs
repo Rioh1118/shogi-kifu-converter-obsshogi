@@ -212,8 +212,13 @@ impl Relative {
         Self::H,
     ];
 
-    /// Where `self` sits in [`Self::ALL`]. Exhaustive, so a variant added to the
-    /// enum stops the build here.
+    /// Where `self` sits in [`Self::ALL`].
+    ///
+    /// Written out rather than `self as usize`, because [`Self::ALL`] is in
+    /// longest-spelling order and not declaration order. Exhaustive, so a
+    /// variant added to the enum stops the build here, and
+    /// `parser::ki2::tests::every_relative_word_reads_back_as_itself` checks the
+    /// two against each other.
     #[cfg(test)]
     pub(crate) const fn ordinal(self) -> usize {
         match self {
@@ -235,41 +240,28 @@ impl Relative {
 }
 
 impl MoveSpecial {
+    /// Where `self` sits in [`Self::ALL`].
+    ///
+    /// The enum is unit-only, so the discriminant is the position in the
+    /// declaration and [`Self::ALL`] is checked against it
+    /// (`every_outcome_is_in_the_list_of_every_outcome`).
+    #[cfg(test)]
+    pub(crate) const fn ordinal(self) -> usize {
+        self as usize
+    }
+
     /// Every outcome, so that a table over them can be checked for gaps.
     ///
     /// A `match` on this enum is exhaustive by construction; a hand-written list
     /// of the words is not, and the reader's `KIF_SPECIAL_WORDS` is one
     /// (`parser::kakinoki::tests::the_reader_looks_for_every_word_the_writer_writes`).
     ///
-    /// This list is hand-written too, so [`Self::ordinal`] anchors it: a variant
-    /// added to the enum and not to this list is a compile error there.
-    /// Where `self` sits in [`Self::ALL`].
-    ///
-    /// Exhaustive by construction, which is what makes `ALL` complete: the two
-    /// are checked against each other by
-    /// `every_outcome_is_in_the_list_of_every_outcome`.
-    #[cfg(test)]
-    pub(crate) const fn ordinal(self) -> usize {
-        match self {
-            Self::SpecialToryo => 0,
-            Self::SpecialChudan => 1,
-            Self::SpecialSennichite => 2,
-            Self::SpecialTimeUp => 3,
-            Self::SpecialIllegalMove => 4,
-            Self::SpecialIllegalActionBlack => 5,
-            Self::SpecialIllegalActionWhite => 6,
-            Self::SpecialJishogi => 7,
-            Self::SpecialKachi => 8,
-            Self::SpecialHikiwake => 9,
-            Self::SpecialMatta => 10,
-            Self::SpecialTsumi => 11,
-            Self::SpecialFuzumi => 12,
-            Self::SpecialError => 13,
-            Self::SpecialFusensho => 14,
-            Self::SpecialFusenpai => 15,
-        }
-    }
-
+    /// This list is hand-written too, and nothing in the language makes it
+    /// follow the enum: a variant appended at the end leaves it short and the
+    /// build passes. What holds it is that this vocabulary is not ours to
+    /// extend — 14 outcomes are JKF's and the other two are what KIF spells
+    /// (R-KIF-007, D7) — plus `every_outcome_is_in_the_list_of_every_outcome`,
+    /// which catches a variant inserted anywhere but the end.
     #[cfg(test)]
     pub(crate) const ALL: [Self; 16] = [
         Self::SpecialToryo,
