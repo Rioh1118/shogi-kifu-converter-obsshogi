@@ -1186,20 +1186,50 @@ fn board_row(input: &str) -> IResult<&str, Vec<Piece>, VerboseError<&str>> {
 }
 
 fn board(input: &str) -> IResult<&str, [[Piece; 9]; 9], VerboseError<&str>> {
-    let (mut rest, _) = tuple((
-        // The two columns in front of `９` line the file numbers up with the
-        // frame below them, so they are padding and not part of the word.
-        delimited(
-            padding,
-            tag("９ ８ ７ ６ ５ ４ ３ ２ １"),
-            pair(padding, line_ending),
-        ),
+    // The two columns in front of `９` line the file numbers up with the frame
+    // below them, so they are padding and not part of the word.
+    let numbers = delimited(
+        padding,
+        tag("９ ８ ７ ６ ５ ４ ３ ２ １"),
+        pair(padding, line_ending),
+    )(input);
+    let frame = |input| {
         delimited(
             padding,
             tag("+---------------------------+"),
             pair(padding, line_ending),
-        ),
-    ))(input)?;
+        )(input)
+    };
+    // Either line is enough to say a diagram starts here, so a record that has
+    // one of them and not the other is a broken diagram rather than prose. Both
+    // recoverable, the whole diagram unwinds and the message points at its first
+    // line — the one line known to be intact — while the reader looking for the
+    // fault is nine lines further down (D1).
+    let mut rest = match numbers {
+        Ok((rest, _)) => match frame(rest) {
+            Ok((rest, _)) => rest,
+            Err(_) => return Err(broken_line(rest, "the board has no frame under its files")),
+        },
+        Err(err) => {
+            // The line may be the file numbers, spelled wrong. What says so is
+            // what follows it: a frame and then a rank.
+            if let Some((_, below)) = input.split_once('\n') {
+                if frame(below).is_ok_and(|(rest, _)| board_row(rest).is_ok()) {
+                    return Err(broken_line(
+                        input,
+                        "the board's file numbers cannot be read",
+                    ));
+                }
+            }
+            let (rest, _) = frame(input)?;
+            match board_row(rest) {
+                Ok(_) => return Err(broken_line(input, "the board has no file numbers")),
+                // A `+---` line with no rank under it opens no diagram —
+                // `+7776FU` and the like are lines records have always carried.
+                Err(_) => return Err(err),
+            }
+        }
+    };
     // Past the file numbers and the frame under them this is a board diagram,
     // whatever the rest of it says, so a rank that cannot be read names itself.
     // A recoverable error here unwinds the whole diagram and the message comes
@@ -1442,6 +1472,35 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("at line 13"), "{message}");
+
+        // A diagram whose first two lines disagree: either one says a board
+        // starts here, so the other one missing is a fault in the board and not
+        // prose that happens to look like one.
+        let head_broken = |record: &str, what: &str| match crate::parser::parse_kif_str(record) {
+            Err(crate::error::ParseError::Kif(message)) => {
+                assert!(message.contains(what), "{message}");
+            }
+            other => panic!("{what}: {other:?}"),
+        };
+        head_broken(
+            &format!(
+                "後手の持駒：なし\n  ９ ８ ７ ６ ５ ４ ３ ２\n{FRAME}\n{}\n{FRAME}\n",
+                ROWS.join("\n")
+            ),
+            "the board's file numbers cannot be read",
+        );
+        head_broken(
+            &format!(
+                "後手の持駒：なし\n  ９ ８ ７ ６ ５ ４ ３ ２ １\n{}\n{FRAME}\n",
+                ROWS.join("\n")
+            ),
+            "the board has no frame under its files",
+        );
+        // A `+` line that opens no diagram is still prose.
+        assert!(crate::parser::parse_kif_str(
+            "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n+7776FU\n"
+        )
+        .is_ok());
 
         // A file that stops inside the diagram has no line to name, so it says
         // that instead of pointing at the line after the last one.

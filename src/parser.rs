@@ -57,7 +57,7 @@ pub fn parse_csa_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseEr
 /// that panics takes the application with it. `research/90-gaps.md` GAP-012
 /// holds what it would take to fix rather than catch.
 pub fn parse_csa_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
-    let mut jkf = JsonKifuFormat::try_from(csa::parse_csa(s)?)?;
+    let mut jkf = JsonKifuFormat::try_from(csa::parse_csa(without_a_byte_order_mark(s))?)?;
     jkf.normalize()?;
     Ok(jkf)
 }
@@ -182,6 +182,18 @@ fn recognised_nothing(jkf: &JsonKifuFormat, read_header: bool) -> bool {
             .all(|mf| mf.move_.is_none() && mf.special.is_none() && mf.comments.is_none())
 }
 
+/// Drops a byte-order mark from the head of a record.
+///
+/// A BOM is not part of the text, and every reader below takes what it is given
+/// literally: left on, it goes into the first line — `\u{feff}手合割：香落ち` is
+/// filed under a key nobody wrote, the handicap is lost, and the record reads as
+/// 平手 with every side reversed (R-HC-001 / R-RULE-006). The rest of the file
+/// reads, so nothing downstream can tell that the first line went
+/// (`research/90-gaps.md` GAP-006). Shogidokoro writes one.
+fn without_a_byte_order_mark(s: &str) -> &str {
+    s.strip_prefix('\u{feff}').unwrap_or(s)
+}
+
 /// Parses a KIF formatted string to [`jkf::JsonKifuFormat`](crate::jkf::JsonKifuFormat)
 ///
 /// # Errors
@@ -192,6 +204,7 @@ fn recognised_nothing(jkf: &JsonKifuFormat, read_header: bool) -> bool {
 /// Returns [`ParseError::Normalize`] when a move cannot be played from the
 /// position before it.
 pub fn parse_kif_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
+    let s = without_a_byte_order_mark(s);
     match kif::parse(s).finish() {
         Ok((rest, (mut jkf, read_header))) => {
             if !rest.trim().is_empty() {
@@ -238,6 +251,7 @@ pub fn parse_ki2_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseEr
 /// [`ParseError::Normalize`] when a move cannot be played from the position
 /// before it.
 pub fn parse_ki2_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
+    let s = without_a_byte_order_mark(s);
     match ki2::parse(s).finish() {
         Ok((rest, (mut jkf, read_header))) => {
             if !rest.trim().is_empty() {
@@ -286,6 +300,30 @@ mod tests {
     // bishop on the board reaches the square the bishop in hand is dropped on,
     // so looking the origin up succeeds and quietly moves the wrong piece —
     // taking it off the board and leaving the hand as it was.
+    // R-KIF-001 / GAP-006: a BOM is not part of the record. Left on, it joins
+    // the first line — the handicap goes missing and the record reads as 平手
+    // with every side reversed (R-HC-001) — while everything below it reads, so
+    // nothing downstream can tell. Shogidokoro writes one.
+    #[test]
+    fn a_byte_order_mark_is_not_part_of_the_record() {
+        const KIF: &str =
+            "手合割：香落ち\n手数----指手---------消費時間--\n   1 ３四歩(33)\n   2 ７六歩(77)\n";
+        const KI2: &str = "手合割：香落ち\n△３四歩 ▲７六歩\n";
+        const CSA: &str = "V2.2\nPI\n+\n+7776FU\n";
+        assert_eq!(
+            parse_kif_str(KIF).expect("reads"),
+            parse_kif_str(&format!("\u{feff}{KIF}")).expect("reads with a BOM")
+        );
+        assert_eq!(
+            parse_ki2_str(KI2).expect("reads"),
+            parse_ki2_str(&format!("\u{feff}{KI2}")).expect("reads with a BOM")
+        );
+        assert_eq!(
+            parse_csa_str(CSA).expect("reads"),
+            parse_csa_str(&format!("\u{feff}{CSA}")).expect("reads with a BOM")
+        );
+    }
+
     #[test]
     fn jkf_keeps_a_drop_a_drop() {
         let mut board = [[Piece::empty(); 9]; 9];
