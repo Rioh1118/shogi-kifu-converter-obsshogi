@@ -3,7 +3,7 @@ use crate::notation::is_padding;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_while, take_while1};
 use nom::character::complete::{char, digit1, line_ending, not_line_ending, one_of, satisfy};
-use nom::combinator::{eof, map, map_res, opt, peek, recognize, value};
+use nom::combinator::{eof, map, map_res, opt, peek, value};
 use nom::error::{ErrorKind, ParseError, VerboseError};
 use nom::multi::{count, many0, many1};
 use nom::sequence::{delimited, pair, preceded, separated_pair, terminated, tuple};
@@ -364,29 +364,22 @@ const KIF_SPECIAL_WORDS: [&str; 12] = [
     "不詰",
 ];
 
-/// Parses an outcome word. `side_to_move` decides the direction of 反則勝ち.
-pub(super) fn move_special(
-    side_to_move: Color,
-) -> impl FnMut(&str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
-    move |input| {
-        for word in KIF_SPECIAL_WORDS {
-            if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>(word)(input) {
-                if let Some(special) = MoveSpecial::from_kif_word(word, side_to_move) {
-                    return Ok((
-                        rest,
-                        MoveFormat {
-                            special: Some(special),
-                            ..Default::default()
-                        },
-                    ));
-                }
-            }
+/// Reads an outcome word, returning the word itself.
+///
+/// The word, not a [`MoveSpecial`], because which player 反則勝ち accuses is not
+/// on the line — it is whose turn the ply is (R-KIF-007), which the caller knows
+/// and this does not. A reader that had to supply a colour here would be
+/// choosing one it does not have.
+fn outcome_word(input: &str) -> IResult<&str, &'static str, VerboseError<&str>> {
+    for word in KIF_SPECIAL_WORDS {
+        if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>(word)(input) {
+            return Ok((rest, word));
         }
-        Err(nom::Err::Error(VerboseError::from_error_kind(
-            input,
-            nom::error::ErrorKind::Alt,
-        )))
     }
+    Err(nom::Err::Error(VerboseError::from_error_kind(
+        input,
+        nom::error::ErrorKind::Alt,
+    )))
 }
 
 fn move_time_format(input: &str) -> IResult<&str, TimeFormat, VerboseError<&str>> {
@@ -431,58 +424,114 @@ pub(super) fn move_time(input: &str) -> IResult<&str, Time, VerboseError<&str>> 
     )(input)
 }
 
-/// The half of [`opens_a_numbered_line`] that answers when nothing separates
-/// the number from what follows it. A writer that aligned its columns leaves
-/// padding there and the question does not reach here; without it, `35手目まで`
-/// and `2８四歩(83)` are the same characters until somebody tries to read them.
+/// Where a move came from: `打` for a drop, or `(77)`.
 ///
-/// So this asks whether `kif::move_line` would find a move: the destination, the
-/// piece, and the *shape* of an origin. `move_from` itself is not used —
-/// it raises a `Failure` for `(00)`, which `.is_ok()` would fold into "not a
-/// move line" and hand `1７六歩(00)` to the skip. The shape keeps such a line
-/// here, where the leftover-input check reports it (D1).
-///
-/// The origin is what makes this the whole shape rather than half of it.
-/// Without it `2同銀と取れば` counts as a move line and nothing can consume it:
-/// the record is refused over a note (D17).
-///
-/// The outcome words are in it because a move line can hold one instead of a
-/// move (`   5 投了`, R-KIF-007). Which side 反則勝ち accuses does not change
-/// whether the line is one, so either colour will do to ask.
-fn a_move_follows_the_number(after_digits: &str) -> bool {
+/// R-KIF-005: an origin is `(11)` through `(99)`. `(00)` in particular is CSA's
+/// spelling for a drop and this crate's marker for an origin the notation does
+/// not state — reading it as either would turn "a square we could not read" into
+/// a different move, so it is a `Failure`: the line *is* a move line, and it is
+/// broken (D1).
+fn move_origin(input: &str) -> IResult<&str, Option<PlaceFormat>, VerboseError<&str>> {
     alt((
-        // The whole of what is left, for an outcome: a move line that holds one
-        // holds nothing else (`   5 投了`, R-KIF-007), so `3投了もあった` is a
-        // note about an outcome and not a line that names one.
-        recognize(terminated(
-            move_special(Color::Black),
-            tuple((padding, opt(move_time), padding, nom::combinator::eof)),
-        )),
-        recognize(tuple((
-            opt(side_mark),
-            move_to,
-            piece_kind,
-            // What tells a move from a note that quotes one. `2同銀と取れば`
-            // stops at the piece and is prose; a move says what happened to it
-            // — where it came from, that it was dropped, or that it promoted.
-            //
-            // The *shape* of an origin, not `move_from` itself: that one raises
-            // a `Failure` for `(00)`, and `.is_ok()` would fold it into "not a
-            // move line" — sending `1７六歩(00)` to the skip, which drops it
-            // (D1, `an_origin_off_the_board_is_an_error_not_a_drop`).
-            alt((
-                tag("打"),
-                recognize(delimited(tag("("), digit1, tag(")"))),
-                // R-KIF-006 says a KIF writes neither, but a reader that counts
-                // only what a writer should produce drops what other software
-                // wrote: `3２二角不成(88)` is a move line spelled wrong, and
-                // skipping it as prose loses the move without a word (D1).
-                tag("不成"),
-                tag("成"),
-            )),
-        ))),
-    ))(after_digits)
-    .is_ok()
+        // A drop has no origin, and JKF says so by leaving `from` out
+        // (R-JKF-003). KIF marks it with 打 on every drop (R-KIF-006).
+        value(None, tag("打")),
+        move |input| {
+            let (rest, d): (&str, u8) =
+                delimited(tag("("), map_res(digit1, str::parse), tag(")"))(input)?;
+            let (x, y) = (d / 10, d % 10);
+            if !(1..=9).contains(&x) || !(1..=9).contains(&y) {
+                return Err(nom::Err::Failure(VerboseError::from_error_kind(
+                    input,
+                    nom::error::ErrorKind::Verify,
+                )));
+            }
+            Ok((rest, Some(PlaceFormat { x, y })))
+        },
+    ))(input)
+}
+
+/// What a `<手数> <指し手>` line says, without the parts that are not on it.
+///
+/// The colour is not among them: 反則勝ち accuses the player whose turn it is
+/// (R-KIF-007), and it is the ply that says whose turn that is.
+pub(super) enum NumberedBody {
+    /// One of the outcome words.
+    Outcome(&'static str),
+    /// A move.
+    Move {
+        /// `None` for 同 — the square is the one the move before went to.
+        to: Option<PlaceFormat>,
+        /// The piece that moved.
+        piece: Kind,
+        /// What the record said about promotion, `None` where it said nothing.
+        promote: Option<bool>,
+        /// `None` for a drop (R-JKF-003).
+        from: Option<PlaceFormat>,
+    },
+}
+
+/// Reads a `<手数> <指し手> [<消費時間>]` line up to the point where the line-end
+/// rule (`ends_here`) takes over.
+///
+/// **The one answer to "what does this line say".** [`opens_a_numbered_line`] is
+/// this function's verdict and holds no spelling of its own, and
+/// `kif::move_line` builds its [`MoveFormat`] out of what this returns rather
+/// than reading the text a second time. A predicate written separately from the
+/// reader drifts from it, and the drift is silent in one direction: a line the
+/// reader would have taken but the predicate does not count is skipped as prose,
+/// and the move — or the outcome of the game — is gone from a record that still
+/// comes back `Ok` (D1).
+///
+/// The three answers are the contract:
+///
+/// - `Ok` — read.
+/// - `Err(Failure)` — this *is* one of these lines and it is broken. The caller
+///   reports it, and the predicate counts it so that no skip takes it.
+/// - `Err(Error)` — not one of these lines at all. Prose.
+///
+/// It must not call `ends_here`: that asks `LineShapes::opens_a_line`, which
+/// asks [`opens_a_numbered_line`], which asks this.
+pub(super) fn numbered_line(
+    input: &str,
+) -> IResult<&str, (usize, NumberedBody, Option<Time>), VerboseError<&str>> {
+    let (input, ply) = preceded(padding, map_res(digit1, str::parse::<usize>))(input)?;
+    let (input, body) = preceded(
+        padding,
+        alt((map(outcome_word, NumberedBody::Outcome), move_body)),
+    )(input)?;
+    let (input, time) = preceded(padding, opt(move_time))(input)?;
+    Ok((input, (ply, body, time)))
+}
+
+fn move_body(input: &str) -> IResult<&str, NumberedBody, VerboseError<&str>> {
+    // R-KIF-005 allows the mark in front of the move. Read and dropped: whose
+    // move it is comes from the ply, which stays right when an outcome line
+    // takes a ply of its own.
+    let (input, _) = opt(side_mark)(input)?;
+    let (input, to) = move_to(input)?;
+    let (input, piece) = piece_kind(input)?;
+    // R-KIF-006 asks a *writer* not to spell 不成. Other software spells it, and
+    // a reader that counts only what a correct writer produces hands the line to
+    // the skip, which drops the move (R-REQ-004).
+    let (input, promote) = opt(alt((value(false, tag("不成")), value(true, tag("成")))))(input)?;
+    // Past a promotion word the line has said it is a move, so a missing origin
+    // is a broken move line and not prose. A note that quotes a move —
+    // `2同銀と取れば` — stops at the piece and never reaches here.
+    let (input, from) = match move_origin(input) {
+        Ok(found) => found,
+        Err(nom::Err::Error(err)) if promote.is_some() => return Err(nom::Err::Failure(err)),
+        Err(err) => return Err(err),
+    };
+    Ok((
+        input,
+        NumberedBody::Move {
+            to,
+            piece,
+            promote,
+            from,
+        },
+    ))
 }
 
 /// Whether `head` is the beginning of a `<手数> <指し手>` line
@@ -517,14 +566,22 @@ pub(super) fn opens_a_numbered_line(head: &str) -> bool {
         .split(crate::notation::LINE_ENDS)
         .next()
         .unwrap_or(head);
-    let after_digits = line.trim_start_matches(|c: char| c.is_ascii_digit());
-    if after_digits.len() == line.len() {
+    let past_the_indentation = line.trim_start_matches(is_padding);
+    let after_digits = past_the_indentation.trim_start_matches(|c: char| c.is_ascii_digit());
+    if after_digits.len() == past_the_indentation.len() {
         return false;
     }
+    // A number and then padding is the shape of a move line whatever follows —
+    // including a word this reader has no meaning for (`   2 パス`), which the
+    // leftover-input check then names rather than the skip taking it (D1, D8).
+    // The cost is that a note written in the same shape — `　1 序盤の課題` — is
+    // refused too; the two cannot be told apart by what they say (GAP-020).
     if after_digits.starts_with(is_padding) {
         return !after_digits.trim_start_matches(is_padding).is_empty();
     }
-    a_move_follows_the_number(after_digits)
+    // Otherwise ask the reader. Anything except "not one of my lines" counts, so
+    // a move line that is broken stays here and is reported rather than skipped.
+    !matches!(numbered_line(line), Err(nom::Err::Error(_)))
 }
 
 /// Whether `tail` — what is left of a line the reader has finished with —
@@ -1899,9 +1956,6 @@ mod tests {
             "2同銀と取れば",
             "1同歩",
             "2２六歩が本筋",
-            // An outcome word owns its line, so a note *about* an outcome is
-            // not one (R-KIF-007).
-            "3投了もあった",
         ] {
             assert!(
                 parse_kif_str(&format!("{KIF}{prose}\n")).is_ok(),
@@ -2270,8 +2324,14 @@ mod tests {
                 "   1 投了 ( 0:03/00:00:03)",
                 Some(MoveSpecial::SpecialToryo),
             ),
-            // An outcome word owns its line, so a note *about* one is a note.
-            ("1投了もあった", None),
+            // What may follow the word is the line-end rule's answer and
+            // nobody else's (D17): `ends_here` takes a note the same way it
+            // takes one after a move. A second answer here is what made
+            // `1投了 ( 0:03)` and `1投了+` vanish while `   1 投了 …` read.
+            ("1投了もあった", Some(MoveSpecial::SpecialToryo)),
+            ("1投了+", Some(MoveSpecial::SpecialToryo)),
+            ("1投了 ( 0:03)", Some(MoveSpecial::SpecialToryo)),
+            ("1中断 （封じ手）", Some(MoveSpecial::SpecialChudan)),
         ] {
             let jkf = parse_kif_str(&format!("{HEAD}{line}\n"))
                 .unwrap_or_else(|e| panic!("{line:?}: {e}"));
@@ -2312,9 +2372,18 @@ mod tests {
         const KIF: &str =
             "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n   2 ８四歩(83)\n";
         const KI2: &str = "手合割：平手\n▲７六歩 △８四歩\n";
-        // Unaligned and unreadable: reported in both formats, as it is when the
-        // writer did align it.
-        for line in ["3２二角不成(88)", "3２二角成(８８)", "3２二角不成"] {
+        // R-KIF-006 tells a *writer* not to spell 不成. The spelling is
+        // unambiguous, so refusing to read it loses a record over a word this
+        // reader understands (R-REQ-004 / D12).
+        let read = parse_kif_str(&format!("{KIF}3２二角不成(88)\n")).expect("不成 reads");
+        assert_eq!(
+            Some(false),
+            read.moves[3].move_.as_ref().and_then(|mv| mv.promote),
+            "不成 says the move did not promote"
+        );
+        // A move whose origin cannot be read is reported in both formats, as it
+        // is when the writer did align it.
+        for line in ["3２二角成(８８)", "3２二角不成", "3２二角成"] {
             assert!(
                 parse_kif_str(&format!("{KIF}{line}\n")).is_err(),
                 "{line:?}"

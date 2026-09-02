@@ -1,43 +1,17 @@
 use super::kakinoki::{
     an_empty_block_here_is_worth_reporting, blank_line, branch_header_ply, broken_line,
-    comments_on_the_starting_position, ends_here, move_comment_line, move_special, move_time,
-    move_to, not_move_line, opens_a_branch_header, opens_a_numbered_line, opens_a_shared_line,
-    padding, parse_without_moves, piece_kind, side_mark, LineShapes, WhereABoardCouldBe,
+    comments_on_the_starting_position, ends_here, move_comment_line, not_move_line, numbered_line,
+    opens_a_branch_header, opens_a_numbered_line, opens_a_shared_line, parse_without_moves,
+    LineShapes, NumberedBody, WhereABoardCouldBe,
 };
 use crate::jkf::*;
 use crate::notation::is_padding;
 use nom::branch::alt;
-use nom::bytes::complete::tag;
-use nom::character::complete::digit1;
-use nom::combinator::{map, map_res, opt, value};
+use nom::combinator::opt;
 use nom::error::{ParseError, VerboseError};
 use nom::multi::{many0, many1};
-use nom::sequence::{delimited, preceded, tuple};
-use nom::IResult;
 
-fn move_from(input: &str) -> IResult<&str, Option<PlaceFormat>, VerboseError<&str>> {
-    alt((
-        // A drop has no origin, and JKF says so by leaving `from` out
-        // (R-JKF-003). KIF marks it with 打 on every drop (R-KIF-006).
-        value(None, tag("打")),
-        move |input| {
-            let (rest, d): (&str, u8) =
-                delimited(tag("("), map_res(digit1, str::parse), tag(")"))(input)?;
-            let (x, y) = (d / 10, d % 10);
-            // R-KIF-005: an origin is `(11)` through `(99)`. `(00)` in
-            // particular is CSA's spelling for a drop and this crate's marker
-            // for an origin the notation does not state — reading it as either
-            // would turn "a square we could not read" into a different move.
-            if !(1..=9).contains(&x) || !(1..=9).contains(&y) {
-                return Err(nom::Err::Failure(VerboseError::from_error_kind(
-                    input,
-                    nom::error::ErrorKind::Verify,
-                )));
-            }
-            Ok((rest, Some(PlaceFormat { x, y })))
-        },
-    ))(input)
-}
+use nom::IResult;
 
 /// What a KIF line looks like.
 ///
@@ -143,47 +117,6 @@ fn skip_interruptions(mut input: &str) -> &str {
     }
 }
 
-fn move_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
-    map(
-        tuple((
-            // R-KIF-005 allows the mark and this reader ignores it: the side
-            // comes from the ply (R-KIF-007, `side_to_move_at_ply`), which is
-            // the only one of the two that stays right when an outcome line
-            // takes a ply of its own.
-            opt(side_mark),
-            move_to,
-            piece_kind,
-            opt(tag("成")),
-            move_from,
-        )),
-        |(_, to, kind, promote, from)| {
-            MoveFormat {
-                move_: Some(MoveMoveFormat {
-                    color: Color::Black, // To be replaced
-                    from,
-                    to: to.unwrap_or_default(), // Might be (0, 0) if it's the same place as previous
-                    piece: kind,
-                    same: if to.is_none() { Some(true) } else { None },
-                    // R-KIF-006: KIF never writes 不成, so on a move that has an
-                    // origin the absence of `成` is the record saying the move
-                    // did not promote — not the record saying nothing. Leaving
-                    // it empty makes it look like the latter, and the normalizer
-                    // then reads the piece name to decide (R-CSA-007, which is
-                    // how CSA states a promotion) and can put a `成` into a
-                    // record that has none.
-                    //
-                    // A drop has nothing to say either way: a piece enters the
-                    // board unpromoted, and R-NOT-005 has no 成/不成 for it.
-                    promote: from.map(|_| promote.is_some()),
-                    capture: None,
-                    relative: None,
-                }),
-                ..Default::default()
-            }
-        },
-    )(input)
-}
-
 // The move parsers below take `(start, input)` and are applied directly rather
 // than handing back a parser value, because each needs `start` — whose turn ply
 // 1 is — and none of them is used inside a combinator. `move_special` is the
@@ -203,12 +136,48 @@ fn move_line(
     input: &str,
 ) -> IResult<&str, (usize, MoveFormat), VerboseError<&str>> {
     let line = input;
-    // The ply number has to be read before the rest: it decides whose turn it
-    // is, and 反則勝ち means the *other* player committed the foul.
-    let (input, i) = preceded(padding, map_res(digit1, str::parse::<usize>))(input)?;
+    // What the line says is read once, by the shared reader — the same call the
+    // skip's predicate asks (`opens_a_numbered_line`), so a line this can take
+    // is a line no skip is allowed to drop.
+    let (input, (i, body, time)) = numbered_line(input)?;
+    // The ply decides whose turn it is, and 反則勝ち means the *other* player
+    // committed the foul, so the colour is put on afterwards.
     let side_to_move = known_side.unwrap_or_else(|| crate::handicap::side_to_move_at_ply(start, i));
-    let (input, mut mf) = preceded(padding, alt((move_special(side_to_move), move_move)))(input)?;
-    let (input, time) = preceded(padding, opt(move_time))(input)?;
+    let mut mf = match body {
+        NumberedBody::Outcome(word) => MoveFormat {
+            special: MoveSpecial::from_kif_word(word, side_to_move),
+            ..Default::default()
+        },
+        NumberedBody::Move {
+            to,
+            piece,
+            promote,
+            from,
+        } => MoveFormat {
+            move_: Some(MoveMoveFormat {
+                color: side_to_move,
+                from,
+                // (0, 0) where the move says 同: the normalizer fills it in
+                // from the move before.
+                to: to.unwrap_or_default(),
+                piece,
+                same: if to.is_none() { Some(true) } else { None },
+                // R-KIF-006: a KIF does not write 不成, so on a move with an
+                // origin the absence of `成` is the record saying the move did
+                // not promote — not the record saying nothing. Left empty it
+                // looks like the latter, and the normalizer then reads the
+                // piece name to decide (R-CSA-007, which is how CSA states a
+                // promotion) and can put a `成` into a record that has none.
+                //
+                // A drop has nothing to say either way: a piece enters the
+                // board unpromoted, and R-NOT-005 has no 成/不成 for it.
+                promote: from.map(|_| promote.unwrap_or(false)),
+                capture: None,
+                relative: None,
+            }),
+            ..Default::default()
+        },
+    };
     // R-KIF-005 / R-KIF-008 say what a move line is made of — the ply, the move,
     // and the time that may or may not follow it — and say nothing about what
     // may come after. So what may come after is whatever is not a line: reading
@@ -216,9 +185,6 @@ fn move_line(
     // newline between them is lost, and a move goes missing from a record that
     // still comes back `Ok`. `ends_here` draws that line.
     let (input, _) = ends_here(SHAPES, line, input)?;
-    if let Some(mmf) = &mut mf.move_ {
-        mmf.color = side_to_move;
-    }
     mf.time = time;
     Ok((input, (i, mf)))
 }
@@ -661,47 +627,72 @@ mod tests {
         }
     }
 
+    // The shared reader is where the spelling lives now
+    // (`kakinoki::numbered_line`); what this side owns is the `MoveFormat` built
+    // out of it, including R-KIF-006's reading of a missing `成`.
     #[test]
-    fn parse_move_move() {
-        assert!(move_move("").is_err());
-        assert_eq!(
-            Ok((
-                "",
-                MoveFormat {
-                    move_: Some(MoveMoveFormat {
-                        color: Color::Black,
-                        from: Some(PlaceFormat { x: 7, y: 7 }),
-                        to: PlaceFormat { x: 7, y: 6 },
-                        piece: Kind::FU,
-                        same: None,
-                        promote: Some(false),
-                        capture: None,
-                        relative: None,
-                    }),
-                    ..Default::default()
-                }
-            )),
-            move_move("７六歩(77)")
-        );
-        assert_eq!(
-            Ok((
-                "",
-                MoveFormat {
-                    move_: Some(MoveMoveFormat {
-                        color: Color::Black,
-                        from: Some(PlaceFormat { x: 3, y: 1 }),
-                        to: PlaceFormat { x: 4, y: 2 },
-                        piece: Kind::KA,
-                        same: None,
-                        promote: Some(true),
-                        capture: None,
-                        relative: None,
-                    }),
-                    ..Default::default()
-                }
-            )),
-            move_move("４二角成(31)")
-        );
+    fn a_move_line_becomes_the_move_it_names() {
+        for (line, expected) in [
+            (
+                "   1 ７六歩(77)\n",
+                MoveMoveFormat {
+                    color: Color::Black,
+                    from: Some(PlaceFormat { x: 7, y: 7 }),
+                    to: PlaceFormat { x: 7, y: 6 },
+                    piece: Kind::FU,
+                    same: None,
+                    promote: Some(false),
+                    capture: None,
+                    relative: None,
+                },
+            ),
+            (
+                "   1 ４二角成(31)\n",
+                MoveMoveFormat {
+                    color: Color::Black,
+                    from: Some(PlaceFormat { x: 3, y: 1 }),
+                    to: PlaceFormat { x: 4, y: 2 },
+                    piece: Kind::KA,
+                    same: None,
+                    promote: Some(true),
+                    capture: None,
+                    relative: None,
+                },
+            ),
+            // R-KIF-006 tells a writer not to spell 不成; a reader that refuses
+            // it drops what other software wrote.
+            (
+                "   1 ２二角不成(88)\n",
+                MoveMoveFormat {
+                    color: Color::Black,
+                    from: Some(PlaceFormat { x: 8, y: 8 }),
+                    to: PlaceFormat { x: 2, y: 2 },
+                    piece: Kind::KA,
+                    same: None,
+                    promote: Some(false),
+                    capture: None,
+                    relative: None,
+                },
+            ),
+            // A drop says nothing about promotion either way (R-NOT-005).
+            (
+                "   1 １三角打\n",
+                MoveMoveFormat {
+                    color: Color::Black,
+                    from: None,
+                    to: PlaceFormat { x: 1, y: 3 },
+                    piece: Kind::KA,
+                    same: None,
+                    promote: None,
+                    capture: None,
+                    relative: None,
+                },
+            ),
+        ] {
+            let (_, (_, mf)) =
+                move_line(Color::Black, None, line).unwrap_or_else(|e| panic!("{line:?}: {e}"));
+            assert_eq!(Some(expected), mf.move_, "{line:?}");
+        }
     }
 
     #[test]
