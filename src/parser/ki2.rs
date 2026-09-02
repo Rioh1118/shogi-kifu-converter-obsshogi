@@ -281,13 +281,26 @@ fn branch_header(input: &str) -> IResult<&str, (usize, &str), VerboseError<&str>
 /// An outcome does not end the run. A game that was interrupted and resumed
 /// records `中断` in the middle and keeps going, and stopping at the first
 /// `まで…` line drops every move after it without saying so.
+///
+/// `where_it_starts` is where in the record the run begins, and it holds only
+/// until the run reads something: a board diagram can still be arriving above
+/// the first move of the main line, and the skip below must leave its `|` and
+/// `+` lines alone (GAP-007). Deciding that inside the run rather than at the
+/// call would make this the second answer to "have we passed the opening block"
+/// — and the one the callers cannot see.
 fn move_run(
     start: Color,
     first_ply: usize,
+    where_it_starts: Position,
 ) -> impl FnMut(&str) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
     move |mut input| {
         let mut out = Vec::new();
         loop {
+            let where_it_is = if out.is_empty() {
+                where_it_starts
+            } else {
+                Position::PastTheOpeningBlock
+            };
             // R-KI2-002: blank lines sit between runs of moves — the
             // specification's own example is written that way. R-KI2-001: KI2 is
             // "a game record people can read", pasted as-is, so a run can also
@@ -303,9 +316,7 @@ fn move_run(
                 // one here as well, and a record that reads as `.kif` has to
                 // read as `.ki2` (D18). Everything the reader has a shape for
                 // is left where it is.
-                nom::combinator::recognize(|input| {
-                    a_line_only_prose_opens(Position::PastTheOpeningBlock, input)
-                }),
+                nom::combinator::recognize(|input| a_line_only_prose_opens(where_it_is, input)),
             )))(input)?;
             // A comment before any move of a run belongs to a node of its own:
             // that is what `write_line` produces for a JKF node carrying only
@@ -465,7 +476,7 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
         }
     }
     let comments = (!comments.is_empty()).then_some(comments);
-    let (mut input, main) = move_run(start, 1)(input)?;
+    let (mut input, main) = move_run(start, 1, Position::WhereABoardCouldStill)(input)?;
     let mut out = vec![MoveFormat {
         comments,
         ..Default::default()
@@ -495,7 +506,8 @@ fn moves(start: Color, input: &str) -> IResult<&str, Vec<MoveFormat>, VerboseErr
                         Err(_) => break,
                     }
                 }
-                let (rest, branch) = move_run(start, start_ply)(rest)?;
+                let (rest, branch) =
+                    move_run(start, start_ply, Position::PastTheOpeningBlock)(rest)?;
                 if branch.is_empty() {
                     // The header says a branch follows. Reading nothing under it
                     // means the branch is gone, and carrying on returns a record

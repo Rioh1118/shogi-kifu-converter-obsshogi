@@ -1978,10 +1978,19 @@ mod tests {
                 })
                 .collect();
             assert!(parse_kif_str(&record(&rows)).is_err(), "{name}");
+            // D18: the same record, and the same answer. A `.ki2` whose diagram
+            // is broken above its first move used to come back `Ok` with the
+            // board gone and `preset` left at 平手.
+            let ki2 = format!("{}▲７六歩 △３四歩\n", record(&rows));
+            assert!(parse_ki2_str(&ki2).is_err(), "{name}, as a KI2");
         }
         // Including one that stops in the middle of the file.
         let cut: Vec<String> = ROWS[..6].iter().map(|l| format!("{l}\n")).collect();
         assert!(parse_kif_str(&record(&cut)).is_err(), "a diagram cut short");
+        assert!(
+            parse_ki2_str(&format!("{}▲７六歩\n", record(&cut))).is_err(),
+            "a diagram cut short, as a KI2"
+        );
 
         // Past the first move a `|` or `+` line cannot be a piece of a board —
         // the board is read once, before them — so refusing one there buys
