@@ -574,7 +574,6 @@ pub(super) fn numbered_line(
     // game (D1). A line that ends — even at the end of the file, with a newline
     // — is judged by what it says.
     let committed = !gap.is_empty() || a_move_body_opens(rest) || rest.is_empty();
-    let broken = |what| move |_| broken_line(line, what);
     // A number too long to hold is still a ply number (D19 keeps a record over a
     // number it cannot use), so it is only prose if nothing else on the line
     // said this was a move line.
@@ -600,7 +599,11 @@ pub(super) fn numbered_line(
         },
     )?;
     let (rest, _) = padding(rest)?;
-    let (rest, time) = opt(move_time)(rest).map_err(broken("this move's clock cannot be read"))?;
+    // No diagnostic of its own: `move_time` is built from `tag` and `map_res`,
+    // which raise recoverable errors only, so `opt` takes them all. A clock that
+    // cannot be read is left for the line-end rule (D17), which is what carries
+    // `( 0:01)` and the other spellings this reader has no shape for.
+    let (rest, time) = opt(move_time)(rest)?;
     Ok((rest, (ply, body, time)))
 }
 
@@ -1744,6 +1747,107 @@ mod tests {
                 "{word:?} reads as no outcome"
             );
         }
+    }
+
+    // Every diagnostic this reader can print, with an input that prints it.
+    //
+    // A message no input reaches is a claim about the reader that nobody
+    // checked: `this move's origin square cannot be read` spent two rounds
+    // unreachable because its caller replaced it, and `this move's clock cannot
+    // be read` could not fire at all. Both read as if the reader told the user
+    // what was wrong, and it did not.
+    #[test]
+    fn every_diagnostic_has_an_input_that_prints_it() {
+        use crate::parser::{parse_ki2_str, parse_kif_str};
+        const HEAD: &str = "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n";
+        const BOARD: [&str; 12] = [
+            "  ９ ８ ７ ６ ５ ４ ３ ２ １",
+            "+---------------------------+",
+            "| ・ ・ ・ ・ ・ ・ ・ ・v玉|一",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|二",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|三",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|四",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|五",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|六",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|七",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|八",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ 玉|九",
+            "+---------------------------+",
+        ];
+        let board_with = |broken: usize, line: &str| {
+            BOARD
+                .iter()
+                .enumerate()
+                .map(|(i, l)| format!("{}\n", if i == broken { line } else { l }))
+                .collect::<String>()
+        };
+        let printed = [
+            (
+                "a 変化 block with no moves under it",
+                format!("{HEAD}   2 ８四歩(83)\n\n変化：2手\n"),
+            ),
+            (
+                "the board has no file numbers",
+                board_with(0, "後手番").replacen("後手番\n", "", 1),
+            ),
+            (
+                "the board has no frame under its files",
+                board_with(1, "後手番"),
+            ),
+            (
+                "the board has no frame under its last rank",
+                board_with(11, "後手番"),
+            ),
+            (
+                "the file ends inside the board",
+                BOARD[..6].join("\n").to_string() + "\n",
+            ),
+            (
+                "this hand line cannot be read",
+                String::from("先手の持駒：歩零\n"),
+            ),
+            (
+                "this line runs into the one below it",
+                format!("{HEAD}   2 ８四歩(83)   3 ７五歩(76)\n"),
+            ),
+            ("this move cannot be read", format!("{HEAD}   2 パス\n")),
+            (
+                "this move has no origin square",
+                format!("{HEAD}   2 ８四歩\n"),
+            ),
+            (
+                "this move's origin square cannot be read",
+                format!("{HEAD}   2 ８四歩(00)\n"),
+            ),
+            (
+                "this rank of the board cannot be read",
+                board_with(5, "| ・ ・|五"),
+            ),
+            (
+                "this record states one hand twice",
+                format!("先手の持駒：飛\n先手の持駒：角\n{}", board_with(99, "")),
+            ),
+            (
+                "this record states a hand but has no board for it",
+                String::from("先手の持駒：飛\n"),
+            ),
+            (
+                "this line's ply number is too large to read",
+                format!("{HEAD}99999999999999999999 ８四歩(83)\n"),
+            ),
+        ];
+        for (message, record) in printed {
+            let printed = match parse_kif_str(&record) {
+                Err(crate::error::ParseError::Kif(printed)) => printed,
+                other => panic!("{message}: {other:?}\n{record}"),
+            };
+            assert!(printed.contains(message), "{message}\n{printed}");
+        }
+        // And the reader that shares them prints them too.
+        assert!(parse_ki2_str("先手の持駒：飛\n")
+            .expect_err("a hand with no board")
+            .to_string()
+            .contains("no board for it"));
     }
 
     // A blank line or a note does not end the header block. A reader that stops
