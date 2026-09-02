@@ -1,6 +1,6 @@
 use crate::jkf::*;
 use nom::branch::alt;
-use nom::bytes::complete::{is_not, tag, take_while};
+use nom::bytes::complete::{tag, take_while, take_while1};
 use nom::character::complete::{char, digit1, line_ending, not_line_ending, one_of, satisfy};
 use nom::combinator::{eof, map, map_res, opt, peek, recognize, value};
 use nom::error::{ErrorKind, ParseError, VerboseError};
@@ -135,7 +135,7 @@ pub(super) fn colon(input: &str) -> IResult<&str, char, VerboseError<&str>> {
 }
 
 /// The one the format itself is written with. The other is tolerance.
-pub(super) const COLON: char = '：';
+const COLON: char = '：';
 
 /// Every character that may separate a keyword from its value.
 ///
@@ -143,7 +143,7 @@ pub(super) const COLON: char = '：';
 /// cannot answer differently: the key is taken as everything up to one of these,
 /// and a character `colon` knows that the key rule does not would be swallowed
 /// into the key — leaving nothing for `colon` to find and dropping the line.
-pub(super) const COLONS: &str = "：:";
+const COLONS: &str = "：:";
 
 /// The indentation and column padding a line is written with.
 ///
@@ -215,7 +215,7 @@ pub(super) const NOTE_MARKERS: [char; 8] = ['※', '（', '(', '【', '[', '「'
 /// in [`branch_header_ply`] both look for it: a guard that knows a narrower word
 /// than the parser silently stops the parser from ever being asked, which is the
 /// "counted set ≠ consumed set" failure this pair keeps having.
-pub(super) const BRANCH_KEYWORD: &str = "変化";
+const BRANCH_KEYWORD: &str = "変化";
 
 /// The shapes both formats share: a comment, a bookmark, a `#` note, a `変化：`
 /// header, a `まで…` outcome.
@@ -354,7 +354,7 @@ fn a_branch_header_fills_the_line(head: &str) -> bool {
 /// Here rather than with the KIF reader because both readers ask: KI2 has to
 /// know that `   5 投了` is a line something wrote as a move, so that skipping
 /// it as prose does not take the outcome with it (D1, `opens_a_numbered_line`).
-pub(super) const KIF_SPECIAL_WORDS: [&str; 12] = [
+const KIF_SPECIAL_WORDS: [&str; 12] = [
     "切れ負け",
     "入玉勝ち",
     "反則負け",
@@ -454,7 +454,7 @@ pub(super) fn move_time(input: &str) -> IResult<&str, Time, VerboseError<&str>> 
 /// The outcome words are in it because a move line can hold one instead of a
 /// move (`   5 投了`, R-KIF-007). Which side 反則勝ち accuses does not change
 /// whether the line is one, so either colour will do to ask.
-pub(super) fn a_move_follows_the_number(after_digits: &str) -> bool {
+fn a_move_follows_the_number(after_digits: &str) -> bool {
     alt((
         // The whole of what is left, for an outcome: a move line that holds one
         // holds nothing else (`   5 投了`, R-KIF-007), so `3投了もあった` is a
@@ -681,6 +681,13 @@ pub(super) enum Position {
 /// `まで…` are **not** among them, so a caller that wants one of those read as
 /// itself has to try it before this (`kif::skippable_line`).
 ///
+/// `where_it_is` adds `|` and `+` to that list while a board could still be
+/// arriving. They are the frame and the ranks of a diagram, which reaches the
+/// reader through no other path (GAP-007), and a skip that takes one takes the
+/// position with it — the record comes back as an empty 平手 and the writer
+/// saves that over the original (D4). Past the first move the same two
+/// characters cannot be a board and the format has always allowed them.
+///
 /// `&` is there because a bookmark is kept as a comment (R-KIF-011), and letting
 /// this parser take the line instead drops it without a word — which is how a
 /// bookmark at the head of a `変化：` block that `to_kif` had just written went
@@ -841,7 +848,7 @@ fn information_value_hand(input: &str) -> IResult<&str, Hand, VerboseError<&str>
         // all, over a line that says nothing.
         terminated(
             value(Hand::default(), take_while(is_padding)),
-            peek(line_ending),
+            peek(end_of_line),
         ),
     ))(input)
 }
@@ -951,11 +958,6 @@ fn a_key_that_names_its_line(key: &str) -> bool {
 /// nobody wrote (`*主催`). Nothing puts them back: what stops the header block in
 /// KIF is the `手数----指手---------消費時間--` line, which R-KIF-012 says a
 /// record need not have, and which KI2 has no equivalent of at all.
-/// What a key runs up to: the colon the format uses, or a line ending.
-const FULL_WIDTH_ONLY: &str = "：\r\n";
-/// The same, plus the half-width colon [`colon`] also takes.
-const EITHER_COLON: &str = "：:\r\n";
-
 fn information_line_keyvalue(
     shapes: LineShapes,
 ) -> impl FnMut(&str) -> IResult<&str, Information, VerboseError<&str>> {
@@ -975,15 +977,25 @@ fn information_line_keyvalue(
         // looks like "an unknown key with a half-width colon" and is dropped —
         // including lines this crate's own writer produces from a `header` the
         // consumer filled in.
-        let (rest, key, mark) =
-            match preceded(padding, terminated(is_not(FULL_WIDTH_ONLY), char(COLON)))(input) {
-                Ok((rest, key)) => (rest, key, COLON),
-                Err(_) => {
-                    let (rest, key) = preceded(padding, is_not(EITHER_COLON))(input)?;
-                    let (rest, mark) = colon(rest)?;
-                    (rest, key, mark)
-                }
-            };
+        // Both keys run up to a colon or the end of the line, and both take the
+        // sets that name those — a third colon added to [`COLONS`] has to reach
+        // the key rule too, or it is swallowed into the key and the line is
+        // dropped with nothing left for [`colon`] to find.
+        let up_to_the_colon = |c: char| c != COLON && !crate::notation::LINE_ENDS.contains(&c);
+        let up_to_either =
+            |c: char| !COLONS.contains(c) && !crate::notation::LINE_ENDS.contains(&c);
+        let (rest, key, mark) = match preceded(
+            padding,
+            terminated(take_while1(up_to_the_colon), char(COLON)),
+        )(input)
+        {
+            Ok((rest, key)) => (rest, key, COLON),
+            Err(_) => {
+                let (rest, key) = preceded(padding, take_while1(up_to_either))(input)?;
+                let (rest, mark) = colon(rest)?;
+                (rest, key, mark)
+            }
+        };
         // The padding on either side of the key belongs to the line, not to the
         // key. `手合割 ：香落ち` filed under `header["手合割 "]` is a handicap the
         // board never sees, and D16's `contains_key` misses it too — the record
@@ -1110,8 +1122,15 @@ fn board(input: &str) -> IResult<&str, [[Piece; 9]; 9], VerboseError<&str>> {
     // looking for it in their file.
     let mut rows = Vec::with_capacity(9);
     while rows.len() < 9 {
-        let (tail, row) = board_row(rest)
-            .map_err(|_| broken_line(rest, "this rank of the board cannot be read"))?;
+        let (tail, row) = board_row(rest).map_err(|_| {
+            // Nothing left is not a rank that cannot be read: pointing at it
+            // names the line after the last one, which the file does not have.
+            if rest.trim_start_matches(is_padding).is_empty() {
+                broken_line(rest, "the file ends inside the board")
+            } else {
+                broken_line(rest, "this rank of the board cannot be read")
+            }
+        })?;
         rows.push(row);
         rest = tail;
     }
@@ -1327,6 +1346,18 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("at line 13"), "{message}");
+
+        // A file that stops inside the diagram has no line to name, so it says
+        // that instead of pointing at the line after the last one.
+        let message =
+            match crate::parser::parse_kif_str(&format!("{HEAD}{}\n", ROWS[..4].join("\n"))) {
+                Err(crate::error::ParseError::Kif(message)) => message,
+                other => panic!("a diagram cut short must not read: {other:?}"),
+            };
+        assert!(
+            message.contains("the file ends inside the board"),
+            "{message}"
+        );
     }
 
     #[test]
@@ -1959,6 +1990,14 @@ mod tests {
             .data
             .expect("a board");
         assert_eq!(Color::White, side.color);
+        // Including a hand line with nothing after the colon, which is the one
+        // value R10-04 decided reads as an empty hand rather than as an error.
+        assert!(parse_kif_str("後手の持駒：飛\n先手の持駒：")
+            .expect("reads")
+            .initial
+            .expect("a position")
+            .data
+            .is_none());
         // Including the board's own closing frame.
         assert!(
             parse_kif_str(&format!("後手の持駒：飛\n{}", BOARD.trim_end()))

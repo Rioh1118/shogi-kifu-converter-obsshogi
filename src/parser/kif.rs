@@ -137,8 +137,6 @@ fn skip_interruptions(mut input: &str) -> &str {
     }
 }
 
-/// Whether what follows a ply number is the move that number is about.
-///
 fn move_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
     map(
         tuple((move_to, piece_kind, opt(tag("成")), move_from)),
@@ -284,13 +282,10 @@ fn moves_with_index(
             Err(err) => return Err(err),
         }
     }
-    // A run that read nothing has not passed the opening block yet, so the
-    // shapes a board is made of are still worth keeping (`not_move_line`).
-    let where_it_is = if out.is_empty() {
-        Position::WhereABoardCouldStill
-    } else {
-        Position::PastTheOpeningBlock
-    };
+    // This run has read at least one move — `move_with_comments` above
+    // returns on failure — so the opening block, and any board that was in
+    // it, is behind us.
+    let where_it_is = Position::PastTheOpeningBlock;
     let (input, _) = opt(|input| skippable_line_except_a_branch_header(where_it_is, input))(input)?;
     Ok((input, (first_ply, out)))
 }

@@ -1,8 +1,8 @@
 use super::kakinoki::{
     an_empty_block_here_is_worth_reporting, branch_header_ply, broken_line,
-    comments_on_the_starting_position, ends_here, is_padding, move_comment_line, move_to,
-    not_move_line, opens_a_shared_line, parse_without_moves, piece_kind, program_comment_line,
-    LineShapes, Position, NOTE_MARKERS, SIDE_MARKS,
+    comments_on_the_starting_position, ends_a_word, ends_here, is_padding, move_comment_line,
+    move_to, not_move_line, opens_a_shared_line, parse_without_moves, piece_kind,
+    program_comment_line, LineShapes, Position, SIDE_MARKS,
 };
 use crate::jkf::*;
 use crate::notation::LINE_ENDS;
@@ -214,9 +214,7 @@ fn end_of_game_line(
         // (`まで2手で中断 （▲有利）`, D18) — so the word ends where the note
         // begins. What opens a note is D17's table, the same one the line-end
         // rule uses, and what is left goes to that rule below.
-        let end = phrase
-            .find(|c: char| is_padding(c) || LINE_ENDS.contains(&c) || NOTE_MARKERS.contains(&c))
-            .unwrap_or(phrase.len());
+        let end = phrase.find(ends_a_word).unwrap_or(phrase.len());
         let side_to_move = crate::handicap::side_to_move_at_ply(start, ply);
         match MoveSpecial::from_ki2_phrase(&phrase[..end], side_to_move) {
             // What follows the word goes through the same check as any other
