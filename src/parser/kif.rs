@@ -611,19 +611,21 @@ mod tests {
         }
     }
 
-    // **The invariant the last five rounds kept breaking.** Every line
-    // `move_line` can take has to be one `opens_a_numbered_line` counts:
-    // a line it does not count goes to the skip, and the move — or the outcome
-    // of the game — is gone from a record that still comes back `Ok` (D1).
+    // Every line `move_line` can take has to be one `opens_a_numbered_line`
+    // counts: a line it does not count goes to the skip, and the move — or the
+    // outcome of the game — is gone from a record that still comes back `Ok`
+    // (D1, D21).
     //
-    // The other direction is deliberately loose. `   2 パス` is counted and
-    // cannot be read, which is how it reaches the leftover-input check instead
-    // of being skipped (D8, GAP-020).
+    // The other direction is deliberately loose in one place only. `   2 パス`
+    // is counted and cannot be read, which is how it reaches the leftover-input
+    // check instead of being skipped (D8, GAP-020). What must not happen is the
+    // reader getting *part way* into a line and then saying it was never one of
+    // its lines: that is the same silence, arriving through `Err(Error)`.
     #[test]
     fn every_line_the_reader_takes_is_a_line_the_skip_counts() {
-        const PLIES: [&str; 3] = ["1", "  1", "   12"];
+        const PLIES: [&str; 4] = ["1", "  1", "   12", "99999999999999999999"];
         const SEPARATORS: [&str; 3] = ["", " ", "\u{3000}"];
-        const BODIES: [&str; 12] = [
+        const BODIES: [&str; 22] = [
             "投了",
             "中断",
             "詰み",
@@ -636,6 +638,19 @@ mod tests {
             "▲７六歩(77)",
             "△３四歩(33)",
             "５五馬(66)",
+            // Move lines a writer got wrong. Each one is broken past the point
+            // where the line has said what it is, so each has to be reported
+            // rather than skipped.
+            "７六歩(999)",
+            "７六歩(256)",
+            "７六歩(1234)",
+            "７六歩(00)",
+            "７六歩(8)",
+            "７六歩(88",
+            "７六歩(ab)",
+            "７六歩()",
+            "７六歩（88）",
+            "７六歩(八八)",
         ];
         const TIMES: [&str; 4] = ["", " ( 0:03/00:00:03)", " (00:01/00:00:01)", " ( 0:03)"];
         const TAILS: [&str; 6] = ["", "+", " ▲有利", "（まで先手良し）", "※注記", "もあった"];
@@ -647,14 +662,22 @@ mod tests {
                     for time in TIMES {
                         for tail in TAILS {
                             let line = format!("{ply}{separator}{body}{time}{tail}\n");
-                            if move_line(Color::Black, None, &line).is_err() {
-                                continue;
+                            match move_line(Color::Black, None, &line) {
+                                Ok(_) => {
+                                    checked += 1;
+                                    assert!(
+                                        opens_a_numbered_line(&line),
+                                        "{line:?} is read but not counted"
+                                    );
+                                }
+                                // A line the reader started on and could not
+                                // finish is still one of its lines.
+                                Err(nom::Err::Failure(_)) => assert!(
+                                    opens_a_numbered_line(&line),
+                                    "{line:?} is reported but not counted"
+                                ),
+                                Err(_) => {}
                             }
-                            checked += 1;
-                            assert!(
-                                opens_a_numbered_line(&line),
-                                "{line:?} is read but not counted"
-                            );
                         }
                     }
                 }

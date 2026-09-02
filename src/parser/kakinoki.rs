@@ -443,23 +443,29 @@ pub(super) fn move_time(input: &str) -> IResult<&str, Time, VerboseError<&str>> 
 /// a different move, so it is a `Failure`: the line *is* a move line, and it is
 /// broken (D1).
 fn move_origin(input: &str) -> IResult<&str, Option<PlaceFormat>, VerboseError<&str>> {
-    alt((
-        // A drop has no origin, and JKF says so by leaving `from` out
-        // (R-JKF-003). KIF marks it with 打 on every drop (R-KIF-006).
-        value(None, tag("打")),
-        move |input| {
-            let (rest, d): (&str, u8) =
-                delimited(tag("("), map_res(digit1, str::parse), tag(")"))(input)?;
-            let (x, y) = (d / 10, d % 10);
-            if !(1..=9).contains(&x) || !(1..=9).contains(&y) {
-                return Err(nom::Err::Failure(VerboseError::from_error_kind(
-                    input,
-                    nom::error::ErrorKind::Verify,
-                )));
-            }
-            Ok((rest, Some(PlaceFormat { x, y })))
-        },
-    ))(input)
+    // A drop has no origin, and JKF says so by leaving `from` out (R-JKF-003).
+    // KIF marks it with 打 on every drop (R-KIF-006).
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("打")(input) {
+        return Ok((rest, None));
+    }
+    // The `(` is the commitment. Past it the line has said it is naming a
+    // square, so everything that follows is this move line being broken and not
+    // a note that happens to hold a bracket — a `Failure` here, where an `Error`
+    // would tell the skip "not my line" and the move would go with it (D21).
+    let (rest, _) = tag("(")(input)?;
+    let broken = || broken_line(input, "this move's origin square cannot be read");
+    let (rest, digits) = digit1::<_, VerboseError<&str>>(rest).map_err(|_| broken())?;
+    let (rest, _) = tag::<_, _, VerboseError<&str>>(")")(rest).map_err(|_| broken())?;
+    // R-KIF-005: an origin is `(11)` through `(99)`. `(00)` in particular is
+    // CSA's spelling for a drop and this crate's marker for an origin the
+    // notation does not state — reading it as either would turn "a square we
+    // could not read" into a different move.
+    let square: u16 = digits.parse().map_err(|_| broken())?;
+    let (x, y) = ((square / 10) as u8, (square % 10) as u8);
+    if digits.len() != 2 || !(1..=9).contains(&x) || !(1..=9).contains(&y) {
+        return Err(broken());
+    }
+    Ok((rest, Some(PlaceFormat { x, y })))
 }
 
 /// What a `<手数> <指し手>` line says, without the parts that are not on it.
@@ -506,7 +512,14 @@ pub(super) enum NumberedBody {
 pub(super) fn numbered_line(
     input: &str,
 ) -> IResult<&str, (usize, NumberedBody, Option<Time>), VerboseError<&str>> {
-    let (input, ply) = preceded(padding, map_res(digit1, str::parse::<usize>))(input)?;
+    let line = input;
+    let (input, digits) = preceded(padding, digit1)(input)?;
+    // A number too long to hold is still a ply number, so the line is still one
+    // of these lines. Answering `Error` would hand it to the skip and lose
+    // whatever it says (D19 keeps a record over a number it cannot use).
+    let ply: usize = digits
+        .parse()
+        .map_err(|_| broken_line(line, "this line's ply number is too large to read"))?;
     let (input, body) = preceded(
         padding,
         alt((map(outcome_word, NumberedBody::Outcome), move_body)),
@@ -531,7 +544,9 @@ fn move_body(input: &str) -> IResult<&str, NumberedBody, VerboseError<&str>> {
     // `2同銀と取れば` — stops at the piece and never reaches here.
     let (input, from) = match move_origin(input) {
         Ok(found) => found,
-        Err(nom::Err::Error(err)) if promote.is_some() => return Err(nom::Err::Failure(err)),
+        Err(nom::Err::Error(_)) if promote.is_some() => {
+            return Err(broken_line(input, "this move has no origin square"))
+        }
         Err(err) => return Err(err),
     };
     Ok((
