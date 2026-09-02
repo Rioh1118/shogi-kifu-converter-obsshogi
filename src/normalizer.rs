@@ -4,54 +4,6 @@ use crate::notation::pk2k;
 use shogi_core::PartialPosition;
 use shogi_legality_lite::prelegality::is_valid;
 
-pub(crate) const HIRATE_BOARD: [[Piece; 9]; 9] = {
-    #[rustfmt::skip]
-    const EMP: Piece = Piece { color: None, kind: None };
-    #[rustfmt::skip]
-    const BFU: Piece = Piece { color: Some(Color::Black), kind: Some(Kind::FU) };
-    #[rustfmt::skip]
-    const BKY: Piece = Piece { color: Some(Color::Black), kind: Some(Kind::KY) };
-    #[rustfmt::skip]
-    const BKE: Piece = Piece { color: Some(Color::Black), kind: Some(Kind::KE) };
-    #[rustfmt::skip]
-    const BGI: Piece = Piece { color: Some(Color::Black), kind: Some(Kind::GI) };
-    #[rustfmt::skip]
-    const BKI: Piece = Piece { color: Some(Color::Black), kind: Some(Kind::KI) };
-    #[rustfmt::skip]
-    const BKA: Piece = Piece { color: Some(Color::Black), kind: Some(Kind::KA) };
-    #[rustfmt::skip]
-    const BHI: Piece = Piece { color: Some(Color::Black), kind: Some(Kind::HI) };
-    #[rustfmt::skip]
-    const BOU: Piece = Piece { color: Some(Color::Black), kind: Some(Kind::OU) };
-    #[rustfmt::skip]
-    const WFU: Piece = Piece { color: Some(Color::White), kind: Some(Kind::FU) };
-    #[rustfmt::skip]
-    const WKY: Piece = Piece { color: Some(Color::White), kind: Some(Kind::KY) };
-    #[rustfmt::skip]
-    const WKE: Piece = Piece { color: Some(Color::White), kind: Some(Kind::KE) };
-    #[rustfmt::skip]
-    const WGI: Piece = Piece { color: Some(Color::White), kind: Some(Kind::GI) };
-    #[rustfmt::skip]
-    const WKI: Piece = Piece { color: Some(Color::White), kind: Some(Kind::KI) };
-    #[rustfmt::skip]
-    const WKA: Piece = Piece { color: Some(Color::White), kind: Some(Kind::KA) };
-    #[rustfmt::skip]
-    const WHI: Piece = Piece { color: Some(Color::White), kind: Some(Kind::HI) };
-    #[rustfmt::skip]
-    const WOU: Piece = Piece { color: Some(Color::White), kind: Some(Kind::OU) };
-    [
-        [WKY, EMP, WFU, EMP, EMP, EMP, BFU, EMP, BKY],
-        [WKE, WKA, WFU, EMP, EMP, EMP, BFU, BHI, BKE],
-        [WGI, EMP, WFU, EMP, EMP, EMP, BFU, EMP, BGI],
-        [WKI, EMP, WFU, EMP, EMP, EMP, BFU, EMP, BKI],
-        [WOU, EMP, WFU, EMP, EMP, EMP, BFU, EMP, BOU],
-        [WKI, EMP, WFU, EMP, EMP, EMP, BFU, EMP, BKI],
-        [WGI, EMP, WFU, EMP, EMP, EMP, BFU, EMP, BGI],
-        [WKE, WHI, WFU, EMP, EMP, EMP, BFU, BKA, BKE],
-        [WKY, EMP, WFU, EMP, EMP, EMP, BFU, EMP, BKY],
-    ]
-};
-
 impl Piece {
     pub(crate) const fn empty() -> Self {
         Self {

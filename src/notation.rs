@@ -29,7 +29,7 @@
 /// of them splits and another writes through comes back as a header nobody
 /// wrote.
 ///
-/// It is not where a reader stops. `parser::kakinoki::end_of_line` is, and it
+/// It is not where a reader stops. `parser::kakinoki` decides that, and it
 /// takes what `nom`'s `line_ending` does — `\n` and `\r\n`, not a lone `\r`
 /// (`research/90-gaps.md` GAP-027). The readers ask this table whether a
 /// character *is* one of those two, which is a narrower question and the same

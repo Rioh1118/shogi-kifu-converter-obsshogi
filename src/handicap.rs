@@ -13,7 +13,61 @@
 //! (R-HC-003).
 
 use crate::jkf::{Color, Initial, Kind, Piece, Preset};
-use crate::normalizer::HIRATE_BOARD;
+
+/// The even game, which every handicap is this minus a set of pieces
+/// (R-HC-003).
+///
+/// Here rather than beside the normalizer that compares against it: it is the
+/// first row of this table (`PresetHirate`, nothing removed), and having the
+/// table reach up into the normalizer for it made the two depend on each other
+/// both ways.
+pub(crate) const HIRATE_BOARD: [[Piece; 9]; 9] = {
+    #[rustfmt::skip]
+    const EMP: Piece = Piece { color: None, kind: None };
+    #[rustfmt::skip]
+    const BFU: Piece = Piece { color: Some(Color::Black), kind: Some(Kind::FU) };
+    #[rustfmt::skip]
+    const BKY: Piece = Piece { color: Some(Color::Black), kind: Some(Kind::KY) };
+    #[rustfmt::skip]
+    const BKE: Piece = Piece { color: Some(Color::Black), kind: Some(Kind::KE) };
+    #[rustfmt::skip]
+    const BGI: Piece = Piece { color: Some(Color::Black), kind: Some(Kind::GI) };
+    #[rustfmt::skip]
+    const BKI: Piece = Piece { color: Some(Color::Black), kind: Some(Kind::KI) };
+    #[rustfmt::skip]
+    const BKA: Piece = Piece { color: Some(Color::Black), kind: Some(Kind::KA) };
+    #[rustfmt::skip]
+    const BHI: Piece = Piece { color: Some(Color::Black), kind: Some(Kind::HI) };
+    #[rustfmt::skip]
+    const BOU: Piece = Piece { color: Some(Color::Black), kind: Some(Kind::OU) };
+    #[rustfmt::skip]
+    const WFU: Piece = Piece { color: Some(Color::White), kind: Some(Kind::FU) };
+    #[rustfmt::skip]
+    const WKY: Piece = Piece { color: Some(Color::White), kind: Some(Kind::KY) };
+    #[rustfmt::skip]
+    const WKE: Piece = Piece { color: Some(Color::White), kind: Some(Kind::KE) };
+    #[rustfmt::skip]
+    const WGI: Piece = Piece { color: Some(Color::White), kind: Some(Kind::GI) };
+    #[rustfmt::skip]
+    const WKI: Piece = Piece { color: Some(Color::White), kind: Some(Kind::KI) };
+    #[rustfmt::skip]
+    const WKA: Piece = Piece { color: Some(Color::White), kind: Some(Kind::KA) };
+    #[rustfmt::skip]
+    const WHI: Piece = Piece { color: Some(Color::White), kind: Some(Kind::HI) };
+    #[rustfmt::skip]
+    const WOU: Piece = Piece { color: Some(Color::White), kind: Some(Kind::OU) };
+    [
+        [WKY, EMP, WFU, EMP, EMP, EMP, BFU, EMP, BKY],
+        [WKE, WKA, WFU, EMP, EMP, EMP, BFU, BHI, BKE],
+        [WGI, EMP, WFU, EMP, EMP, EMP, BFU, EMP, BGI],
+        [WKI, EMP, WFU, EMP, EMP, EMP, BFU, EMP, BKI],
+        [WOU, EMP, WFU, EMP, EMP, EMP, BFU, EMP, BOU],
+        [WKI, EMP, WFU, EMP, EMP, EMP, BFU, EMP, BKI],
+        [WGI, EMP, WFU, EMP, EMP, EMP, BFU, EMP, BGI],
+        [WKE, WHI, WFU, EMP, EMP, EMP, BFU, BKA, BKE],
+        [WKY, EMP, WFU, EMP, EMP, EMP, BFU, EMP, BKY],
+    ]
+};
 
 /// The keyword a KIF line names a handicap with, and the key it is kept under
 /// in `header` when the name is not one of these.

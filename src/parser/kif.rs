@@ -588,23 +588,7 @@ mod tests {
     // the reader recovers it from the ply number.
     #[test]
     fn kif_outcome_words_are_written_back() {
-        const ALL: [MoveSpecial; 14] = [
-            MoveSpecial::SpecialToryo,
-            MoveSpecial::SpecialChudan,
-            MoveSpecial::SpecialSennichite,
-            MoveSpecial::SpecialTimeUp,
-            MoveSpecial::SpecialIllegalMove,
-            MoveSpecial::SpecialIllegalActionBlack,
-            MoveSpecial::SpecialIllegalActionWhite,
-            MoveSpecial::SpecialJishogi,
-            MoveSpecial::SpecialKachi,
-            MoveSpecial::SpecialHikiwake,
-            MoveSpecial::SpecialMatta,
-            MoveSpecial::SpecialTsumi,
-            MoveSpecial::SpecialFuzumi,
-            MoveSpecial::SpecialError,
-        ];
-        for special in ALL {
+        for special in MoveSpecial::ALL {
             let Some(word) = special.kif_word() else {
                 // 待った and エラー have no KIF word at all.
                 assert!(

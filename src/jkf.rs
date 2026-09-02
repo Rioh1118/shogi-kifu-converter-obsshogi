@@ -190,13 +190,39 @@ pub enum MoveSpecial {
 }
 
 impl MoveSpecial {
+    /// Every outcome, so that a table over them can be checked for gaps.
+    ///
+    /// A `match` on this enum is exhaustive by construction; a hand-written list
+    /// of the words is not, and the reader's `KIF_SPECIAL_WORDS` is one
+    /// (`parser::kakinoki::tests::the_reader_looks_for_every_word_the_writer_writes`).
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 16] = [
+        Self::SpecialToryo,
+        Self::SpecialChudan,
+        Self::SpecialSennichite,
+        Self::SpecialTimeUp,
+        Self::SpecialIllegalMove,
+        Self::SpecialIllegalActionBlack,
+        Self::SpecialIllegalActionWhite,
+        Self::SpecialJishogi,
+        Self::SpecialKachi,
+        Self::SpecialHikiwake,
+        Self::SpecialMatta,
+        Self::SpecialTsumi,
+        Self::SpecialFuzumi,
+        Self::SpecialError,
+        Self::SpecialFusensho,
+        Self::SpecialFusenpai,
+    ];
+
     /// The KIF word for this outcome, or `None` when KIF has no word for it.
     ///
     /// This and [`Self::from_kif_word`] are the only mapping between
     /// [`MoveSpecial`] and the KIF vocabulary. Every reader and writer goes
     /// through them, so that the two directions cannot disagree. The KIF
-    /// parser's `KIF_SPECIAL_WORDS` lists which of them it looks for, and a
-    /// word added here has to be added there too or it is never read.
+    /// shared reader's `KIF_SPECIAL_WORDS` lists which of them it looks for, and
+    /// a word added here has to be added there too or it is never read — which
+    /// is what `MoveSpecial::ALL` and the test that walks it are for.
     ///
     /// R-KIF-007 has no word for `HIKIWAKE`, `MATTA` or `ERROR`. Where they
     /// land is D7's decision, not a rule: `HIKIWAKE` to 持将棋 so that the game

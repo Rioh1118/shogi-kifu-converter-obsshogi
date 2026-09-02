@@ -72,7 +72,7 @@ impl InformationData {
 /// last line — a move, a comment or the `まで<N>手で…` — and says nothing about
 /// it. Every line parser here is anchored on something it must consume first,
 /// so accepting the empty match at the end cannot loop.
-pub(super) fn end_of_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
+fn end_of_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
     alt((line_ending, eof))(input)
 }
 
@@ -213,7 +213,7 @@ pub(super) fn ends_a_word(c: char) -> bool {
 /// `（まで先手良し）`, `【変化】` — which is exactly where
 /// [`begins_the_line_below`] would otherwise look for the newline that was
 /// lost. Whatever replaced a newline, it is not one of these.
-pub(super) const NOTE_MARKERS: [char; 8] = ['※', '（', '(', '【', '[', '「', '〈', '＜'];
+const NOTE_MARKERS: [char; 8] = ['※', '（', '(', '【', '[', '「', '〈', '＜'];
 
 /// The word a branch declaration opens with (D3).
 ///
@@ -1434,7 +1434,7 @@ pub(super) fn comments_on_the_starting_position(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::normalizer::HIRATE_BOARD;
+    use crate::handicap::HIRATE_BOARD;
 
     // Which line the message names when a board diagram breaks. `opt(board)`
     // unwinds the whole diagram on a recoverable error, so the position
@@ -1560,6 +1560,30 @@ mod tests {
             )),
             move_time_format("00:00:16")
         );
+    }
+
+    // `KIF_SPECIAL_WORDS` is a hand-written list, so nothing makes it follow
+    // `MoveSpecial`. A word the writer produces and the reader does not look for
+    // is a record this crate writes and cannot read back — and the consumer
+    // writes with `to_kif` on every save (R-REQ-002).
+    #[test]
+    fn the_reader_looks_for_every_word_the_writer_writes() {
+        for special in MoveSpecial::ALL {
+            let Some(word) = special.kif_word() else {
+                continue;
+            };
+            assert!(
+                KIF_SPECIAL_WORDS.contains(&word),
+                "{special:?} writes {word:?}, which the reader does not look for"
+            );
+        }
+        // And nothing in the list is a word no outcome names.
+        for word in KIF_SPECIAL_WORDS {
+            assert!(
+                MoveSpecial::from_kif_word(word, Color::Black).is_some(),
+                "{word:?} reads as no outcome"
+            );
+        }
     }
 
     // A hand belongs to a board. Where the diagram could not be read the hands
