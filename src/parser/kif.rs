@@ -445,9 +445,8 @@ fn entire_moves(
 /// else is set. Only the reader knows the difference — one consumed a line and
 /// the other did not — so it has to say so here (D1, `parse_kif_str`).
 pub(crate) fn parse(input: &str) -> IResult<&str, (JsonKifuFormat, bool), VerboseError<&str>> {
-    let (rest, (mut jkf, header_comments, where_a_board_could_be)) =
+    let (rest, (mut jkf, header_comments, where_a_board_could_be, read_header)) =
         parse_without_moves(SHAPES, input)?;
-    let read_header = rest.len() < input.len();
     // The side has to come from the starting position, not the ply parity: a
     // handicap record has White at every odd ply (R-HC-001).
     let start = crate::handicap::starting_side(jkf.initial.as_ref());

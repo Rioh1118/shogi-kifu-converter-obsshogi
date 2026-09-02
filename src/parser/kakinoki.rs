@@ -1182,10 +1182,11 @@ fn information_line_keyvalue<'a>(
     }
 }
 
-fn informations<'a>(
+fn informations(
     shapes: LineShapes,
-) -> impl FnMut(&'a str) -> IResult<&'a str, InformationData<'a>, VerboseError<&'a str>> {
-    move |input| information_lines(shapes, input)
+    input: &str,
+) -> IResult<&str, InformationData<'_>, VerboseError<&str>> {
+    information_lines(shapes, input)
 }
 
 fn information_lines<'a>(
@@ -1249,6 +1250,15 @@ fn board_row(input: &str) -> IResult<&str, Vec<Piece>, VerboseError<&str>> {
         ),
         pair(padding, end_of_line),
     )(input)
+}
+
+/// Whether a board diagram could open on this line: the file numbers, or the
+/// frame that sits under them (R-KIF-014 / D6).
+///
+/// Either alone says a diagram starts here — that is what lets [`board`] name
+/// the one of the two that is misspelled instead of unwinding to prose.
+fn a_board_opens(head: &str) -> bool {
+    head.starts_with("９ ８ ７ ６ ５ ４ ３ ２ １") || head.starts_with("+---")
 }
 
 fn board(input: &str) -> IResult<&str, [[Piece; 9]; 9], VerboseError<&str>> {
@@ -1398,6 +1408,11 @@ fn side_to_move_line(
     }
 }
 
+/// What the header block leaves behind: the record so far, the comments that
+/// stood among its lines, whether a board could still be arriving, and whether
+/// any line of the block itself was read.
+pub(super) type HeaderBlock<'a> = (JsonKifuFormat, Vec<String>, WhereABoardCouldBe, bool);
+
 /// Reads the header block: everything above the moves, including the board.
 ///
 /// `shapes` is how the reader says what its own lines look like; see
@@ -1418,14 +1433,72 @@ fn side_to_move_line(
 pub(super) fn parse_without_moves(
     shapes: LineShapes,
     input: &str,
-) -> IResult<&str, (JsonKifuFormat, Vec<String>, WhereABoardCouldBe), VerboseError<&str>> {
-    let (input, (info1, opt_board, info2, side_to_move)) = tuple((
-        informations(shapes),
-        opt(board),
-        informations(shapes),
-        side_to_move_line(shapes),
-    ))(input)?;
-    let info = InformationData::merged(info1, info2);
+) -> IResult<&str, HeaderBlock<'_>, VerboseError<&str>> {
+    // Blank lines and prose do not end the block. A `many0` that stops at the
+    // first line none of its arms take makes the *previous* line decide who owns
+    // the next one: everything below — the rest of the header, the board, the
+    // 手合割, the 後手番 — then goes to the move list's skip, which takes it
+    // whole and hands back a record with the position gone (D1, D21, GAP-007).
+    //
+    // What may be skipped here is only what is not a line of this format at all
+    // (`shapes.opens_a_line` decides, so the move list still gets its lines) and
+    // not a piece of a board (`not_move_line` with the guard on, since the board
+    // may still be arriving).
+    fn skippable(shapes: LineShapes, input: &str) -> IResult<&str, &str, VerboseError<&str>> {
+        // Not a line of this format, and not a line a board diagram opens
+        // with: a diagram whose first line is misspelled is a broken diagram,
+        // and skipping that line leaves the reader naming the frame below it
+        // (D1 asks for the line that broke).
+        let head = input.trim_start_matches(is_padding);
+        if (shapes.opens_a_line)(head) || a_board_opens(head) {
+            return Err(nom::Err::Error(VerboseError::from_error_kind(
+                input,
+                ErrorKind::Not,
+            )));
+        }
+        not_move_line(WhereABoardCouldBe(true), input)
+    }
+    let mut rest = input;
+    let mut info = InformationData::default();
+    let mut opt_board = None;
+    let mut side_to_move = None;
+    let mut read_a_line_of_its_own = false;
+    loop {
+        let (after, read) = informations(shapes, rest)?;
+        read_a_line_of_its_own |= after.len() < rest.len();
+        info = InformationData::merged(info, read);
+        rest = after;
+        if opt_board.is_none() {
+            // A `Failure` here is the diagram saying it is one and is broken
+            // (D21's three answers). Swallowing it hands the record to the skip,
+            // which cannot take the diagram either, and the leftover check then
+            // names the frame below the line that actually broke.
+            match board(rest) {
+                Ok((after, read)) => {
+                    opt_board = Some(read);
+                    read_a_line_of_its_own = true;
+                    rest = after;
+                    continue;
+                }
+                Err(err @ nom::Err::Failure(_)) => return Err(err),
+                Err(_) => {}
+            }
+        }
+        if side_to_move.is_none() {
+            if let Ok((after, Some(read))) = side_to_move_line(shapes)(rest) {
+                side_to_move = Some(read);
+                read_a_line_of_its_own = true;
+                rest = after;
+                continue;
+            }
+        }
+        match alt((blank_line, |input| skippable(shapes, input)))(rest) {
+            Ok((after, _)) => rest = after,
+            Err(nom::Err::Failure(err)) => return Err(nom::Err::Failure(err)),
+            Err(_) => break,
+        }
+    }
+    let input = rest;
     let has_a_board = opt_board.is_some();
     // A hand belongs to a board. Without one there is nowhere to put it, and
     // `initial.data` comes back `None` with the pieces gone — a 詰将棋 whose
@@ -1472,6 +1545,12 @@ pub(super) fn parse_without_moves(
             // of one; if it was not, a `|` or `+` line below is a board this
             // reader could not take.
             WhereABoardCouldBe(!has_a_board),
+            // Whether a line of the block itself was read. Bytes consumed is not
+            // the same question now that prose is skipped here: a file that is
+            // not a kifu at all would answer yes, and the empty record it comes
+            // back as is what the consumer picks an encoding on
+            // (`recognised_nothing`, D8).
+            read_a_line_of_its_own,
         ),
     ))
 }
@@ -1646,6 +1725,68 @@ mod tests {
                 MoveSpecial::from_kif_word(word, Color::Black).is_some(),
                 "{word:?} reads as no outcome"
             );
+        }
+    }
+
+    // A blank line or a note does not end the header block. A reader that stops
+    // at the first line none of its own rules take makes the *previous* line
+    // decide who owns the next one: everything below goes to the move list's
+    // skip, which takes it whole. The record then comes back `Ok` with the
+    // handicap, the hands and the side to move gone — and the writer saves that
+    // over the original (D1, D4, GAP-007).
+    #[test]
+    fn a_blank_line_or_a_note_does_not_end_the_header_block() {
+        use crate::parser::{parse_ki2_str, parse_kif_str};
+        for gap in ["", "\n", "第1譜\n", "\n\n第1譜\n\n"] {
+            let kif = format!(
+                "先手：山田太郎\n{gap}後手：田中一郎\n棋戦：竜王戦\n手合割：香落ち\n\
+                 手数----指手---------消費時間--\n   1 ３四歩(33)\n"
+            );
+            let read = parse_kif_str(&kif).unwrap_or_else(|e| panic!("{gap:?}: {e}"));
+            assert_eq!(3, read.header.len(), "{gap:?}: {:?}", read.header);
+            // The handicap decides who moves first (R-HC-001 / R-RULE-006), so
+            // losing it reverses every side in the game.
+            assert_eq!(
+                Some(Preset::PresetKY),
+                read.initial.map(|initial| initial.preset),
+                "{gap:?}"
+            );
+            let ki2 = format!("先手：山田太郎\n{gap}後手：田中一郎\n手合割：香落ち\n△３四歩\n");
+            assert_eq!(
+                2,
+                parse_ki2_str(&ki2)
+                    .unwrap_or_else(|e| panic!("{gap:?} as a KI2: {e}"))
+                    .header
+                    .len(),
+                "{gap:?} as a KI2"
+            );
+        }
+        // Including between the board and the lines that belong to it: the hands
+        // and the side to move are part of the diagram's block (R-KIF-014 / D6).
+        const BOARD: &str = concat!(
+            "  ９ ８ ７ ６ ５ ４ ３ ２ １\n",
+            "+---------------------------+\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・v玉|一\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|二\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|三\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|四\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|五\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|六\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|七\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|八\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ 玉|九\n",
+            "+---------------------------+\n",
+        );
+        for gap in ["", "\n", "図：第1図\n"] {
+            let record = format!("後手の持駒：なし\n{BOARD}{gap}先手の持駒：飛\n{gap}後手番\n");
+            let data = parse_kif_str(&record)
+                .unwrap_or_else(|e| panic!("{gap:?}: {e}"))
+                .initial
+                .expect("a position")
+                .data
+                .expect("a board");
+            assert_eq!(1, data.hands[0].HI, "{gap:?}: the hand went");
+            assert_eq!(Color::White, data.color, "{gap:?}: the side to move went");
         }
     }
 
@@ -3051,7 +3192,7 @@ mod tests {
     fn parse_informations() {
         assert_eq!(
             Ok(("", InformationData::default())),
-            informations(NOTHING)("")
+            informations(NOTHING, "")
         );
         assert_eq!(
             Ok((
@@ -3063,7 +3204,7 @@ mod tests {
                     ..Default::default()
                 }
             )),
-            informations(NOTHING)("# comment\n# comment：comment\nkey：value\n")
+            informations(NOTHING, "# comment\n# comment：comment\nkey：value\n")
         );
     }
 
