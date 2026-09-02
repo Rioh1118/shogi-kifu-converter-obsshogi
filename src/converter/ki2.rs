@@ -213,33 +213,18 @@ fn write_line<'a, W: Write>(
                         }
                     }
                 }
-                // No position to ask, so the record itself is all there is.
-                // R-NOT-003 lets 打 be left out when no piece of the same kind
-                // could have reached the square, but that is a claim about the
-                // board — without one it cannot be checked, and leaving 打 out
-                // makes the drop read back as a move from nowhere
-                // (`from: (0, 0)`), which `to_kif` then refuses outright.
-                // R-KI2-003: too little cannot be recovered, too much can.
-                _ => mv
-                    .relative
-                    .or_else(|| mv.from.is_none().then_some(Relative::H)),
+                // No position to ask, so the record itself is all there is —
+                // and what it says about a drop is the absence of `from`
+                // (R-JKF-003). `relative` is worked out from a board, so where
+                // the two disagree the record wins (D23).
+                _ if mv.from.is_none() => Some(Relative::H),
+                _ => mv.relative,
             };
             if let Some(relative) = relative {
-                match relative {
-                    Relative::L => sink.write_str("左")?,
-                    Relative::C => sink.write_str("直")?,
-                    Relative::R => sink.write_str("右")?,
-                    Relative::U => sink.write_str("上")?,
-                    Relative::M => sink.write_str("寄")?,
-                    Relative::D => sink.write_str("引")?,
-                    Relative::LU => sink.write_str("左上")?,
-                    Relative::LM => sink.write_str("左寄")?,
-                    Relative::LD => sink.write_str("左引")?,
-                    Relative::RU => sink.write_str("右上")?,
-                    Relative::RM => sink.write_str("右寄")?,
-                    Relative::RD => sink.write_str("右引")?,
-                    Relative::H => sink.write_str("打")?,
-                }
+                // The spelling belongs to `notation`, where the reader takes it
+                // from as well: two tables of the same 13 words only disagree
+                // when someone reads back a file this crate wrote.
+                sink.write_str(crate::notation::relative_word(relative))?;
             }
             match mv.promote {
                 // D12: a promotion is what the record says, and it is spelled

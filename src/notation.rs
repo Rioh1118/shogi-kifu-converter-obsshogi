@@ -74,7 +74,7 @@ pub(crate) fn promotion_is_spellable(
     piece.promote().is_some() && (from.relative_rank(side) <= 3 || to.relative_rank(side) <= 3)
 }
 
-use crate::jkf::Kind;
+use crate::jkf::{Kind, Relative};
 use std::fmt;
 
 /// Files, as the full-width digits `１`-`９`.
@@ -82,6 +82,34 @@ pub(crate) const SANYOU_SUJI: [char; 9] = ['１', '２', '３', '４', '５', '�
 
 /// Numbers 1-10 in kanji. Ranks use 1-9; hand counts reach 18 via `十`.
 pub(crate) const KANSUJI: [char; 10] = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
+
+/// How a move says which of several pieces made it (R-NOT-004).
+///
+/// One table, for the same reason as [`move_word`]: the reader and the writer
+/// have to agree letter for letter, and two tables only disagree when someone
+/// reads back a file this crate wrote. `左引` and `右引` were spelled twice and
+/// nothing tied the two together.
+///
+/// The normal form only. What a reader may *also* accept — `行` for `上`
+/// (R-NOT-006 / R-KI2-005) — is a different question and belongs to the reader.
+pub(crate) const fn relative_word(relative: Relative) -> &'static str {
+    match relative {
+        Relative::L => "左",
+        Relative::C => "直",
+        Relative::R => "右",
+        Relative::U => "上",
+        Relative::M => "寄",
+        Relative::D => "引",
+        Relative::LU => "左上",
+        Relative::LM => "左寄",
+        Relative::LD => "左引",
+        Relative::RU => "右上",
+        Relative::RM => "右寄",
+        Relative::RD => "右引",
+        // R-NOT-003. KIF spells it too, under a different rule (R-KIF-006).
+        Relative::H => "打",
+    }
+}
 
 /// The word a move gives `kind` — the standard form of it (R-NOT-006).
 ///

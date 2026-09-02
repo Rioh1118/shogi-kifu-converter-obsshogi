@@ -11,7 +11,7 @@ use encoding_rs::{Encoding, SHIFT_JIS, UTF_8};
 use nom::error::convert_error;
 use nom::Finish;
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::Read;
 use std::path::Path;
 
 /// Parses a CSA file to [`jkf::JsonKifuFormat`](crate::jkf::JsonKifuFormat)
@@ -273,10 +273,12 @@ pub fn parse_ki2_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
 ///
 /// This function returns [`ParseError`] if it fails to parse the file.
 pub fn parse_jkf_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseError> {
-    let file = File::open(&path)?;
-    let mut jkf = serde_json::from_reader::<_, JsonKifuFormat>(BufReader::new(file))?;
-    jkf.normalize()?;
-    Ok(jkf)
+    // Through the string reader, like every other format, so that what is
+    // decided about the bytes is decided in one place: a byte-order mark left on
+    // makes `serde_json` refuse the file, and the rule that removes it lives
+    // there (`without_a_byte_order_mark`). This is the entry the consumer's
+    // index feeds (R-REQ-002).
+    parse_jkf_str(&std::fs::read_to_string(path)?)
 }
 
 /// Parses a JSON string to [`jkf::JsonKifuFormat`](crate::jkf::JsonKifuFormat)
@@ -292,6 +294,7 @@ pub fn parse_jkf_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::BufReader;
     // R-KIF-001 / GAP-006: a BOM is not part of the record. Left on, it joins
     // the first line — the handicap goes missing and the record reads as 平手
     // with every side reversed (R-HC-001) — while everything below it reads, so
@@ -313,6 +316,14 @@ mod tests {
         assert_eq!(
             parse_csa_str(CSA).expect("reads"),
             parse_csa_str(&format!("\u{feff}{CSA}")).expect("reads with a BOM")
+        );
+        // Including from a file, which is the entry the consumer's index uses
+        // for JKF (R-REQ-002) and the one place the rule was not applied.
+        let jkf = r#"{"header":{},"initial":{"preset":"HIRATE"},"moves":[{}]}"#;
+        assert_eq!(
+            parse_jkf_file(scratch("plain.jkf", jkf.as_bytes())).expect("reads"),
+            parse_jkf_file(scratch("bom.jkf", format!("\u{feff}{jkf}").as_bytes()))
+                .expect("reads with a BOM")
         );
     }
 

@@ -311,11 +311,17 @@ fn calculate_from(
     to: shogi_core::Square,
 ) -> Result<Option<PlaceFormat>, NormalizeErrorKind> {
     let color = pos.side_to_move();
-    // The same candidate set the writer uses (`infer_relative_from_position`).
-    // `LiteLegalityChecker::normal_to_candidates` is not that set: it tests full
-    // legality, so a pinned piece drops out, while the writer follows
-    // `shogi_official_kifu` and counts it. Reading a suffix with a different
-    // set than the one that wrote it is how a move comes back ambiguous.
+    // The candidate set the writer scans (`infer_relative_from_position`), with
+    // one difference the reader cannot close: the writer adds the square the
+    // record says the move came from, and the reader is looking for that square.
+    // An illegal move is valid input (R-RULE-002) and `is_valid` leaves it out,
+    // so a suffix written for such a move names a piece this scan does not see —
+    // `to_ki2` then writes a line `parse_ki2_str` reports as ambiguous
+    // (`research/90-gaps.md` GAP-020 の隣、実データでは0件).
+    //
+    // `LiteLegalityChecker::normal_to_candidates` is not the set either: it
+    // tests full legality, so a pinned piece drops out, while the writer follows
+    // `shogi_official_kifu` and counts it (R-RULE-001, D2).
     let bb = candidates_reaching(
         pos,
         to,

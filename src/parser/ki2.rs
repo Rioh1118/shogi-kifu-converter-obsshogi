@@ -29,6 +29,44 @@ fn side_mark(input: &str) -> IResult<&str, Color, VerboseError<&str>> {
     )))
 }
 
+/// The normal spelling of what a move says about which piece made it
+/// (R-NOT-004).
+///
+/// Reads the table the writer writes from (`notation::relative_word`), longest
+/// first so that `左上` is not taken as `左` with `上` left over. A second table
+/// here would only disagree with the writer's when someone reads back a file
+/// this crate wrote.
+fn relative_word_here(input: &str) -> IResult<&str, Relative, VerboseError<&str>> {
+    // Longest first. The order is the table's own (`Relative::ALL` is checked
+    // against it), not a second answer written out here.
+    const IN_ORDER: [Relative; 13] = [
+        Relative::LU,
+        Relative::LM,
+        Relative::LD,
+        Relative::RU,
+        Relative::RM,
+        Relative::RD,
+        Relative::L,
+        Relative::C,
+        Relative::R,
+        Relative::U,
+        Relative::M,
+        Relative::D,
+        Relative::H,
+    ];
+    for relative in IN_ORDER {
+        if let Ok((rest, _)) =
+            tag::<_, _, VerboseError<&str>>(crate::notation::relative_word(relative))(input)
+        {
+            return Ok((rest, relative));
+        }
+    }
+    Err(nom::Err::Error(VerboseError::from_error_kind(
+        input,
+        nom::error::ErrorKind::Alt,
+    )))
+}
+
 fn single_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
     map(
         tuple((
@@ -39,21 +77,11 @@ fn single_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
             // (`５四角右成`). Reading promotion first leaves the suffix behind,
             // which ends the move list and silently drops the rest of the file.
             opt(alt((
-                value(Relative::LU, tag("左上")),
-                value(Relative::LM, tag("左寄")),
-                value(Relative::LD, tag("左引")),
-                value(Relative::RU, tag("右上")),
-                value(Relative::RM, tag("右寄")),
-                value(Relative::RD, tag("右引")),
-                value(Relative::L, tag("左")),
-                value(Relative::C, tag("直")),
-                value(Relative::R, tag("右")),
+                relative_word_here,
                 // R-NOT-006 / R-KI2-005: 飛・角の「上」は紙面で「行」と書かれる。
-                // 書き出しは正規形だけを使い、読み取りでは揺れを受ける。
-                value(Relative::U, alt((tag("上"), tag("行")))),
-                value(Relative::M, tag("寄")),
-                value(Relative::D, tag("引")),
-                value(Relative::H, tag("打")),
+                // 書き出しは正規形（`notation::relative_word`）だけを使い、
+                // 読み取りでは揺れも受ける。
+                value(Relative::U, tag("行")),
             ))),
             // R-NOT-005: 不成 is written out, unlike KIF (R-KIF-006).
             // R-NOT-006 / R-KI2-005: 生 is how 不成 appears in print.
@@ -583,6 +611,53 @@ pub(crate) fn parse(input: &str) -> IResult<&str, (JsonKifuFormat, bool), Verbos
 
 #[cfg(test)]
 mod tests {
+
+    // Every spelling the writer writes, the reader reads back as the same thing
+    // (R-NOT-004). Two tables of these 13 words is how a file this crate wrote
+    // stops opening: nothing else in the suite reaches 左引 / 右引, so swapping
+    // them used to leave all the tests green.
+    #[test]
+    fn every_relative_word_reads_back_as_itself() {
+        for relative in Relative::ALL {
+            let word = crate::notation::relative_word(relative);
+            assert_eq!(
+                Ok(("", relative)),
+                relative_word_here(word),
+                "{relative:?} is written {word:?}"
+            );
+        }
+        // Longest first, or `左上` is taken as `左` with `上` left over.
+        for relative in Relative::ALL {
+            let word = crate::notation::relative_word(relative);
+            let (rest, read) = relative_word_here(word).expect("reads");
+            assert!(rest.is_empty(), "{relative:?} left {rest:?}");
+            assert_eq!(relative, read);
+        }
+        // The list is the enum's, in full.
+        for (i, relative) in Relative::ALL.into_iter().enumerate() {
+            assert_eq!(i, relative.ordinal(), "{relative:?} is out of place");
+        }
+        // The words themselves, from R-NOT-004. One table cannot drift from
+        // itself, so what is left to get wrong is the spelling, and nothing else
+        // in the suite reaches 左引 / 右引.
+        assert_eq!(
+            [
+                "左上", "左寄", "左引", "右上", "右寄", "右引", "左", "直", "右", "上", "寄", "引",
+                "打",
+            ],
+            Relative::ALL.map(crate::notation::relative_word)
+        );
+        // And no two of them are spelled the same.
+        for a in Relative::ALL {
+            for b in Relative::ALL {
+                assert!(
+                    a == b
+                        || crate::notation::relative_word(a) != crate::notation::relative_word(b),
+                    "{a:?} and {b:?} are spelled the same"
+                );
+            }
+        }
+    }
     use super::*;
     use crate::normalizer::ORIGIN_UNSTATED;
     use std::collections::HashMap;

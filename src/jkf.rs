@@ -189,6 +189,51 @@ pub enum MoveSpecial {
     SpecialFusenpai,
 }
 
+impl Relative {
+    /// Every way a move can say which piece made it, so that a table over them
+    /// can be checked for gaps (R-NOT-004).
+    ///
+    /// Longest first: `左上` has to be tried before `左`, or a reader takes the
+    /// `左` and leaves `上` for the next rule.
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 13] = [
+        Self::LU,
+        Self::LM,
+        Self::LD,
+        Self::RU,
+        Self::RM,
+        Self::RD,
+        Self::L,
+        Self::C,
+        Self::R,
+        Self::U,
+        Self::M,
+        Self::D,
+        Self::H,
+    ];
+
+    /// Where `self` sits in [`Self::ALL`]. Exhaustive, so a variant added to the
+    /// enum stops the build here.
+    #[cfg(test)]
+    pub(crate) const fn ordinal(self) -> usize {
+        match self {
+            Self::LU => 0,
+            Self::LM => 1,
+            Self::LD => 2,
+            Self::RU => 3,
+            Self::RM => 4,
+            Self::RD => 5,
+            Self::L => 6,
+            Self::C => 7,
+            Self::R => 8,
+            Self::U => 9,
+            Self::M => 10,
+            Self::D => 11,
+            Self::H => 12,
+        }
+    }
+}
+
 impl MoveSpecial {
     /// Every outcome, so that a table over them can be checked for gaps.
     ///

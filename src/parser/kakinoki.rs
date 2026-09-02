@@ -25,15 +25,35 @@ enum Information<'a> {
 struct InformationData<'a> {
     preset: Option<Preset>,
     hands: [Hand; 2],
-    /// Where the last `…の持駒：` line started, for an error to point at. A hand
-    /// belongs to a board, and the reader that finds there is none is not the
-    /// one that read the line.
+    /// Where the first `…の持駒：` line that **states a piece** started, for an
+    /// error to point at.
+    ///
+    /// The same predicate decides both this and whether a board is required: an
+    /// empty hand states nothing the preset does not already say, so it is not a
+    /// reason to refuse and not a line to name. Two predicates is how a refusal
+    /// came to point at `先手の持駒：なし` while the line that made it necessary
+    /// was below.
     hand_line: Option<&'a str>,
     map: HashMap<String, String>,
     comments: Vec<String>,
 }
 
 impl<'a> InformationData<'a> {
+    /// Files a hand under `side`, remembering the line only if the hand needs a
+    /// board — which is the same question `hands_that_need_a_board` answers.
+    fn take_a_hand(&mut self, side: usize, hand: Hand, line: &'a str) {
+        self.hands[side] = hand;
+        if hand != Hand::default() {
+            self.hand_line.get_or_insert(line);
+        }
+    }
+
+    /// The line of the first hand that has nowhere to sit without a board, if
+    /// any hand does.
+    fn hands_that_need_a_board(&self) -> Option<&'a str> {
+        self.hand_line
+    }
+
     fn merged(lhs: Self, rhs: Self) -> Self {
         InformationData {
             preset: lhs.preset.or(rhs.preset),
@@ -1175,14 +1195,8 @@ fn information_lines<'a>(
             v.iter().fold(InformationData::default(), |mut acc, info| {
                 match info {
                     Information::Preset(p) => acc.preset = Some(*p),
-                    Information::HandBlack(h, line) => {
-                        acc.hands[0] = *h;
-                        acc.hand_line.get_or_insert(line);
-                    }
-                    Information::HandWhite(h, line) => {
-                        acc.hands[1] = *h;
-                        acc.hand_line.get_or_insert(line);
-                    }
+                    Information::HandBlack(h, line) => acc.take_a_hand(0, *h, line),
+                    Information::HandWhite(h, line) => acc.take_a_hand(1, *h, line),
                     Information::KeyValue(k, v) => {
                         acc.map.insert(k.to_owned(), v.to_owned());
                     }
@@ -1381,14 +1395,14 @@ fn side_to_move_line(
 /// place that knows whether the record's diagram was read, and the skips below
 /// have no way of finding out for themselves (GAP-007).
 ///
-/// Fails where a hand was stated and no board came: the pieces have nowhere to
-/// sit, and a record that keeps neither is not the record that was written
-/// (D1, D4).
+/// Fails where a hand **holding pieces** was stated and no board came: they have
+/// nowhere to sit, and a record that keeps neither is not the record that was
+/// written (D1, D4). An empty hand states nothing the preset does not already
+/// say, so it is read like any other header line.
 pub(super) fn parse_without_moves(
     shapes: LineShapes,
     input: &str,
 ) -> IResult<&str, (JsonKifuFormat, Vec<String>, WhereABoardCouldBe), VerboseError<&str>> {
-    let start = input;
     let (input, (info1, opt_board, info2, side_to_move)) = tuple((
         informations(shapes),
         opt(board),
@@ -1406,9 +1420,9 @@ pub(super) fn parse_without_moves(
     // `手合割` line states nothing the preset does not already say, and refusing
     // it would drop records tsshogi opens — R-KIF-014 warns about exactly that
     // disagreement, since the board block is a convention and not in the spec.
-    if info.hands != [Hand::default(); 2] && !has_a_board {
+    if let Some(line) = info.hands_that_need_a_board().filter(|_| !has_a_board) {
         return Err(broken_line(
-            info.hand_line.unwrap_or(start),
+            line,
             "this record states a hand but has no board for it",
         ));
     }
@@ -1643,6 +1657,13 @@ mod tests {
             assert!(message.contains("後手の持駒：飛二 角"), "{message}");
             assert!(crate::parser::parse_ki2_str(record).is_err(), "{record:?}");
         }
+        // The line that made the refusal necessary is the one named, even where
+        // an empty hand came first.
+        let message = crate::parser::parse_kif_str("先手の持駒：なし\n後手の持駒：飛\n")
+            .expect_err("a hand with no board is refused")
+            .to_string();
+        assert!(message.contains("後手の持駒：飛"), "{message}");
+        assert!(!message.contains("先手の持駒：なし"), "{message}");
         // Nothing to lose, so nothing to refuse.
         for record in [
             "手合割：平手\n後手の持駒：なし\n手数----指手---------消費時間--\n   1 ７六歩(77)\n",
