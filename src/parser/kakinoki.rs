@@ -24,65 +24,86 @@ enum Information<'a> {
 #[derive(Debug, Default, PartialEq, Eq)]
 struct InformationData<'a> {
     preset: Option<Preset>,
-    hands: [Hand; 2],
-    /// Where the first `…の持駒：` line that **states a piece** started, for an
-    /// error to point at.
-    ///
-    /// The same predicate decides both this and whether a board is required: an
-    /// empty hand states nothing the preset does not already say, so it is not a
-    /// reason to refuse and not a line to name. Two predicates is how a refusal
-    /// came to point at `先手の持駒：なし` while the line that made it necessary
-    /// was below.
-    hand_line: Option<&'a str>,
+    /// Each side's hand and the line that stated it, so that the answer to
+    /// "does this need a board" and the answer to "which line said so" come from
+    /// one place. Two answers is how a refusal came to point at
+    /// `先手の持駒：なし` while the line that made it necessary was below.
+    hands: [Option<(Hand, &'a str)>; 2],
     map: HashMap<String, String>,
     comments: Vec<String>,
 }
 
 impl<'a> InformationData<'a> {
-    /// Files a hand under `side`, remembering the line only if the hand needs a
-    /// board — which is the same question `hands_that_need_a_board` answers.
-    fn take_a_hand(&mut self, side: usize, hand: Hand, line: &'a str) {
-        self.hands[side] = hand;
-        if hand != Hand::default() {
-            self.hand_line.get_or_insert(line);
-        }
-    }
-
-    /// The line of the first hand that has nowhere to sit without a board, if
-    /// any hand does.
-    fn hands_that_need_a_board(&self) -> Option<&'a str> {
-        self.hand_line
-    }
-
-    fn merged(lhs: Self, rhs: Self) -> Self {
-        InformationData {
-            preset: lhs.preset.or(rhs.preset),
-            hands: Self::merged_hands(lhs.hands, rhs.hands),
-            hand_line: lhs.hand_line.or(rhs.hand_line),
-            map: lhs.map.into_iter().chain(rhs.map).collect(),
-            comments: lhs.comments.into_iter().chain(rhs.comments).collect(),
-        }
-    }
-    fn merged_hands(lhs: [Hand; 2], rhs: [Hand; 2]) -> [Hand; 2] {
-        [
-            Self::merged_hand(lhs[0], rhs[0]),
-            Self::merged_hand(lhs[1], rhs[1]),
-        ]
-    }
-    /// Adds the hands stated before and after the board.
+    /// Files what a `…の持駒：` line said.
     ///
-    /// Saturating rather than wrapping: a file that states a hand twice is
-    /// broken either way, and a wrapped count would look like a real one.
-    fn merged_hand(lhs: Hand, rhs: Hand) -> Hand {
-        Hand {
-            FU: lhs.FU.saturating_add(rhs.FU),
-            KY: lhs.KY.saturating_add(rhs.KY),
-            KE: lhs.KE.saturating_add(rhs.KE),
-            GI: lhs.GI.saturating_add(rhs.GI),
-            KI: lhs.KI.saturating_add(rhs.KI),
-            KA: lhs.KA.saturating_add(rhs.KA),
-            HI: lhs.HI.saturating_add(rhs.HI),
+    /// A record states each hand once. Stated twice, the two answers this reader
+    /// could give are "keep the last" (the first hand is gone without a word)
+    /// and "add them up" (pieces appear that nobody wrote) — both silent, which
+    /// D1 puts below being refused. An empty hand is the exception: it says
+    /// nothing the other line does not, so nothing is lost by taking the other.
+    fn state_a_hand(
+        &mut self,
+        color: Color,
+        hand: Hand,
+        line: &'a str,
+    ) -> Result<(), nom::Err<VerboseError<&'a str>>> {
+        let side = &mut self.hands[usize::from(color == Color::White)];
+        match side {
+            Some((stated, _)) if *stated != Hand::default() && hand != Hand::default() => {
+                Err(broken_line(line, "this record states one hand twice"))
+            }
+            Some((stated, _)) if *stated != Hand::default() => Ok(()),
+            _ => {
+                *side = Some((hand, line));
+                Ok(())
+            }
         }
+    }
+
+    /// The line of a hand that has nowhere to sit if no board came.
+    ///
+    /// An empty hand states nothing a preset does not already say, so it is not
+    /// a reason to refuse a record and not a line to name.
+    fn a_hand_with_no_board(&self) -> Option<&'a str> {
+        self.hands
+            .iter()
+            .flatten()
+            .filter(|(hand, _)| *hand != Hand::default())
+            // The first such line in the file, which is the longest tail of it:
+            // whichever side it belongs to, the reader is pointed at the first
+            // thing it cannot keep.
+            .map(|(_, line)| *line)
+            .max_by_key(|line| line.len())
+    }
+
+    /// What each side holds, for the position.
+    fn hands(&self) -> [Hand; 2] {
+        self.hands
+            .map(|side| side.map_or_else(Hand::default, |(hand, _)| hand))
+    }
+
+    /// Takes in what the lines below the ones already read said.
+    ///
+    /// The hands go through [`Self::state_a_hand`] rather than being merged, so
+    /// that a hand stated on both sides of the board is the same "stated twice"
+    /// as one stated twice in a row. Merging them here would be a second answer
+    /// to the same question, and the two disagreed: one kept the last line and
+    /// the other added the two up.
+    fn absorb(&mut self, other: Self) -> Result<(), nom::Err<VerboseError<&'a str>>> {
+        self.preset = self.preset.or(other.preset);
+        for (side, stated) in other.hands.into_iter().enumerate() {
+            if let Some((hand, line)) = stated {
+                let color = if side == 0 {
+                    Color::Black
+                } else {
+                    Color::White
+                };
+                self.state_a_hand(color, hand, line)?;
+            }
+        }
+        self.map.extend(other.map);
+        self.comments.extend(other.comments);
+        Ok(())
     }
 }
 
@@ -1193,36 +1214,33 @@ fn information_lines<'a>(
     shapes: LineShapes,
     input: &'a str,
 ) -> IResult<&'a str, InformationData<'a>, VerboseError<&'a str>> {
-    map(
-        many0(preceded(
-            many0(comment_line),
-            alt((
-                // Before the key-value rule, which would file the line under a
-                // key nobody wrote, and *as one of the alternatives* rather than
-                // as a guard: a guard that refuses ends `many0`, and everything
-                // below the comment — the rest of the header, the board, the
-                // `手合割` — is then read by nobody (R-KIF-004, R-HC-001).
-                map(move_comment_line, Information::Comment),
-                information_line_preset,
-                information_line_hands,
-                information_line_keyvalue(shapes),
-            )),
+    let (rest, read) = many0(preceded(
+        many0(comment_line),
+        alt((
+            // Before the key-value rule, which would file the line under a key
+            // nobody wrote, and *as one of the alternatives* rather than as a
+            // guard: a guard that refuses ends `many0`, and everything below the
+            // comment — the rest of the header, the board, the `手合割` — is then
+            // read by nobody (R-KIF-004, R-HC-001).
+            map(move_comment_line, Information::Comment),
+            information_line_preset,
+            information_line_hands,
+            information_line_keyvalue(shapes),
         )),
-        |v| {
-            v.iter().fold(InformationData::default(), |mut acc, info| {
-                match info {
-                    Information::Preset(p) => acc.preset = Some(*p),
-                    Information::HandBlack(h, line) => acc.take_a_hand(0, *h, line),
-                    Information::HandWhite(h, line) => acc.take_a_hand(1, *h, line),
-                    Information::KeyValue(k, v) => {
-                        acc.map.insert(k.to_owned(), v.to_owned());
-                    }
-                    Information::Comment(c) => acc.comments.push(c.to_owned()),
-                }
-                acc
-            })
-        },
-    )(input)
+    ))(input)?;
+    let mut acc = InformationData::default();
+    for info in read {
+        match info {
+            Information::Preset(p) => acc.preset = Some(p),
+            Information::HandBlack(h, line) => acc.state_a_hand(Color::Black, h, line)?,
+            Information::HandWhite(h, line) => acc.state_a_hand(Color::White, h, line)?,
+            Information::KeyValue(k, v) => {
+                acc.map.insert(k, v);
+            }
+            Information::Comment(c) => acc.comments.push(c),
+        }
+    }
+    Ok((rest, acc))
 }
 
 fn board_piece_color(input: &str) -> IResult<&str, Color, VerboseError<&str>> {
@@ -1466,7 +1484,7 @@ pub(super) fn parse_without_moves(
     loop {
         let (after, read) = informations(shapes, rest)?;
         read_a_line_of_its_own |= after.len() < rest.len();
-        info = InformationData::merged(info, read);
+        info.absorb(read)?;
         rest = after;
         if opt_board.is_none() {
             // A `Failure` here is the diagram saying it is one and is broken
@@ -1509,7 +1527,7 @@ pub(super) fn parse_without_moves(
     // `手合割` line states nothing the preset does not already say, and refusing
     // it would drop records tsshogi opens — R-KIF-014 warns about exactly that
     // disagreement, since the board block is a convention and not in the spec.
-    if let Some(line) = info.hands_that_need_a_board().filter(|_| !has_a_board) {
+    if let Some(line) = info.a_hand_with_no_board().filter(|_| !has_a_board) {
         return Err(broken_line(
             line,
             "this record states a hand but has no board for it",
@@ -1521,7 +1539,7 @@ pub(super) fn parse_without_moves(
             data: Some(StateFormat {
                 color: side_to_move.unwrap_or(Color::Black),
                 board,
-                hands: info.hands,
+                hands: info.hands(),
             }),
         })
     } else {
@@ -1876,17 +1894,50 @@ mod tests {
             information_value_hand(overflowing.trim_end()).is_err(),
             "a hand of 270 must not parse"
         );
+    }
 
-        // Stated before *and* after the board. Each line is under the limit on
-        // its own, so the guard that matters here is the one merging them.
-        let (_, half) =
-            information_value_hand("歩十八 歩十八 歩十八 歩十八 歩十八 歩十八 歩十八 歩十八")
-                .expect("144 pawns parses");
-        assert_eq!(144, half.FU);
-        // 288 wraps to 32; saturating keeps it obviously wrong.
-        let merged =
-            InformationData::merged_hands([half, Hand::default()], [half, Hand::default()]);
-        assert_eq!(u8::MAX, merged[0].FU);
+    // A record states each hand once. Stated twice, the two answers a reader can
+    // give — keep the last, or add them up — both change the position without
+    // saying so: pieces disappear or pieces appear that nobody wrote. D1 puts
+    // that below being refused, and the corpus has no record that states one
+    // twice (0 of 609).
+    //
+    // An empty hand is the exception, since it says nothing the other line does
+    // not: `先手の持駒：なし` above a diagram and `先手の持駒：飛` below it is one
+    // hand stated once.
+    #[test]
+    fn a_hand_stated_twice_is_reported_rather_than_merged() {
+        use crate::parser::parse_kif_str;
+        const BOARD: &str = concat!(
+            "  ９ ８ ７ ６ ５ ４ ３ ２ １\n",
+            "+---------------------------+\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・v玉|一\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|二\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|三\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|四\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|五\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|六\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|七\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ ・|八\n",
+            "| ・ ・ ・ ・ ・ ・ ・ ・ 玉|九\n",
+            "+---------------------------+\n",
+        );
+        // Twice with pieces, in one block and across the diagram.
+        for record in [
+            format!("先手の持駒：飛\n先手の持駒：角\n{BOARD}"),
+            format!("先手の持駒：飛\n{BOARD}先手の持駒：角\n"),
+        ] {
+            let message = parse_kif_str(&record).expect_err(&record).to_string();
+            assert!(message.contains("states one hand twice"), "{message}");
+        }
+        // Once, with an empty line for the other side of the diagram.
+        let data = parse_kif_str(&format!("先手の持駒：なし\n{BOARD}先手の持駒：飛\n"))
+            .expect("reads")
+            .initial
+            .expect("a position")
+            .data
+            .expect("a board");
+        assert_eq!(1, data.hands[0].HI);
     }
 
     // A line the move list has no shape for is skipped whole — one line, not
