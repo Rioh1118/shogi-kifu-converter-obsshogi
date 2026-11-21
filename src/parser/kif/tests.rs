@@ -940,3 +940,15 @@ fn a_note_after_the_handicap_does_not_hide_it() {
     let other = crate::parser::parse_kif_str("手合割：香落ち戦\n").expect("kept as text");
     assert_eq!(Some(&"香落ち戦".to_owned()), other.header.get("手合割"));
 }
+
+/// GAP-031: a keyword R-KIF-004 lists is a header whatever colon it uses. A
+/// key outside the list still needs the full-width one (D8).
+#[test]
+fn a_listed_keyword_is_a_header_with_either_colon() {
+    let jkf = crate::parser::parse_kif_str("棋戦:竜王戦\n先手:羽生善治\n開始日時:2024/01/02\n手数----指手---------消費時間--\n   1 ７六歩(77)\n")
+        .expect("reads");
+    assert_eq!(Some(&"竜王戦".to_owned()), jkf.header.get("棋戦"));
+    assert_eq!(Some(&"羽生善治".to_owned()), jkf.header.get("先手"));
+    assert_eq!(Some(&"2024/01/02".to_owned()), jkf.header.get("開始日時"));
+    assert!(crate::parser::parse_kif_str("{\"header\":{},\"moves\":[{}]}\n").is_err());
+}

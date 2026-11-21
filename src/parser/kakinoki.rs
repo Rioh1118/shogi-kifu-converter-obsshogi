@@ -1136,8 +1136,49 @@ fn information_line_hands(input: &str) -> IResult<&str, Information<'_>, Verbose
 
 /// Whether `key` is one of the words that name a line of the opening block, and
 /// so may be written with either colon ([`colon`]).
+///
+/// The handicap, the hands, and the keywords R-KIF-004 lists (KIF §6–§8): a
+/// `棋戦:竜王戦` is a header whatever colon it uses, and leaving it out dropped
+/// the line (GAP-031). A key outside this list still needs the full-width
+/// colon, so that `key: value` in any text is not taken for a header (D8).
 fn names_line(key: &str) -> bool {
-    key == crate::handicap::KIF_KEYWORD || key.ends_with("の持駒")
+    const KEYWORDS: [&str; 30] = [
+        // KIF §6: the players.
+        "先手",
+        "後手",
+        "下手",
+        "上手",
+        // KIF §7: the game.
+        "開始日時",
+        "対局日",
+        "終了日時",
+        "棋戦",
+        "戦型",
+        "表題",
+        "持ち時間",
+        "秒読み",
+        "消費時間",
+        "場所",
+        "掲載",
+        "備考",
+        "先手省略名",
+        "後手省略名",
+        "記録係",
+        // KIF §8: a tsume.
+        "作品番号",
+        "作品名",
+        "作者",
+        "発表誌",
+        "発表年月",
+        "出典",
+        "手数",
+        "完全性",
+        "分類",
+        "受賞",
+        // The opening block's own.
+        "手合割",
+    ];
+    KEYWORDS.contains(&key) || key.ends_with("の持駒")
 }
 
 /// A `<キーワード>：<値>` line, which a header can be any of (R-KIF-004).
