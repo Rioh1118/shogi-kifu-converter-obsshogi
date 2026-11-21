@@ -952,3 +952,23 @@ fn a_listed_keyword_is_a_header_with_either_colon() {
     assert_eq!(Some(&"2024/01/02".to_owned()), jkf.header.get("開始日時"));
     assert!(crate::parser::parse_kif_str("{\"header\":{},\"moves\":[{}]}\n").is_err());
 }
+
+/// GAP-051: two alternatives to the same move keep their order through KIF.
+#[test]
+fn alternatives_to_one_move_keep_their_order() {
+    let src = "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n   2 ３四歩(33)\n   3 ６八銀(79)+\n\n変化：3手\n   3 ６八飛(28)\n\n変化：3手\n   3 ６八玉(59)\n";
+    let jkf = crate::parser::parse_kif_str(src).expect("reads");
+    let firsts = |jkf: &crate::jkf::JsonKifuFormat| -> Vec<Kind> {
+        jkf.moves[3]
+            .forks
+            .iter()
+            .flatten()
+            .filter_map(|f| f[0].move_.map(|m| m.piece))
+            .collect()
+    };
+    assert_eq!(vec![Kind::HI, Kind::OU], firsts(&jkf));
+    let back =
+        crate::parser::parse_kif_str(&jkf.try_to_string(crate::Format::Kif).expect("writes"))
+            .expect("reads back");
+    assert_eq!(firsts(&jkf), firsts(&back));
+}

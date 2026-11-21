@@ -153,8 +153,10 @@ fn write_move_lines<W: Write>(
         }
         if let Some(ref forks) = mf.forks {
             // A fork replaces this node, so it starts on this node's turn
-            // (R-JKF-004).
-            for fork in forks {
+            // (R-JKF-004). Pushed last-first, so that the stack hands them back
+            // in the record's order: the reader keeps the order it reads, and
+            // the alternatives to one move came back swapped (GAP-051).
+            for fork in forks.iter().rev() {
                 forks_stack.push((i, side, fork));
             }
         }
