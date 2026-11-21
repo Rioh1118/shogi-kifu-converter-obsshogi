@@ -198,8 +198,8 @@ fn write_line<'a, W: Write>(
             let core_move = shogi_core::Move::try_from(mv).ok();
             let relative = match (&position, core_move) {
                 (Some(pos), Some(core_move)) => {
-                    use crate::normalizer::Suffix;
-                    match crate::normalizer::infer_relative_from_position(pos, core_move) {
+                    use crate::notation::relative::Suffix;
+                    match crate::notation::relative::infer_relative_from_position(pos, core_move) {
                         Suffix::Nothing => None,
                         Suffix::Only(relative) => Some(relative),
                         // R-NOT-004 stage 3: more than one piece could have made

@@ -19,6 +19,8 @@
 //! parsing reach into it: `handicap::is_known_name` has to trim a value before
 //! it can match a name, and the handicap table is a leaf.
 
+pub(crate) mod relative;
+
 /// The characters a line ending is made of, whichever of them a file or a value
 /// carries.
 ///
