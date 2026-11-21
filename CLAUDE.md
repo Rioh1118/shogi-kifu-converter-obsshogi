@@ -45,6 +45,18 @@ bash .claude/verify.sh    # cargo fmt --check + clippy -D warnings + test （約
 **コードを変更する前に `/implement` を読む。** 刻み方・レビューの厚さの決め方・
 途中で見つけた既存の問題の扱い・タグを打つまでの順序をそこに置いてある。
 
+**依存は上から下へだけ向ける。** 下の層が上の層を `use` しない。
+
+```
+データ    jkf, error
+規則      notation（駒の語・終局語・相対位置 R-NOT-004）, handicap, shogi_core
+正規化    normalizer
+書式      parser/*, converter/*, format
+```
+
+KIF・KI2・CSA のどれか1つの語彙でも、読み手と書き手の両方が使うなら `notation` に置く。
+例外は移動元の印 `normalizer::ORIGIN_UNSTATED`（KI2・CSA の読み手が使う）。
+
 - `/review-round` — 観点ごとの reviewer を並列で走らせ `.claude/reviews/` に報告書を書く
 - `/review-fix` — 報告書の所見を1件1コミットで直し、結果を報告書に書き戻す
 

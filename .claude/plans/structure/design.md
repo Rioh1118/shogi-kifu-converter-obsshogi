@@ -108,3 +108,9 @@ consumer が呼んでいるもの（`~/src/github.com/Rioh1118/obs-shogi/src-tau
 
 - 破壊的変更の5つ（上の「この PR でしないこと」）。次の minor（0.7.0）で consumer と同時に
 - `error.rs` が `notation` の表示用の型（`Coordinate`・`MoveText`）を使う。層0が層1を読む向きだが、表示だけなので残す
+
+## 実装の結果（ブランチ `refactor/structure`）
+
+- 済み: 駒・持ち駒の操作を `jkf` へ／相対位置の規則を `notation::relative` へ（`calculate_from` は `resolve_from` に改名）／終局語を `notation::special` へ／CSA の読み手を `parser/csa.rs`、文字コードと BOM を `parser/text.rs` へ／長いテスト5つを `tests.rs` へ／`Format` と `parse_str`・`parse_file`・`try_to_string` を追加／真偽値の正規化2つを非推奨に
+- 依存の残り: `parser/{ki2,csa}` → `normalizer`（`ORIGIN_UNSTATED`）、`error` → `notation`（表示）。`jkf` → `notation` と `format` → `parser` は doc のリンクだけ
+- 名前: 書く方は既存の `try_to_kif_owned` に倣って `try_` を付け、書式を引数に取るので `try_to_string(format)` にした。`to_string` は `ToString` と紛れるので避けた
