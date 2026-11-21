@@ -128,7 +128,19 @@ impl MoveSpecial {
             };
         }
         if phrase.ends_with("反則負け") {
-            return Some(MoveSpecial::SpecialIllegalMove);
+            // The phrase names the loser (GAP-043). The side to move losing
+            // is ILLEGAL_MOVE; the side that just moved losing is a foul by
+            // that side, which only ±ILLEGAL_ACTION can say.
+            let loser = match phrase.strip_suffix("の反則負け") {
+                Some("先手") => Color::Black,
+                Some("後手") => Color::White,
+                _ => side_to_move,
+            };
+            return Some(match (loser == side_to_move, loser) {
+                (true, _) => MoveSpecial::SpecialIllegalMove,
+                (false, Color::Black) => MoveSpecial::SpecialIllegalActionBlack,
+                (false, Color::White) => MoveSpecial::SpecialIllegalActionWhite,
+            });
         }
         if phrase.ends_with("入玉勝ち") {
             return Some(MoveSpecial::SpecialKachi);
