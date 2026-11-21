@@ -112,7 +112,7 @@ impl JsonKifuFormat {
     /// Returns [`ConvertError`] when the record cannot be turned into a
     /// position, which happens three ways: the initial position is a
     /// [`Preset::PresetOther`](crate::jkf::Preset::PresetOther) with no board
-    /// (`InitialBoardNoDataWithPresetOTHER`), a coordinate is off the board
+    /// (`UnknownPreset`), a coordinate is off the board
     /// (`InvalidSquare`), or a move cannot be played from the position before it
     /// (`Normalize`). A kifu recording an illegal move is valid input
     /// (R-RULE-002), so the third is a value a file can produce and the caller
@@ -663,7 +663,7 @@ mod tests {
         assert_eq!("", usi);
         let err = jkf.try_to_usi_owned().expect_err("the move cannot be made");
         assert_eq!(
-            "Failed to normalize: Invalid move: ５五→５四 at ply 1",
+            "failed to normalize: invalid move: ５五→５四 at ply 1",
             err.to_string(),
             "the error has to name the move in coordinates the file uses"
         );

@@ -31,20 +31,6 @@ pub trait ToKif {
         self.to_kif(&mut s)?;
         Ok(s)
     }
-
-    /// Returns `self`'s string representation.
-    ///
-    /// A record that cannot be spelled in KIF yields whatever was written
-    /// before the failure. Use [`Self::try_to_kif_owned`] to see the error
-    /// instead of a truncated file.
-    #[deprecated(
-        note = "returns a truncated string on failure, which the caller writes to disk as if it were the whole record. Use try_to_kif_owned."
-    )]
-    fn to_kif_owned(&self) -> String {
-        let mut s = String::new();
-        let _ = self.to_kif(&mut s);
-        s
-    }
 }
 
 impl ToKif for JsonKifuFormat {

@@ -77,92 +77,10 @@ impl Normalization {
         color: ColorSource::Recorded,
         relative: RelativeFill::Fill,
     };
-
-    fn from_flags(correct_color: bool, infer_relative: bool) -> Self {
-        Self {
-            color: if correct_color {
-                ColorSource::Position
-            } else {
-                ColorSource::Recorded
-            },
-            relative: if infer_relative {
-                RelativeFill::Fill
-            } else {
-                RelativeFill::Skip
-            },
-        }
-    }
 }
 
 impl JsonKifuFormat {
-    /// Normalizes the JKF data.
-    ///
-    /// `correct_color`: when true, each move's `color` is overwritten with the
-    /// side to move in the position (KIF, KI2: the reader guessed it from the
-    /// ply). When false, a `color` that disagrees is an error (CSA, JKF: the
-    /// record states it).
-    ///
-    /// `infer_relative`: when false, `relative` (左/右/上/...) is left as read.
-    /// [`Self::populate_relative`] fills it in later.
-    ///
-    /// # A handicap numbered from Black
-    ///
-    /// Before anything else, a record that starts from a named handicap and
-    /// gives its first move to Black has every main-line `color` swapped. The
-    /// upper hand moves first in a handicap (R-HC-001), so a reader that
-    /// numbered from Black got every side backwards. This runs whatever
-    /// `correct_color` says.
-    ///
-    /// # What the position decides, and what the record does
-    ///
-    /// For a move that has an origin, `piece`, `same` and `capture` are worked
-    /// out from the position and replace whatever the input held. They describe
-    /// the board, not the game: which piece stands on `from`, what it took,
-    /// whether the square is the one the move before went to. An input that
-    /// disagrees was describing a different board.
-    ///
-    /// A drop has no origin (R-JKF-003), so there is no square to ask about and
-    /// those three are left as they came. `time.total` is recomputed for every
-    /// move, drops included.
-    ///
-    /// `promote` is not one of them either. Only the record says whether a move
-    /// promoted — no board can be asked after the fact — so a promotion the
-    /// input states is kept, and the position is consulted only to decide
-    /// whether a move that did *not* promote is worth recording as `false`
-    /// (R-NOT-005).
-    ///
-    /// `from` is worked out from the position only where the record wrote an
-    /// origin it could not read — `ORIGIN_UNSTATED`, the square off the board.
-    /// A `from` that is simply absent is a drop (R-JKF-003) and stays absent.
-    ///
-    /// `relative` is filled in only when `infer_relative` is set, which
-    /// `parse_kif_str` does not do (R-REQ-006): a JKF read from a KIF has none,
-    /// and [`Self::populate_relative`] is what fills them.
-    ///
-    /// `same` is read before it is written: it is what says a move's destination
-    /// is the previous move's, which is the only way `to` can be filled in.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NormalizeError`] if a move before the record's first special move
-    /// cannot be resolved against the position it is played from.
-    ///
-    /// Past a special move it does not: a record need not continue the position
-    /// before it (R-RULE-002), so the first move the board cannot explain ends
-    /// the tracking, and every field from there on is left as the input had it.
-    /// **Whatever the parser accepted, this accepts.**
-    #[deprecated(
-        note = "two bare bools say nothing at the call site. Use normalize(), and populate_relative() when relative is wanted; the parse_* functions already normalize."
-    )]
-    pub fn normalize_with_options(
-        &mut self,
-        correct_color: bool,
-        infer_relative: bool,
-    ) -> Result<(), NormalizeError> {
-        self.normalize_as(Normalization::from_flags(correct_color, infer_relative))
-    }
-
-    /// [`Self::normalize_with_options`], with the two choices named.
+    /// [`Self::normalize`], with the two choices the readers make named.
     pub(crate) fn normalize_as(&mut self, how: Normalization) -> Result<(), NormalizeError> {
         normalize_initial(self)?;
         let pos = if let Some(initial) = &self.initial {
@@ -196,41 +114,60 @@ impl JsonKifuFormat {
         Ok(())
     }
 
-    /// Normalizes the JKF data, inferring `relative` for every move.
+    /// Normalizes the JKF data: replays it on the board and fills in what the
+    /// board decides.
     ///
-    /// Equivalent to [`Self::normalize_with_options`] with `infer_relative` set.
+    /// Each move's `color` has to agree with the side to move in the position;
+    /// one that does not is an error. The `parse_*` functions have already
+    /// normalized what they return, the KIF and KI2 readers with the side
+    /// taken from the position instead, since those formats number the moves
+    /// rather than state whose they are.
+    ///
+    /// # A handicap numbered from Black
+    ///
+    /// Before anything else, a record that starts from a named handicap and
+    /// gives its first move to Black has every main-line `color` swapped. The
+    /// upper hand moves first in a handicap (R-HC-001), so a reader that
+    /// numbered from Black got every side backwards.
+    ///
+    /// # What the position decides, and what the record does
+    ///
+    /// For a move that has an origin, `piece`, `same` and `capture` are worked
+    /// out from the position and replace whatever the input held. They describe
+    /// the board, not the game: which piece stands on `from`, what it took,
+    /// whether the square is the one the move before went to. An input that
+    /// disagrees was describing a different board.
+    ///
+    /// A drop has no origin (R-JKF-003), so there is no square to ask about and
+    /// those three are left as they came. `time.total` is recomputed for every
+    /// move, drops included.
+    ///
+    /// `promote` is not one of them either. Only the record says whether a move
+    /// promoted — no board can be asked after the fact — so a promotion the
+    /// input states is kept, and the position is consulted only to decide
+    /// whether a move that did *not* promote is worth recording as `false`
+    /// (R-NOT-005).
+    ///
+    /// `from` is worked out from the position only where the record wrote an
+    /// origin it could not read — `ORIGIN_UNSTATED`, the square off the board.
+    /// A `from` that is simply absent is a drop (R-JKF-003) and stays absent.
+    ///
+    /// `relative` is filled in for every move that has none. `parse_kif_str`
+    /// skips that (R-REQ-006): a JKF read from a KIF has none, and
+    /// [`Self::populate_relative`] is what fills them.
+    ///
+    /// `same` is read before it is written: it is what says a move's destination
+    /// is the previous move's, which is the only way `to` can be filled in.
     ///
     /// # Errors
     ///
-    /// Returns [`NormalizeError`] if a move cannot be resolved against the
-    /// position it is played from.
-    #[deprecated(
-        note = "a bare bool says nothing at the call site. Use normalize(); the parse_* functions already normalize."
-    )]
-    pub fn normalize_with_color_correction(
-        &mut self,
-        correct_color: bool,
-    ) -> Result<(), NormalizeError> {
-        self.normalize_as(Normalization::from_flags(correct_color, true))
-    }
-
-    /// Normalizes the JKF data, requiring the move colors to already be right.
+    /// Returns [`NormalizeError`] if a move before the record's first special move
+    /// cannot be resolved against the position it is played from.
     ///
-    /// Equivalent to [`Self::normalize_with_options`] with `correct_color`
-    /// cleared and `infer_relative` set: a color that disagrees with the
-    /// position's side to move is an error rather than something to overwrite.
-    /// Use this for sources where the color is recorded explicitly (CSA, JKF)
-    /// and [`Self::normalize_with_color_correction`] for those where it is
-    /// derived from the move number (KIF, KI2).
-    ///
-    /// On a move with an origin, `piece`, `same` and `capture` are recomputed
-    /// from the position and overwrite whatever the input held; `promote` is the
-    /// record's to state. See [`Self::normalize_with_options`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NormalizeError`] if a move cannot be resolved against the
-    /// position it is played from.
+    /// Past a special move it does not: a record need not continue the position
+    /// before it (R-RULE-002), so the first move the board cannot explain ends
+    /// the tracking, and every field from there on is left as the input had it.
+    /// **Whatever the parser accepted, this accepts.**
     pub fn normalize(&mut self) -> Result<(), NormalizeError> {
         self.normalize_as(Normalization::RECORDED)
     }

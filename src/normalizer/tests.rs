@@ -81,7 +81,7 @@ fn a_stated_promote_false_is_not_overruled_by_the_piece_name() {
 
 // A drop has no origin (R-JKF-003), so there is no square to ask what piece
 // moved or what it took, and `piece` and `capture` are left as they came.
-// The contract in `normalize_with_options` is what the consumer reads before
+// The contract in `normalize` is what the consumer reads before
 // trusting those fields, so the exception is worth a test of its own.
 //
 // `same` is not among them for a reason that is not worth a case: a drop
@@ -359,7 +359,7 @@ fn a_move_the_notation_cannot_spell_is_not_written() {
     // Naming the move is the point: the consumer has to be able to tell
     // the user which move it could not save.
     assert_eq!(
-        "The notation cannot tell this move apart: ３一→５三",
+        "the notation cannot tell this move apart: ３一→５三",
         jkf.try_to_ki2_owned()
             .expect_err("three bishops reach 5三")
             .to_string()
@@ -815,13 +815,13 @@ fn a_move_that_will_not_apply_is_named_in_shogi_coordinates() {
         (
             // 5五 is empty at the start, so nothing there can have moved.
             r#"{"move":{"color":0,"from":{"x":5,"y":5},"to":{"x":5,"y":4},"piece":"FU"}}"#,
-            "failed to normalize: No pieces at ５五 at ply 1",
+            "failed to normalize: no pieces at ５五 at ply 1",
         ),
         (
             // A drop with an empty hand: JKF says a drop by leaving `from`
             // out (R-JKF-003).
             r#"{"move":{"color":0,"to":{"x":5,"y":5},"piece":"FU"}}"#,
-            "failed to normalize: Invalid move: ５五歩打 at ply 1",
+            "failed to normalize: invalid move: ５五歩打 at ply 1",
         ),
     ] {
         let err = crate::parser::parse_jkf_str(&record(mv)).expect_err("{mv} was accepted");
@@ -958,7 +958,7 @@ fn a_normalization_error_says_which_move_it_is_about() {
     );
     let err = crate::parser::parse_jkf_str(&json).expect_err("5五 is empty");
     assert_eq!(
-        "failed to normalize: No pieces at ５五 at ply 5",
+        "failed to normalize: no pieces at ５五 at ply 5",
         err.to_string()
     );
 }

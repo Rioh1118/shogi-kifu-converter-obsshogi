@@ -5,40 +5,38 @@ use thiserror::Error;
 /// An error that can occur while converting from/into [`shogi_core::Position`]
 #[derive(Error, Debug, PartialEq)]
 pub enum ConvertError {
-    /// Board data is required if `preset` is [`PresetOther`](crate::jkf::Preset::PresetOther)
-    #[error("Invalid initial board: no data with preset `OTHER`")]
-    InitialBoardNoDataWithPresetOTHER,
     /// [`shogi_core::Square::new()`] was failed for the `(file, rank)`
-    #[error("Invalid (file, rank) for `Square`: {0:?}")]
+    #[error("invalid (file, rank) for `Square`: {0:?}")]
     InvalidSquare((u8, u8)),
     /// Invalid [`shogi_core::PieceKind`] for [`shogi_core::Hand`]
-    #[error("Invalid piece kind for `Hand`: {0:?}")]
+    #[error("invalid piece kind for `Hand`: {0:?}")]
     InvalidHandPiece(shogi_core::PieceKind),
-    /// The initial position names a handicap with no board (R-HC-004)
-    #[error("No board for preset: {0:?}")]
+    /// The initial position names a handicap with no board (R-HC-004):
+    /// [`PresetOther`](crate::jkf::Preset::PresetOther) without `data`
+    #[error("no board for preset: {0:?}")]
     UnknownPreset(crate::jkf::Preset),
     /// A number the notation has no characters for
     ///
     /// A file or a rank outside 1-9, or a count in hand above 18. Writing it
     /// anyway would produce a file this crate's own reader cannot read back.
-    #[error("The notation cannot spell the number {0}")]
+    #[error("the notation cannot spell the number {0}")]
     UnspellableNumber(u8),
     /// More than one piece could have made the move and the notation has no
     /// suffix that tells them apart (R-NOT-004 stage 3)
-    #[error("The notation cannot tell this move apart: {}", crate::notation::MoveText(*.0))]
+    #[error("the notation cannot tell this move apart: {}", crate::notation::MoveText(*.0))]
     UnspellableMove(shogi_core::Move),
     /// The sink refused the write
     ///
     /// Writing into a `String` never fails, so this only reaches a caller that
     /// supplied its own sink.
-    #[error("Failed to write")]
+    #[error("failed to write")]
     Write,
     /// An error that occurred while normalizing [`JsonKifuFormat`](crate::jkf::JsonKifuFormat)
     ///
     /// Boxed rather than flattened to its message: the two enums refer to each
     /// other, and a caller that has to tell an illegal move (valid input under
     /// R-RULE-002) from a board it cannot build needs the variant, not prose.
-    #[error("Failed to normalize: {0}")]
+    #[error("failed to normalize: {0}")]
     Normalize(Box<NormalizeError>),
 }
 
@@ -104,24 +102,24 @@ impl std::error::Error for NormalizeError {
 #[derive(Error, Debug, PartialEq)]
 pub enum NormalizeErrorKind {
     /// Couldn't disambiguous the [`jkf::MoveMoveFormat.from`](crate::jkf::MoveMoveFormat::from)
-    #[error("Move `from` is ambiguous: {}", crate::notation::Coordinates(.0))]
+    #[error("move `from` is ambiguous: {}", crate::notation::Coordinates(.0))]
     AmbiguousMoveFrom(Vec<shogi_core::Square>),
     /// [`shogi_core::PartialPosition::last_move()`] is required if [`jkf::MoveMoveFormat::same`](crate::jkf::MoveMoveFormat::same) is not `None`
-    #[error("No previous move")]
+    #[error("no previous move")]
     NoLastMove,
     /// There are no pieces at the [`shogi_core::Square`]
-    #[error("No pieces at {}", crate::notation::Coordinate(*.0))]
+    #[error("no pieces at {}", crate::notation::Coordinate(*.0))]
     NoPieceAt(shogi_core::Square),
     /// [`shogi_core::PartialPosition::make_move()`] was failed for the [`shogi_core::Move`]
-    #[error("Invalid move: {}", crate::notation::MoveText(*.0))]
+    #[error("invalid move: {}", crate::notation::MoveText(*.0))]
     MakeMoveFailed(shogi_core::Move),
     /// An error that occurred while converting from/into [`shogi_core::Position`]
     ///
     /// Boxed for the same reason as [`ConvertError::Normalize`].
-    #[error("Failed to convert: {0}")]
+    #[error("failed to convert: {0}")]
     Convert(Box<ConvertError>),
     /// Incorrect sequence of move colors
-    #[error("Invalid color")]
+    #[error("invalid color")]
     InvalidColor,
 }
 
@@ -138,26 +136,26 @@ pub enum ParseError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
     /// A CSA record this crate cannot read, with the line it stopped on
-    #[error("CSA Error: {0}")]
+    #[error("CSA error: {0}")]
     Csa(String),
     /// From [`serde_json::Error`]
     #[error(transparent)]
     Serde(#[from] serde_json::Error),
     /// A CSA position that no set of pieces can make: more of a piece than a
     /// set holds
-    #[error("Invalid CSA position: {0}")]
+    #[error("invalid CSA position: {0}")]
     CsaConvert(&'static str),
     /// An error that occurred while parsing a KIF string
-    #[error("KIF Error: {0}")]
+    #[error("KIF error: {0}")]
     Kif(String),
     /// An error that occurred while parsing a KI2 string
-    #[error("KI2 Error: {0}")]
+    #[error("KI2 error: {0}")]
     Ki2(String),
     /// Decoding the string had failed
-    #[error("Decode Error")]
+    #[error("decode error")]
     Decode,
     /// The file extension was unexpected
-    #[error("File extension Error")]
+    #[error("file extension error")]
     FileExtension,
     /// An error that occurred while normalizing the parsed record
     ///

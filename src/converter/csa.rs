@@ -44,20 +44,6 @@ pub trait ToCsa {
         self.to_csa(&mut s)?;
         Ok(s)
     }
-
-    /// Returns `self`'s string representation.
-    ///
-    /// A record that cannot be spelled in CSA yields whatever was written
-    /// before the failure. Use [`Self::try_to_csa_owned`] to see the error
-    /// instead of a truncated file.
-    #[deprecated(
-        note = "returns a truncated string on failure, which the caller writes to disk as if it were the whole record. Use try_to_csa_owned."
-    )]
-    fn to_csa_owned(&self) -> String {
-        let mut s = String::new();
-        let _ = self.to_csa(&mut s);
-        s
-    }
 }
 
 impl ToCsa for JsonKifuFormat {
