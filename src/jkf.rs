@@ -360,8 +360,8 @@ impl MoveSpecial {
     /// `SpecialFusenpai` are extensions to the standard's fourteen (D1). The
     /// JSON this crate writes for them is not readable by json-kifu-format —
     /// `research/33-jkf.md` says so. Leaving them out instead is worse: they
-    /// are R-KIF-007 vocabulary, so a valid KIF using one stopped the reader
-    /// dead and the whole file came back as an error.
+    /// are R-KIF-007 vocabulary, and a reader that does not know them refuses
+    /// a valid KIF as a whole (D1).
     pub(crate) fn from_kif_word(word: &str, side_to_move: Color) -> Option<Self> {
         Some(match word {
             "投了" => MoveSpecial::SpecialToryo,

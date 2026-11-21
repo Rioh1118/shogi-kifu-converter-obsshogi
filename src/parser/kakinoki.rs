@@ -461,7 +461,7 @@ fn move_time_format(input: &str) -> IResult<&str, TimeFormat, VerboseError<&str>
 /// Here rather than beside the reader that consumes it, because the shared
 /// question "does this line hold a move" has to be answered with the same shape
 /// the reader will take: a `1投了 ( 0:03/00:00:03)` counted as prose is skipped,
-/// and the special move of the game goes with it (D1).
+/// and the special move that ends the game goes with it (D1).
 pub(super) fn move_time(input: &str) -> IResult<&str, Time, VerboseError<&str>> {
     delimited(
         tag("("),
@@ -538,7 +538,7 @@ pub(super) enum NumberedBody {
 /// than reading the text a second time. A predicate written separately from the
 /// reader drifts from it, and the drift is silent in one direction: a line the
 /// reader would have taken but the predicate does not count is skipped as prose,
-/// and the move — or the special move of the game — is gone from a record that still
+/// and the move — or the special move that ends the game — is gone from a record that still
 /// comes back `Ok` (D1).
 ///
 /// The three answers are the contract:
@@ -797,9 +797,9 @@ fn comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
 /// of the skip**: whether [`parse_without_moves`] came back with a diagram (a
 /// record has one board and it is read there), and whether the reader has taken
 /// its first move. Each is known in exactly one place, so this carries the
-/// answer from there instead of letting every skip derive it again — three
-/// skips with three derivations is how a `.ki2` came back as an empty 平手 with
-/// the position gone (GAP-007, D4).
+/// answer from there instead of letting every skip derive it again. Three
+/// skips deriving it three ways disagree, and a `.ki2` then reads as an empty
+/// 平手 with the position gone (GAP-007, D4).
 ///
 /// There is no way to make one out of a `bool`: [`parse_without_moves`] hands
 /// out the only ones there are, and [`Self::after`] is the only thing

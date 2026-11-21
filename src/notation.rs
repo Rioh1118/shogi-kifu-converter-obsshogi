@@ -43,9 +43,9 @@ pub(crate) const LINE_ENDS: [char; 2] = ['\n', '\r'];
 /// read it, and a web page pads with `\u{a0}` and `\u{2009}` as readily as an
 /// editor pads with a tab. A reader whose idea of padding is narrower than the
 /// writer's reads the padding as content, and then says the record is wrong
-/// about something it is right about — `まで2手で投了\u{a0}` came back as
-/// "this special move is not one of the words KI2 has", naming `投了`, which is one
-/// of them.
+/// about something it is right about — `まで2手で投了\u{a0}` is then refused
+/// as "this special move is not one of the words KI2 has", naming `投了`, which
+/// is one of them.
 ///
 /// Line endings are not padding. Whatever else this takes, it must not take
 /// those: `parser::kakinoki::begins_next_line` steps over one character looking for the

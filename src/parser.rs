@@ -142,9 +142,9 @@ fn decode_kifu(buf: &[u8], first: &'static Encoding) -> Result<String, ParseErro
 /// The error for input the reader stopped on, with `rest` located in `whole`.
 ///
 /// D1: a reader that stops early has to say so. Returning `Ok` with the record
-/// truncated is the worst of the three special moves — the caller cannot tell it
+/// truncated is the worst of the three results — the caller cannot tell it
 /// from a short game, so obs-shogi indexes a fraction of the moves and nobody
-/// finds out (GAP-005: 79% of `bug_big.kif` went missing this way).
+/// finds out (GAP-005).
 ///
 /// It also decides an encoding: the consumer tries encodings in turn and takes
 /// the first `Ok`, so a mojibake decode that yields an empty record wins over
@@ -170,9 +170,9 @@ fn stopped_at(whole: &str, rest: &str) -> String {
 ///
 /// That empty record is worse than an error, because the consumer picks a text
 /// encoding on this answer: obs-shogi tries encodings in turn and takes the
-/// first `Ok`, so `bug_big.kif` — which D1 means to reject at its unreadable
-/// line — instead came back as a UTF-16LE mojibake holding zero moves, and
-/// *that* won. The error D1 exists to raise never reached anyone.
+/// first `Ok`. A record D1 rejects at its unreadable line would lose to the
+/// empty record a wrong encoding decodes it into, and the error would never
+/// reach the user (GAP-005).
 ///
 /// A header-only kifu is not this: it fills in `header` or `initial`.
 fn is_unrecognised(jkf: &JsonKifuFormat, read_header: bool) -> bool {
@@ -412,9 +412,8 @@ mod tests {
     }
 
     // D1: a reader that stops early has to say so. Returning `Ok` with the
-    // record truncated is the worst of the three special moves — the caller cannot
-    // tell it from a short game. `bug_big.kif` lost 79% of its moves this way
-    // and reported success (GAP-005).
+    // record truncated is the worst of the three results — the caller cannot
+    // tell it from a short game (GAP-005).
     //
     // The word that stopped the reader is the one thing it cannot recover, so
     // the error has to carry it and point at its own line.
@@ -593,10 +592,10 @@ mod tests {
     // rather than an error.
     //
     // The consumer decides a text encoding on this answer: obs-shogi tries
-    // encodings in turn and takes the first `Ok`. `bug_big.kif` is meant to be
-    // rejected at its unreadable line (D1/D8) — instead the UTF-16LE attempt
-    // decoded it to one long line of mojibake, that came back `Ok` with zero
-    // moves, and *that* won. The error D1 exists to raise reached nobody.
+    // encodings in turn and takes the first `Ok`. A record rejected at its
+    // unreadable line (D1/D8) decodes under a wrong encoding into one long line
+    // of mojibake; if that were `Ok` with zero moves, it would be taken and the
+    // error would reach nobody.
     #[test]
     fn a_file_that_is_not_a_kifu_is_an_error_not_an_empty_record() {
         for src in [

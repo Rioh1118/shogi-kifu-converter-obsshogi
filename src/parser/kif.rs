@@ -537,9 +537,9 @@ mod tests {
     // R-KIF-007. Every word KIF defines for a special move, and what it means here.
     //
     // 不戦勝 / 不戦敗 have no counterpart among JKF's fourteen, so this crate
-    // extends the enum for them (D1). Reading them as nothing was the worse
-    // answer once the reader stopped truncating in silence: they are spec
-    // vocabulary, so a valid KIF using one made the whole file an error.
+    // extends the enum for them (D1). Reading them as nothing is worse: they
+    // are spec vocabulary, and a reader that does not know them refuses a
+    // valid KIF as a whole.
     //
     // Both are defined against Black (先手) outright, not against
     // whoever is to move — unlike 反則勝ち in the same table — so the ply does

@@ -1828,9 +1828,9 @@ mod tests {
     }
 
     // GAP-016: `normalize_moves` treats a move that will not apply after an
-    // special move as the end of what it knows about the board (R-RULE-002), and
-    // `populate_relative_moves` had no such notion — so a record the parser
-    // accepted and `to_ki2` could write came back as `Err` from the one call in
+    // special move as the end of what it knows about the board (R-RULE-002).
+    // `populate_relative_moves` has to follow the same rule, or a record the
+    // parser accepted and `to_ki2` can write is an `Err` from the one call in
     // between. The rule belongs to the walk, not to one of the two functions
     // that do it, or the next walk added grows the same hole.
     #[test]
