@@ -23,12 +23,15 @@
 
 pub mod converter;
 pub mod error;
+mod format;
 mod handicap;
 pub mod jkf;
 mod normalizer;
 mod notation;
 pub mod parser;
 mod shogi_core;
+
+pub use format::Format;
 
 /// An alias for [`jkf::JsonKifuFormat`]
 pub type JKF = jkf::JsonKifuFormat;

@@ -151,6 +151,9 @@ impl JsonKifuFormat {
     /// before it (R-RULE-002), so the first move the board cannot explain ends
     /// the tracking, and every field from there on is left as the input had it.
     /// **Whatever the parser accepted, this accepts.**
+    #[deprecated(
+        note = "two bare bools say nothing at the call site. Use normalize(), and populate_relative() when relative is wanted; the parse_* functions already normalize."
+    )]
     pub fn normalize_with_options(
         &mut self,
         correct_color: bool,
@@ -201,6 +204,9 @@ impl JsonKifuFormat {
     ///
     /// Returns [`NormalizeError`] if a move cannot be resolved against the
     /// position it is played from.
+    #[deprecated(
+        note = "a bare bool says nothing at the call site. Use normalize(); the parse_* functions already normalize."
+    )]
     pub fn normalize_with_color_correction(
         &mut self,
         correct_color: bool,

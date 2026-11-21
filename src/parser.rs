@@ -10,6 +10,7 @@ mod text;
 use crate::error::ParseError;
 use crate::jkf::JsonKifuFormat;
 use crate::normalizer::Normalization;
+use crate::Format;
 use encoding_rs::{SHIFT_JIS, UTF_8};
 use nom::error::convert_error;
 use nom::Finish;
@@ -229,6 +230,53 @@ pub fn parse_jkf_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
     let mut jkf = serde_json::from_str::<JsonKifuFormat>(without_a_byte_order_mark(s))?;
     jkf.normalize()?;
     Ok(jkf)
+}
+
+/// Parses `s` as `format`.
+///
+/// The same as calling the `parse_*_str` function for that format.
+///
+/// # Errors
+///
+/// Whatever that function returns.
+///
+/// # Panics
+///
+/// On the inputs [`parse_csa_str`] panics on, when `format` is
+/// [`Format::Csa`].
+pub fn parse_str(format: Format, s: &str) -> Result<JsonKifuFormat, ParseError> {
+    match format {
+        Format::Kif => parse_kif_str(s),
+        Format::Ki2 => parse_ki2_str(s),
+        Format::Csa => parse_csa_str(s),
+        Format::Jkf => parse_jkf_str(s),
+    }
+}
+
+/// Parses the file at `path`, choosing the format from its extension
+/// ([`Format::from_extension`]).
+///
+/// # Errors
+///
+/// Returns [`ParseError::FileExtension`] when the extension names no format,
+/// and otherwise whatever the `parse_*_file` function for that format returns.
+///
+/// # Panics
+///
+/// On the inputs [`parse_csa_str`] panics on, for a `.csa` file.
+pub fn parse_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseError> {
+    let format = path
+        .as_ref()
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .and_then(Format::from_extension)
+        .ok_or(ParseError::FileExtension)?;
+    match format {
+        Format::Kif => parse_kif_file(path),
+        Format::Ki2 => parse_ki2_file(path),
+        Format::Csa => parse_csa_file(path),
+        Format::Jkf => parse_jkf_file(path),
+    }
 }
 
 #[cfg(test)]
