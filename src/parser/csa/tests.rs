@@ -249,3 +249,11 @@ fn what_follows_the_end_of_a_game_is_not_the_record() {
     // Before the end of the game, a line that cannot be read is an error.
     assert!(parse_csa_str("V2.2\nPI\n+\n+7776FU\nZZZZ\n-3334FU\n%TORYO\n").is_err());
 }
+
+/// Blanks padding a position statement are no part of it either.
+#[test]
+fn blanks_after_a_position_statement_are_padding() {
+    let want = read("V2.2\nPI\nP+00FU\nP-00KY\n+\n+7776FU\n");
+    let got = read("V2.2\nPI \nP+00FU \nP-00KY\t\n+ \n+7776FU\n");
+    assert_eq!(want, got);
+}

@@ -32,8 +32,9 @@ pub(super) fn parse(text: &str) -> Result<JsonKifuFormat, ParseError> {
             let (statement, after) = next_statement(rest);
             // Blanks behind a statement pad it to a column (`+7776FU  ,T0` in
             // programs of the 2000s), except in a comment, which is its text
-            // as written, and a rank, whose last empty square ends in one.
-            let statement = if statement.starts_with('\'') || statement.starts_with('P') {
+            // as written. A rank whose last square is empty loses that
+            // square's blank too, and `board_rank` reads it without one.
+            let statement = if statement.starts_with('\'') {
                 statement
             } else {
                 statement.trim_end_matches([' ', '\t'])
