@@ -375,7 +375,7 @@ mod tests {
             },
             // GAP-012: the `csa` crate reads 10 of the 14 keywords. The four added
             // in CSA V2.1/V2.2 are written correctly and dropped on the way back
-            // in, so the arms for them in `src/csa.rs` never run.
+            // in, so the arms for them in `src/parser/csa.rs` never run.
             Row {
                 special: SpecialTimeUp,
                 kif_word: "切れ負け",

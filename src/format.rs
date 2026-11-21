@@ -15,7 +15,7 @@ pub enum Format {
     Ki2,
     /// CSA (R-CSA-001): `.csa`.
     Csa,
-    /// JSON Kifu Format: `.jkf`, always UTF-8.
+    /// JSON Kifu Format: `.jkf` or `.json`, always UTF-8.
     Jkf,
 }
 
@@ -32,7 +32,7 @@ impl Format {
             "kif" | "kifu" => Some(Format::Kif),
             "ki2" | "ki2u" => Some(Format::Ki2),
             "csa" => Some(Format::Csa),
-            "jkf" => Some(Format::Jkf),
+            "jkf" | "json" => Some(Format::Jkf),
             _ => None,
         }
     }
@@ -55,10 +55,11 @@ mod tests {
             ("Ki2u", Format::Ki2),
             ("csa", Format::Csa),
             ("jkf", Format::Jkf),
+            ("JSON", Format::Jkf),
         ] {
             assert_eq!(Some(want), Format::from_extension(ext), "{ext}");
         }
-        for ext in ["", ".kif", "txt", "json", "usi"] {
+        for ext in ["", ".kif", "txt", "usi"] {
             assert_eq!(None, Format::from_extension(ext), "{ext}");
         }
     }
@@ -112,8 +113,12 @@ mod tests {
             let by_text = parse_str(format, &decoded).unwrap_or_else(|e| panic!("{path}: {e}"));
             assert_eq!(by_text, by_path, "{path}");
         }
+        // `.json` is the JKF the KIF sample was converted to.
+        let by_path = parse_file("data/tests/kif/empty.json").expect("a JKF file");
+        let text = std::fs::read_to_string("data/tests/kif/empty.json").expect("sample file");
+        assert_eq!(parse_jkf_str(&text).expect("a JKF"), by_path);
         assert!(matches!(
-            parse_file("data/tests/kif/empty.json"),
+            parse_file("Cargo.toml"),
             Err(crate::error::ParseError::FileExtension)
         ));
     }
