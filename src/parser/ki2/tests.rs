@@ -968,3 +968,18 @@ fn the_side_a_foul_names_is_the_side_that_loses() {
         assert_eq!(Some(special), back.moves.last().and_then(|mf| mf.special));
     }
 }
+
+/// GAP-029: a line that opens with a note marker is a note, even when it
+/// quotes a move. KIF skipped it; KI2 refused the whole file.
+#[test]
+fn a_note_that_quotes_a_move_is_a_note() {
+    for note in ["※▲２六歩が本筋", "（△３四歩なら互角）", "【▲７六歩の変化】"]
+    {
+        let jkf = crate::parser::parse_ki2_str(&format!("▲２六歩 △３四歩\n{note}\n▲７六歩\n"))
+            .unwrap_or_else(|e| panic!("{note}: {e}"));
+        assert_eq!(4, jkf.moves.len(), "{note}");
+    }
+    // A mark at the head of a line still opens a move, and a broken one is
+    // still refused.
+    assert!(crate::parser::parse_ki2_str("▲２六歩 △３四歩\n▲有利でした\n").is_err());
+}

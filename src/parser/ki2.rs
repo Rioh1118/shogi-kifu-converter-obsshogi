@@ -413,7 +413,14 @@ fn is_prose_only_line(
         )));
     }
     let (rest, line) = not_move_line(where_a_board_could_be, input)?;
-    if line.contains(|c| SIDE_MARKS.iter().any(|(mark, _)| *mark == c)) {
+    // A line that opens with a note marker is a note, whatever it quotes:
+    // `※▲２六歩が本筋` holds a mark but no move, since a move never starts with
+    // `※`. KIF skips it as prose, and KI2 refused the whole file over it
+    // (GAP-029).
+    let is_a_note = line
+        .trim_start_matches(is_padding)
+        .starts_with(super::kakinoki::NOTE_MARKERS);
+    if !is_a_note && line.contains(|c| SIDE_MARKS.iter().any(|(mark, _)| *mark == c)) {
         return Err(nom::Err::Error(VerboseError::from_error_kind(
             input,
             nom::error::ErrorKind::Verify,

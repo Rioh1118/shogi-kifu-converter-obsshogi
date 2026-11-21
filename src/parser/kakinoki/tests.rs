@@ -798,8 +798,8 @@ fn a_comment_on_either_side_of_the_board_is_kept_in_the_order_it_was_written() {
 // A value this crate has no board for still has to land somewhere. The
 // preset rule takes either colon and then declines, so without a landing
 // place the line falls to the prose skip and the record loses even the word
-// the file wrote — GAP-021 keeps it under `header`, which is the lighter
-// half of the same problem. A key nobody knows keeps the full-width colon:
+// the file wrote — it is kept under `header`. A known name with a note after
+// it is the name (GAP-021). A key nobody knows keeps the full-width colon:
 // otherwise every `key: value` in any text is a header line (D1 / D8).
 #[test]
 fn a_known_key_may_use_either_colon_and_still_lands_somewhere() {
@@ -809,7 +809,10 @@ fn a_known_key_may_use_either_colon_and_still_lands_somewhere() {
         let known = parse_kif_str(&format!("手合割{colon}香落ち\n{TAIL}")).expect("reads");
         assert_eq!(Preset::PresetKY, known.initial.expect("a position").preset);
 
-        for value in ["詰将棋", "香落ち（30分）"] {
+        let noted = parse_kif_str(&format!("手合割{colon}香落ち（30分）\n{TAIL}")).expect("reads");
+        assert_eq!(Preset::PresetKY, noted.initial.expect("a position").preset);
+
+        for value in ["詰将棋", "角香交じり"] {
             let jkf = parse_kif_str(&format!("手合割{colon}{value}\n{TAIL}"))
                 .unwrap_or_else(|e| panic!("手合割{colon}{value}: {e}"));
             assert_eq!(
@@ -1390,8 +1393,8 @@ fn a_digit_opens_a_move_line_only_when_a_move_follows_it() {
 
 // A mark at the head of a line is how a move opens, and the indentation in
 // front of it does not change that — `　▲有利でした` is refused exactly as
-// `▲有利でした` is. Whether a mark *anywhere* in a line should refuse it is
-// GAP-029, still open.
+// `▲有利でした` is. A mark behind a note marker (`※▲２六歩が本筋`) is a note
+// in both readers (GAP-029).
 #[test]
 fn a_mark_opens_a_line_from_wherever_the_line_starts() {
     use crate::parser::{parse_ki2_str, parse_kif_str};

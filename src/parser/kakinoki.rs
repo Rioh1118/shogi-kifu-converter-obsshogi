@@ -130,11 +130,8 @@ fn end_of_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
 /// refusing such a line even where it turns out to be prose is the trade D1
 /// takes (`parser::tests::a_record_the_reader_stops_in_the_middle_of_is_an_error`).
 ///
-/// A line that merely holds one somewhere — `※▲２六歩が本筋` — is prose to KIF
-/// and is skipped, while `ki2::is_prose_only_line` asks `contains` and
-/// refuses the whole file. That asymmetry is `research/90-gaps.md` GAP-029,
-/// which is waiting on a decision; do not read this table as a promise that KIF
-/// keeps such a line.
+/// A line that merely holds one somewhere behind a note marker —
+/// `※▲２六歩が本筋` — is prose to both readers and is skipped (GAP-029).
 ///
 /// `▼`/`▽` and `☗`/`☖` are the same two marks as other programs print them —
 /// filled for Black, outlined for White — and tsshogi reads all six. Left out,
@@ -262,7 +259,7 @@ pub(super) fn ends_word(c: char) -> bool {
 /// `（まで先手良し）`, `【変化】` — which is exactly where
 /// [`begins_next_line`] would otherwise look for the newline that was
 /// lost. Whatever replaced a newline, it is not one of these.
-const NOTE_MARKERS: [char; 8] = ['※', '（', '(', '【', '[', '「', '〈', '＜'];
+pub(super) const NOTE_MARKERS: [char; 8] = ['※', '（', '(', '【', '[', '「', '〈', '＜'];
 
 /// The word a fork declaration opens with (D3).
 ///
@@ -1068,6 +1065,18 @@ fn information_value_preset(input: &str) -> IResult<&str, Information<'_>, Verbo
     // opens and the upper hand does not (R-HC-001 / R-RULE-006), so every side
     // in the game is the wrong one.
     let (rest, _) = take_while(is_padding)(rest)?;
+    // A note after the name (`香落ち（30分）`, `平手 ※持ち時間各30分`) is not
+    // part of it. Taken for a name this table does not know, the line went to
+    // the key-value rule and the board fell back to 平手 — every side in a
+    // handicap game reversed (GAP-021). The note is dropped: the handicap is
+    // what the line is for (D33). Anything else after the name is a different
+    // word (`香落ち戦`), and the line is not this one.
+    let rest = if rest.starts_with(NOTE_MARKERS) {
+        rest.find(crate::notation::LINE_ENDS)
+            .map_or("", |end| &rest[end..])
+    } else {
+        rest
+    };
     Ok((rest, Information::Preset(preset)))
 }
 
@@ -1079,10 +1088,9 @@ fn information_value_preset(input: &str) -> IResult<&str, Information<'_>, Verbo
 ///
 /// The text is kept, but the position it named is not: `initial` falls back to
 /// the even game, and for a handicap that also flips every move's side, since
-/// the upper hand moves first only in a handicap (R-HC-001). `手合割：香落ち（30分）`
-/// reads as a hirate game with Black to open (`research/90-gaps.md` GAP-021).
-/// Being strict here instead would refuse the file outright, which is worse and
-/// still not the fix — the fix is a table with an entry for what the file says.
+/// the upper hand moves first only in a handicap (R-HC-001). A name followed by
+/// a note is the name (GAP-021, [`information_value_preset`]); a name the table
+/// has no entry for is still kept as text only.
 fn information_line_preset(input: &str) -> IResult<&str, Information<'_>, VerboseError<&str>> {
     terminated(
         preceded(
@@ -1125,8 +1133,49 @@ fn information_line_hands(input: &str) -> IResult<&str, Information<'_>, Verbose
 
 /// Whether `key` is one of the words that name a line of the opening block, and
 /// so may be written with either colon ([`colon`]).
+///
+/// The handicap, the hands, and the keywords R-KIF-004 lists (KIF §6–§8): a
+/// `棋戦:竜王戦` is a header whatever colon it uses, and leaving it out dropped
+/// the line (GAP-031). A key outside this list still needs the full-width
+/// colon, so that `key: value` in any text is not taken for a header (D8).
 fn names_line(key: &str) -> bool {
-    key == crate::handicap::KIF_KEYWORD || key.ends_with("の持駒")
+    const KEYWORDS: [&str; 30] = [
+        // KIF §6: the players.
+        "先手",
+        "後手",
+        "下手",
+        "上手",
+        // KIF §7: the game.
+        "開始日時",
+        "対局日",
+        "終了日時",
+        "棋戦",
+        "戦型",
+        "表題",
+        "持ち時間",
+        "秒読み",
+        "消費時間",
+        "場所",
+        "掲載",
+        "備考",
+        "先手省略名",
+        "後手省略名",
+        "記録係",
+        // KIF §8: a tsume.
+        "作品番号",
+        "作品名",
+        "作者",
+        "発表誌",
+        "発表年月",
+        "出典",
+        "手数",
+        "完全性",
+        "分類",
+        "受賞",
+        // The opening block's own.
+        "手合割",
+    ];
+    KEYWORDS.contains(&key) || key.ends_with("の持駒")
 }
 
 /// A `<キーワード>：<値>` line, which a header can be any of (R-KIF-004).

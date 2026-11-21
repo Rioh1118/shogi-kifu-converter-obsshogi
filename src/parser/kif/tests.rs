@@ -919,3 +919,56 @@ fn a_board_without_its_frame_is_the_same_board() {
     assert_eq!(want.initial, bare.initial);
     assert!(want.initial.is_some_and(|i| i.data.is_some()));
 }
+
+/// GAP-021: a note after the handicap's name is not part of it. Taken for an
+/// unknown name, the record fell back to 平手 and every side was reversed.
+#[test]
+fn a_note_after_the_handicap_does_not_hide_it() {
+    let moves = "手数----指手---------消費時間--\n   1 ３四歩(33)\n   2 ７六歩(77)\n";
+    let want = crate::parser::parse_kif_str(&format!("手合割：香落ち\n{moves}")).expect("plain");
+    for line in [
+        "手合割：香落ち（30分）",
+        "手合割：香落ち ※持ち時間各30分",
+        "手合割：香落ち【練習】",
+    ] {
+        let got = crate::parser::parse_kif_str(&format!("{line}\n{moves}"))
+            .unwrap_or_else(|e| panic!("{line}: {e}"));
+        assert_eq!(want.initial, got.initial, "{line}");
+        assert_eq!(want.moves, got.moves, "{line}");
+    }
+    // A different word after the name is not a note.
+    let other = crate::parser::parse_kif_str("手合割：香落ち戦\n").expect("kept as text");
+    assert_eq!(Some(&"香落ち戦".to_owned()), other.header.get("手合割"));
+}
+
+/// GAP-031: a keyword R-KIF-004 lists is a header whatever colon it uses. A
+/// key outside the list still needs the full-width one (D8).
+#[test]
+fn a_listed_keyword_is_a_header_with_either_colon() {
+    let jkf = crate::parser::parse_kif_str("棋戦:竜王戦\n先手:羽生善治\n開始日時:2024/01/02\n手数----指手---------消費時間--\n   1 ７六歩(77)\n")
+        .expect("reads");
+    assert_eq!(Some(&"竜王戦".to_owned()), jkf.header.get("棋戦"));
+    assert_eq!(Some(&"羽生善治".to_owned()), jkf.header.get("先手"));
+    assert_eq!(Some(&"2024/01/02".to_owned()), jkf.header.get("開始日時"));
+    assert!(crate::parser::parse_kif_str("{\"header\":{},\"moves\":[{}]}\n").is_err());
+}
+
+/// GAP-051: two alternatives to the same move keep their order through KIF.
+#[test]
+fn alternatives_to_one_move_keep_their_order() {
+    let src = "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n   2 ３四歩(33)\n   3 ６八銀(79)+\n\n変化：3手\n   3 ６八飛(28)\n\n変化：3手\n   3 ６八玉(59)\n";
+    let jkf = crate::parser::parse_kif_str(src).expect("reads");
+    let firsts = |jkf: &crate::jkf::JsonKifuFormat| -> Vec<Kind> {
+        jkf.moves[3]
+            .forks
+            .iter()
+            .flatten()
+            .filter_map(|f| f[0].move_.map(|m| m.piece))
+            .collect()
+    };
+    assert_eq!(vec![Kind::HI, Kind::OU], firsts(&jkf));
+    let back =
+        crate::parser::parse_kif_str(&jkf.try_to_string(crate::Format::Kif).expect("writes"))
+            .expect("reads back");
+    assert_eq!(firsts(&jkf), firsts(&back));
+}

@@ -51,3 +51,11 @@
 2. 決定表の残り（手合割×書式×盤面図、ヘッダ×書式、消費時間、コメントの置き場）を `/gl-kit:state-transition-table` で作り、空いたセルを入力にする
 3. 見つかったものを「通ってほしい」「黙って変わる」「仕様の違い」に分け、`research/90-gaps.md` に登録する
 4. CSA の読み手を自前にするかを `/gl-kit:decide` で決める（5〜8 の直し方がこれで決まる）
+
+## 2回目の洗い出し（2026-11-21）
+
+- 外のアプリが書いた JKF（tsshogi のテストデータ5件、Kifu-for-JS の例）: 全て読める
+- 全てのテスト用棋譜を KIF・KI2・CSA・JKF に書いて読み戻す（`checks/src/bin/rtfile.rs`）: 変化の順序の入れ替わり（GAP-051、直した）と、終局が続く人工的な KI2（GAP-052、低）を見つけた
+- KI2 の相対位置: 連盟の「棋譜の表記方法」の例 54 件（Kifu-for-JS の `normalizer-relative.test.ts`）で、書く語と読み戻した移動元が全て一致（`checks/src/bin/relative.rs`）
+- USI: USI 仕様の二枚落ちの例、平手の成り・打ち、香落ちの 0 手が全て一致（`checks/src/bin/usi.rs`）
+- EUC-JP の KIF・KI2: クレートでは試さない。consumer が自前で試している。Shift_JIS の壊れたファイルが EUC-JP の文字化けとして `Ok` になる危険の方が大きい

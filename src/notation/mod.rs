@@ -32,11 +32,10 @@ pub(crate) mod special;
 /// of them splits and another writes through comes back as a header nobody
 /// wrote.
 ///
-/// It is not where a reader stops. `parser::kakinoki` decides that, and it
-/// takes what `nom`'s `line_ending` does — `\n` and `\r\n`, not a lone `\r`
-/// (`research/90-gaps.md` GAP-027). The readers ask this table whether a
-/// character *is* one of those two, which is a narrower question and the same
-/// answer either way.
+/// It is not where a reader stops. The readers see `\n` only: every other line
+/// ending is turned into one before they run (`parser::text`, GAP-036). What
+/// they ask this table is whether a character *is* a line ending, and a `\r`
+/// still is one wherever a JKF value carries it.
 pub(crate) const LINE_ENDS: [char; 2] = ['\n', '\r'];
 
 /// Whether `c` is padding — space a line can carry without saying anything.
