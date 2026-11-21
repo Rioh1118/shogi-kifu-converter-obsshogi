@@ -2,7 +2,7 @@
 
 出典: CSA 標準棋譜ファイル形式 V2.2 http://www2.computer-shogi.org/protocol/record_v22.html （CSA22）、V3.0 …/record_v3.html （CSA3）
 
-**このクレートが書くのは V2.2。読むのは外部の `csa` クレート 1.0.2 で、V3.0 の一部（`'CSA encoding=` 行、`,T0` の1行形式など）は確かめていない。**
+**このクレートが書くのは V2.2。読むのは自前の読み手（`src/parser/csa.rs`）で、V2.2 と V3.0 を読む。** 外部の `csa` クレートは使わない（読めない語と行を黙って捨て、入力によって panic したため。GAP-012）。
 
 - **R-CSA-001** V2.2: 文字コードと改行は環境に依存する。拡張子は `csa`。〔CSA22 2.1・2.9〕確信度 中。**V3.0 とは食い違う**: V3.0 は先頭行 `'CSA encoding=…` で宣言し、無ければ SHIFT_JIS・CR LF〔CSA3 2.2〕
 - **R-CSA-004** 棋譜情報は `N+`／`N-`（対局者名）と `$キーワード:データ`。各1行。V2.2 のキーワードは `$EVENT` `$SITE` `$START_TIME` `$END_TIME` `$TIME_LIMIT` `$OPENING`。〔CSA22 2.3〕確信度 中。書き手が JKF のヘッダから書けるのは 先手・後手・棋戦・場所・戦型 の5つ（このクレートの対応で、資料の規定ではない）

@@ -59,7 +59,14 @@ impl ToCsa for JsonKifuFormat {
     fn to_csa<W: Write>(&self, sink: &mut W) -> WriteResult {
         write_header(&self.header, sink)?;
         write_initial(&self.initial, sink)?;
-        // Index 0 holds the initial position's comments, not a ply.
+        // Index 0 holds the initial position's comments, not a ply (R-JKF-001).
+        // They go under the side-to-move line, the one place the reader files
+        // a comment under the initial position (D30).
+        if let Some(comments) = self.moves.first().and_then(|mf| mf.comments.as_ref()) {
+            for comment in comments {
+                write_comment(comment, sink)?;
+            }
+        }
         write_moves(self.moves.get(1..).unwrap_or_default(), sink)?;
         Ok(())
     }

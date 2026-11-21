@@ -30,3 +30,6 @@
 - **D26** 新しい clippy で落ちる検証は、ツールチェーンを固定せずコードを直して通す。固定するには `rust-toolchain.toml` をリポジトリ直下に足すことになり、「直下にファイルを増やさない」に反する
 - **D27** 用語は `.claude/plans/readable-rules/glossary.md` に従う。JKF のフィールド名がある概念はその名前に寄せる（fork、special、relative、from、initial position）。上手・下手は英語のコメントでも upper hand / lower hand のまま使い、先手・後手（Black / White）と混ぜない
 - **D28** 封じ手は JKF の拡張のバリアント `FUUJITE`（`MoveSpecial::SpecialFuujite`）として読む。KIF・KI2 は `封じ手` と書き戻し、CSA には語が無いので `%CHUDAN` と書く。`中断` として読むと、保存したときに公式の棋譜の `封じ手` が `中断` に書き換わる。D1 の `FUSENSHO`・`FUSENPAI` と同じく、JKF の標準の読み手は読めない。tsshogi は知らない名前をそのままの名前の終局として表示する（画面に `FUUJITE` と出る。consumer 側で表示名を当てる必要がある）
+- **D29** CSA V3.0 の `%MAX_MOVES`（最大手数に達した）は、JKF の拡張のバリアント `MAX_MOVES`（`MoveSpecial::SpecialMaxMoves`）として読む。tsshogi が同じ名前で読み書きする。KIF・KI2 には語が無く、引き分けで終わることから `持将棋` と書く（連盟の規定でも 500 手で持将棋）。CSA には `%MAX_MOVES` と書く（V3.0 の語。V2.2 の読み手は知らない）
+- **D30** CSA のコメント（`'` の行）は、手番の行（`+`/`-`）より下のものだけを棋譜のコメントとして残す。最初の指し手の前は初期局面のコメント、それより後は直前の手のコメント。手番の行より上のコメントはファイルの見出し（`'対局者名` など）で、JKF の作者の読み手（Kifu-for-JS）も捨てる。リポジトリのテスト用の期待値（`data/tests/csa/*.json`）もこの規則と一致した。V3.0 の `'*`・`'**` は、`'` を1つ外した残り（`*…`）をコメントにする
+- **D31** `/` で区切られた複数の棋譜を持つ CSA は、最初の棋譜を読み、残りは読まない。JKF は1局しか持てない。tsshogi も同じ

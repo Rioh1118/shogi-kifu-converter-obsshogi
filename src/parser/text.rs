@@ -63,6 +63,24 @@ pub(super) fn decode_kifu(buf: &[u8], first: &'static Encoding) -> Result<String
     Err(ParseError::Decode)
 }
 
+/// Decodes the bytes of a CSA file: UTF-8, then Shift_JIS, then EUC-JP.
+///
+/// CSA leaves the encoding to whatever wrote the file (R-CSA-001), and the
+/// programs of the 2000s on Unix wrote EUC-JP (Kifu-for-JS's
+/// `2005_YAMADA_GPS.csa`; GAP-042). A CSA record is mostly ASCII, so the bytes
+/// that tell the three apart are the names and comments, and a wrong decode
+/// there reports errors rather than passing.
+pub(super) fn decode_csa(buf: &[u8]) -> Result<String, ParseError> {
+    decode_kifu(buf, UTF_8).or_else(|_| {
+        let (text, _, had_errors) = encoding_rs::EUC_JP.decode(buf);
+        if had_errors {
+            Err(ParseError::Decode)
+        } else {
+            Ok(text.into_owned())
+        }
+    })
+}
+
 /// Drops a byte-order mark from the head of a record.
 ///
 /// A BOM is not part of the text, and every reader below takes what it is given

@@ -30,7 +30,11 @@ impl MoveSpecial {
             MoveSpecial::SpecialIllegalActionBlack | MoveSpecial::SpecialIllegalActionWhite => {
                 "反則勝ち"
             }
-            MoveSpecial::SpecialJishogi | MoveSpecial::SpecialHikiwake => "持将棋",
+            // D29: the game reached the move limit, which ends it drawn as
+            // 持将棋 does (the 日本将棋連盟 rule makes 500 moves a 持将棋).
+            MoveSpecial::SpecialJishogi
+            | MoveSpecial::SpecialHikiwake
+            | MoveSpecial::SpecialMaxMoves => "持将棋",
             MoveSpecial::SpecialKachi => "入玉勝ち",
             MoveSpecial::SpecialTsumi => "詰み",
             MoveSpecial::SpecialFuzumi => "不詰",
@@ -181,6 +185,9 @@ impl MoveSpecial {
             MoveSpecial::SpecialTsumi => "TSUMI",
             MoveSpecial::SpecialFuzumi => "FUZUMI",
             MoveSpecial::SpecialError => "ERROR",
+            // V3.0's keyword (D29). A V2.2 reader does not know it; this
+            // crate's and tsshogi's do.
+            MoveSpecial::SpecialMaxMoves => "MAX_MOVES",
         }
     }
 }
