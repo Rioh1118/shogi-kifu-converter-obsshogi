@@ -211,3 +211,41 @@ fn a_comment_with_a_comma_comes_back_whole() {
     let back = read(&jkf.try_to_string(crate::Format::Csa).expect("writes CSA"));
     assert_eq!(jkf.moves[1].comments, back.moves[1].comments);
 }
+
+/// A rank in which mail or a web page collapsed the blanks of a run of empty
+/// squares (` *  * ` to ` * * `) is the same rank, as tsshogi reads it. Blanks
+/// padding a statement to a column are no part of it.
+#[test]
+fn collapsed_blanks_and_padding_are_read() {
+    let full = "V2.2\nP1-KY-KE-GI-KI-OU-KI-GI-KE-KY\nP2 * -HI *  *  *  *  * -KA * \nP3-FU-FU-FU-FU-FU-FU-FU-FU-FU\nP4 *  *  *  *  *  *  *  *  * \nP5 *  *  *  *  *  *  *  *  * \nP6 *  *  *  *  *  *  *  *  * \nP7+FU+FU+FU+FU+FU+FU+FU+FU+FU\nP8 * +KA *  *  *  *  * +HI * \nP9+KY+KE+GI+KI+OU+KI+GI+KE+KY\n+\n+7776FU\n";
+    let collapsed = full.replace("  ", " ");
+    assert_eq!(read(full), read(&collapsed));
+    let padded = read(&full.replace("+7776FU\n", "+7776FU  ,T0  \n"));
+    assert_eq!(read(full).moves[1].move_, padded.moves[1].move_);
+    // Fewer than nine squares is pieces missing, collapsed or not.
+    assert!(parse_csa_str(
+        &full.replace("P9+KY+KE+GI+KI+OU+KI+GI+KE+KY", "P9+KY+KE+GI+KI+OU+KI+GI")
+    )
+    .is_err());
+}
+
+/// D36: past a special move, what is not a statement of the record ends it —
+/// a second game run on without `/`, or a note on the game. Moves after it
+/// are still read (a game interrupted and resumed, R-RULE-002).
+#[test]
+fn what_follows_the_end_of_a_game_is_not_the_record() {
+    let whole = "V2.2\nN+山田\nPI\n+\n+7776FU\n-3334FU\n%TORYO\n";
+    let want = read(whole);
+    for after in [whole, "-3122GI が敗着だった\n", "ZZZZ\n+2726FU\n"] {
+        let got = read(&format!("{whole}{after}"));
+        assert_eq!(want.moves, got.moves, "{after:?}");
+    }
+    let resumed = read(&format!("{whole}+2726FU\n"));
+    assert_eq!(
+        5,
+        resumed.moves.len(),
+        "a move after the end is still a move"
+    );
+    // Before the end of the game, a line that cannot be read is an error.
+    assert!(parse_csa_str("V2.2\nPI\n+\n+7776FU\nZZZZ\n-3334FU\n%TORYO\n").is_err());
+}
