@@ -109,7 +109,7 @@ fn single_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
 /// the end as proof of one, and each says in its own doc what else it wants.
 pub(super) const SHAPES: LineShapes = LineShapes {
     carries_a_line: is_header_value_with_moves,
-    opens_a_line: opens_ki2_line,
+    opens_line: opens_ki2_line,
 };
 
 /// What a KI2 line looks like: the shapes both formats have, or a run of moves.
@@ -606,12 +606,12 @@ pub(crate) fn parse(input: &str) -> IResult<&str, (JsonKifuFormat, bool), Verbos
 mod tests {
 
     // The same record read as `.kif` and as `.ki2` is the same record (D18).
-    // What the two readers disagreed about was where a comment under the
-    // special move belongs: KIF put it on the special move (R-KIF-010) and KI2 made a node
-    // of its own for it, so a game saved as `.ki2` and opened again had a node
-    // the KIF did not — and the consumer's pointer into the tree moved with it.
+    // That includes where a comment under the special move belongs: on the
+    // special move (R-KIF-010), in both readers. A node of its own in only one
+    // of them gives a game saved as `.ki2` and opened again a node the KIF does
+    // not have, and the consumer's pointer into the tree moves with it.
     #[test]
-    fn a_comment_under_an_special_belongs_to_the_special() {
+    fn a_comment_under_a_special_belongs_to_the_special() {
         use crate::converter::ToKi2;
         use crate::parser::{parse_ki2_str, parse_kif_str};
         let kif = parse_kif_str(concat!(
@@ -1075,7 +1075,7 @@ mod tests {
     // the line as a note lets a lost newline through in silence. Both directions
     // in one table.
     #[test]
-    fn a_note_after_an_special_or_a_fork_header_is_a_note() {
+    fn a_note_after_a_special_or_a_fork_header_is_a_note() {
         use crate::parser::parse_ki2_str;
         const MOVES: &str = "手合割：平手\n▲７六歩 △３四歩\n";
         for line in [

@@ -49,7 +49,7 @@ pub enum Kind {
     RY = 13,
 }
 
-/// A representation of a initial state preset
+/// A representation of an initial state preset
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Preset {
     /// 平手

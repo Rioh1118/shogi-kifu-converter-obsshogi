@@ -67,7 +67,7 @@ fn write_move_kind<W: Write>(kind: Kind, sink: &mut W) -> WriteResult {
 /// went through it at all (R-REQ-002). What the record says a move did is
 /// `promote` (D12); whether the notation has a word for it is what the piece and
 /// the squares say.
-fn could_promote(mv: &MoveMoveFormat) -> bool {
+fn can_promote(mv: &MoveMoveFormat) -> bool {
     // A drop enters the board unpromoted, and R-NOT-005 has no word for one
     // whichever end of it the camp is at (R-JKF-003: no origin is what says a
     // move is a drop).
@@ -232,7 +232,7 @@ fn write_line<'a, W: Write>(
                 // D12: a promotion is what the record says, and it is spelled
                 // whatever the board makes of it.
                 Some(true) => sink.write_str("成")?,
-                Some(false) if could_promote(mv) => sink.write_str("不成")?,
+                Some(false) if can_promote(mv) => sink.write_str("不成")?,
                 _ => {}
             }
             position = position.and_then(|mut pos| {
@@ -494,7 +494,7 @@ mod tests {
     // the main line loses the rest with no error. The block order matters as
     // much as the blocks — a reader has only the ply number to work from.
     #[test]
-    fn forkes_survive_a_ki2_round_trip() {
+    fn forks_survive_a_ki2_round_trip() {
         // Two forks leaving ply 2 and one leaving ply 3, so both the sibling
         // order and the deeper-ply-first rule are exercised. The blocks are in
         // the order KIF itself uses: deepest departure first.

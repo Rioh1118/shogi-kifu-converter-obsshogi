@@ -26,7 +26,7 @@ use nom::IResult;
 /// reading it as a line refuses records that are whole.
 pub(super) const SHAPES: LineShapes = LineShapes {
     carries_a_line: |_| false,
-    opens_a_line: opens_kif_line,
+    opens_line: opens_kif_line,
 };
 
 fn opens_kif_line(head: &str) -> bool {
@@ -250,7 +250,7 @@ fn moves_with_index(
         let skipped = skip_interruptions(input);
         // `many1` stops on `Error` and throws anything else back. Swallowing a
         // `Failure` here would drop the rest of the record without a word,
-        // which is the failure this fork exists to remove.
+        // which is the failure this match arm exists to remove.
         match move_with_comments(start, Some(side), skipped) {
             Ok((rest, (_, mf))) => {
                 side = next_side(&mf, side);
@@ -1253,9 +1253,9 @@ mod tests {
     }
 
     // R-KIF-002: a blank line and a `#` line may sit anywhere in the move list.
-    // Ending the run of moves on one left every move after it to be read as a
-    // fork of a ply that is not there, and dropped — the record came back
-    // with one move and `Ok` (GAP-008). tsshogi reads all three.
+    // Ending the run of moves on one leaves every move after it to be read as
+    // a fork of a ply that is not there, and dropped — the record is `Ok`
+    // with one move (GAP-008). tsshogi reads all three.
     //
     // The blank line is the harder of the two: a skip that starts on the newline
     // itself takes the line after it as this line's content, so the move

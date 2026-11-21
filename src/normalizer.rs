@@ -1520,7 +1520,7 @@ mod tests {
     // explain, and stays dropped. Without that, every later move is normalized
     // against a board the game left behind.
     #[test]
-    fn the_board_stays_dropped_after_an_special() {
+    fn the_board_stays_dropped_after_a_special() {
         let kif = "手合割：平手
 手数----指手---------消費時間--
    1 ７六歩(77)

@@ -235,7 +235,7 @@ pub(super) struct LineShapes {
     /// where it stops — see [`information_line_keyvalue`].
     pub(super) carries_a_line: fn(&str) -> bool,
     /// Whether text that starts where a line starts opens one.
-    pub(super) opens_a_line: fn(&str) -> bool,
+    pub(super) opens_line: fn(&str) -> bool,
 }
 
 /// Where a word on a line ends: padding, the line ending, or the mark a note
@@ -548,7 +548,7 @@ pub(super) enum NumberedBody {
 ///   reports it, and the predicate counts it so that no skip takes it.
 /// - `Err(Error)` — not one of these lines at all. Prose.
 ///
-/// It must not call `ends_here`: that asks `LineShapes::opens_a_line`, which
+/// It must not call `ends_here`: that asks `LineShapes::opens_line`, which
 /// asks [`opens_numbered_line`], which asks this.
 pub(super) fn numbered_line(
     input: &str,
@@ -672,7 +672,7 @@ pub(super) fn opens_numbered_line(head: &str) -> bool {
 /// Whether `tail` — what is left of a line the reader has finished with —
 /// begins the line that should have been underneath it.
 ///
-/// `shapes.opens_a_line` asks the same question of text that starts where a line
+/// `shapes.opens_line` asks the same question of text that starts where a line
 /// starts; this one asks it of text that starts where a line ends.
 ///
 /// What follows a finished line is one of two things. Either the line below,
@@ -703,7 +703,7 @@ fn begins_next_line(shapes: LineShapes, tail: &str) -> bool {
         if opens_fork_header(head) {
             return is_whole_line_fork_header(head);
         }
-        (shapes.opens_a_line)(head)
+        (shapes.opens_line)(head)
     };
     let head = tail.trim_start_matches(is_padding);
     if opens(head) {
@@ -1113,7 +1113,7 @@ fn information_line_hands(input: &str) -> IResult<&str, Information<'_>, Verbose
 
 /// Whether `key` is one of the words that name a line of the opening block, and
 /// so may be written with either colon ([`colon`]).
-fn a_key_that_names_its_line(key: &str) -> bool {
+fn names_line(key: &str) -> bool {
     key == crate::handicap::KIF_KEYWORD || key.ends_with("の持駒")
 }
 
@@ -1189,7 +1189,7 @@ fn information_line_keyvalue<'a>(
         // board for: `手合割:詰将棋` would otherwise land nowhere and fall to the
         // prose skip, losing even the word the file wrote. GAP-021 keeps such a
         // value under `header`, which is where this puts it.
-        if mark == ':' && !a_key_that_names_its_line(key) {
+        if mark == ':' && !names_line(key) {
             return Err(nom::Err::Error(VerboseError::from_error_kind(
                 input,
                 ErrorKind::OneOf,
@@ -1278,7 +1278,7 @@ fn board_row(input: &str) -> IResult<&str, Vec<Piece>, VerboseError<&str>> {
 ///
 /// Either alone says a diagram starts here — that is what lets [`board`] name
 /// the one of the two that is misspelled instead of unwinding to prose.
-fn a_board_opens(head: &str) -> bool {
+fn opens_board(head: &str) -> bool {
     head.starts_with("９ ８ ７ ６ ５ ４ ３ ２ １") || head.starts_with("+---")
 }
 
@@ -1462,7 +1462,7 @@ pub(super) fn parse_without_moves(
     // whole and hands back a record with the position gone (D1, D21, GAP-007).
     //
     // What may be skipped here is only what is not a line of this format at all
-    // (`shapes.opens_a_line` decides, so the move list still gets its lines) and
+    // (`shapes.opens_line` decides, so the move list still gets its lines) and
     // not a piece of a board (`not_move_line` with the guard on, since the board
     // may still be arriving).
     fn skippable(shapes: LineShapes, input: &str) -> IResult<&str, &str, VerboseError<&str>> {
@@ -1471,7 +1471,7 @@ pub(super) fn parse_without_moves(
         // and skipping that line leaves the reader naming the frame below it
         // (D1 asks for the line that broke).
         let head = input.trim_start_matches(is_padding);
-        if (shapes.opens_a_line)(head) || a_board_opens(head) {
+        if (shapes.opens_line)(head) || opens_board(head) {
             return Err(nom::Err::Error(VerboseError::from_error_kind(
                 input,
                 ErrorKind::Not,
@@ -2215,13 +2215,13 @@ mod tests {
     /// KIF side passes, and what these cases are about.
     const NOTHING: LineShapes = LineShapes {
         carries_a_line: |_| false,
-        opens_a_line: opens_shared_line,
+        opens_line: opens_shared_line,
     };
 
     /// One that finds a `▲` enough, for the case that has to be refused.
     const ANY_MOVE_MARK: LineShapes = LineShapes {
         carries_a_line: |value| value.contains('▲'),
-        opens_a_line: opens_shared_line,
+        opens_line: opens_shared_line,
     };
 
     // What separates a line that lost its ending from a line that trails off
@@ -2716,13 +2716,13 @@ mod tests {
             );
             // And with the last game's special move line left above it. A special move
             // is not a move: the diagram below it is still a diagram.
-            let with_an_special = format!("まで122手で先手の勝ち\n{}", record(&rows));
+            let with_a_special = format!("まで122手で先手の勝ち\n{}", record(&rows));
             assert!(
-                parse_ki2_str(&with_an_special).is_err(),
+                parse_ki2_str(&with_a_special).is_err(),
                 "{name}, as a KI2 under a まで line"
             );
             assert!(
-                parse_kif_str(&with_an_special).is_err(),
+                parse_kif_str(&with_a_special).is_err(),
                 "{name}, as a KIF under a まで line"
             );
         }
@@ -3322,7 +3322,7 @@ mod tests {
                 "{opener}: the header under the comment is gone: {:?}",
                 kif.header
             );
-            let initial = kif.initial.as_ref().expect("a initial position");
+            let initial = kif.initial.as_ref().expect("an initial position");
             assert_eq!(Preset::PresetKY, initial.preset, "{opener}");
             assert_eq!(
                 Color::White,
