@@ -18,6 +18,11 @@ pub trait ToCsa {
     /// there — obs-shogi's own new-file form writes `tags` and `note`
     /// (`research/90-gaps.md` GAP-026). Saving as `.csa` is where those stop.
     ///
+    /// CSA has no forks, so none is written and the main line alone is the
+    /// record (GAP-048, D32). A caller that saves a record with forks as
+    /// `.csa` loses them, and it is the caller's to say so to the user: the
+    /// write itself succeeds, because the record it wrote is a valid one.
+    ///
     /// # Errors
     ///
     /// Returns [`ConvertError::Write`] if `sink` fails, and otherwise the
@@ -123,12 +128,51 @@ fn write_header<W: Write>(header: &HashMap<String, String>, sink: &mut W) -> Wri
         ("$EVENT:", header.get("棋戦")),
         ("$SITE:", header.get("場所")),
         ("$OPENING:", header.get("戦型")),
+        // GAP-047: these three have CSA keywords too, but a value in a shape
+        // other than V2.2's makes a file other programs refuse, so only those
+        // are written (R-CSA-004).
+        (
+            "$START_TIME:",
+            header.get("開始日時").filter(|v| is_csa_date_time(v)),
+        ),
+        (
+            "$END_TIME:",
+            header.get("終了日時").filter(|v| is_csa_date_time(v)),
+        ),
+        (
+            "$TIME_LIMIT:",
+            header.get("持ち時間").filter(|v| is_csa_time_limit(v)),
+        ),
     ] {
         if let Some(value) = value {
             write_header_value(prefix, value, sink)?;
         }
     }
     Ok(())
+}
+
+/// `YYYY/MM/DD` or `YYYY/MM/DD HH:MM:SS`, the shape V2.2 gives `$START_TIME`
+/// and `$END_TIME`.
+fn is_csa_date_time(value: &str) -> bool {
+    let digits = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_digit());
+    let (date, time) = value.split_once(' ').unwrap_or((value, ""));
+    let date: Vec<&str> = date.split('/').collect();
+    let date_ok = date.len() == 3 && digits(date[0], 4) && digits(date[1], 2) && digits(date[2], 2);
+    let time: Vec<&str> = time.split(':').collect();
+    let time_ok = time == [""] || (time.len() == 3 && time.iter().all(|t| digits(t, 2)));
+    date_ok && time_ok
+}
+
+/// `HH:MM+SS`, the shape V2.2 gives `$TIME_LIMIT`: the time each side has,
+/// and the seconds of byoyomi.
+fn is_csa_time_limit(value: &str) -> bool {
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    value
+        .split_once(':')
+        .and_then(|(hours, rest)| Some((hours, rest.split_once('+')?)))
+        .is_some_and(|(hours, (minutes, seconds))| {
+            digits(hours) && minutes.len() == 2 && digits(minutes) && digits(seconds)
+        })
 }
 
 fn write_initial_data<W: Write>(data: &StateFormat, sink: &mut W) -> WriteResult {

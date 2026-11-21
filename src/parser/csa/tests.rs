@@ -159,3 +159,28 @@ fn an_unknown_statement_names_its_line() {
         .to_string();
     assert!(message.contains("line 5"), "{message}");
 }
+
+/// GAP-047: the times CSA has keywords for are written back — when the value
+/// is in the shape V2.2 gives them, and not otherwise, since another program
+/// refuses a `$START_TIME` it cannot read.
+#[test]
+fn the_times_csa_has_keywords_for_are_written() {
+    let mut jkf = read("V2.2\nPI\n+\n+7776FU\n");
+    for (key, value, kept) in [
+        ("開始日時", "2014/10/14 01:15:29", true),
+        ("終了日時", "2014/10/14", true),
+        ("持ち時間", "00:25+00", true),
+        ("開始日時", "2008/12/20(土) 10:00", false),
+        ("持ち時間", "各6時間", false),
+    ] {
+        jkf.header.clear();
+        jkf.header.insert(key.to_owned(), value.to_owned());
+        let csa = jkf.try_to_string(crate::Format::Csa).expect("writes CSA");
+        let back = read(&csa);
+        assert_eq!(
+            kept,
+            back.header.get(key) == Some(&value.to_owned()),
+            "{key}={value}: {csa}"
+        );
+    }
+}
