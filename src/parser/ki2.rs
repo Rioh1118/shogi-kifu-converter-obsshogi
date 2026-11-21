@@ -212,11 +212,15 @@ fn end_of_game_line(
         // position, so an error built after the line is consumed points at the
         // *next* one and shows a blank caret.
         let (input, _) = tag("まで")(line)?;
-        // `まで` may be followed by `<N>手で`; the ply is already known from the
-        // moves that were read, so the number is not needed. Only when it is on
-        // this line — `split_once` would otherwise reach into the next one.
-        let phrase = match input.split_once("手で") {
-            Some((head, rest)) if !head.contains(LINE_ENDS) => rest,
+        // `まで` may be followed by `<N>手で`, or by `<N>手` alone in the
+        // tsume spelling `まで61手詰` (GAP-034); the ply is already known from
+        // the moves that were read, so the number is not needed.
+        let after_number =
+            input.trim_start_matches(|c: char| c.is_ascii_digit() || ('０'..='９').contains(&c));
+        let phrase = match after_number.strip_prefix('手') {
+            Some(rest) if after_number.len() < input.len() => {
+                rest.strip_prefix('で').unwrap_or(rest)
+            }
             _ => input,
         };
         let phrase = phrase.trim_start_matches(is_padding);

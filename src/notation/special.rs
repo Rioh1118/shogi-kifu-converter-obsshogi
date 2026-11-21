@@ -134,6 +134,11 @@ impl MoveSpecial {
         if phrase.ends_with("勝ち") {
             return Some(MoveSpecial::SpecialToryo);
         }
+        // A tsume record ends `まで61手詰` or `まで61手で詰` (GAP-034): the
+        // bare 詰 is the KI2 spelling of KIF's 詰み.
+        if phrase == "詰" {
+            return Some(MoveSpecial::SpecialTsumi);
+        }
         MoveSpecial::from_kif_word(phrase, side_to_move)
     }
 

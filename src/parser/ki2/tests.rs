@@ -868,3 +868,24 @@ fn parse_moves_with_comments() {
         )
     );
 }
+
+/// GAP-034: a tsume record ends with 詰 rather than 詰み, with or without the
+/// で — both are in Kifu-for-JS's test files and in tsshogi's.
+#[test]
+fn a_tsume_record_ends_with_詰_with_or_without_で() {
+    for (line, want) in [
+        ("まで2手で詰", MoveSpecial::SpecialTsumi),
+        ("まで2手詰", MoveSpecial::SpecialTsumi),
+        ("まで２手詰", MoveSpecial::SpecialTsumi),
+        ("まで2手で詰み", MoveSpecial::SpecialTsumi),
+        ("まで2手で不詰", MoveSpecial::SpecialFuzumi),
+    ] {
+        let jkf = crate::parser::parse_ki2_str(&format!("▲２六歩 △３四歩\n{line}\n"))
+            .unwrap_or_else(|e| panic!("{line}: {e}"));
+        assert_eq!(
+            Some(want),
+            jkf.moves.last().and_then(|mf| mf.special),
+            "{line}"
+        );
+    }
+}
