@@ -112,16 +112,85 @@ fn add_timeformat(lhs: &TimeFormat, rhs: &TimeFormat) -> TimeFormat {
     }
 }
 
+/// Where a move's `color` comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ColorSource {
+    /// The record states each move's side (CSA, JKF). A `color` that
+    /// disagrees with the side to move is an error.
+    Recorded,
+    /// The reader numbered the moves and guessed the side from the ply (KIF,
+    /// KI2). `color` is overwritten with the side to move in the position.
+    Position,
+}
+
+/// Whether `relative` (左/右/上/...) is filled in from the position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RelativeFill {
+    /// Fill every `relative` that is `None`.
+    Fill,
+    /// Leave `relative` as read. A KIF states the origin, so the inference is
+    /// dead work on that path (R-REQ-006).
+    Skip,
+}
+
+/// What normalization does with the two fields a record may leave to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Normalization {
+    pub(crate) color: ColorSource,
+    pub(crate) relative: RelativeFill,
+}
+
+impl Normalization {
+    /// What a KIF record needs: the side from the position, no `relative`.
+    pub(crate) const KIF: Self = Self {
+        color: ColorSource::Position,
+        relative: RelativeFill::Skip,
+    };
+    /// What a KI2 record needs: the side from the position, `relative` filled.
+    pub(crate) const KI2: Self = Self {
+        color: ColorSource::Position,
+        relative: RelativeFill::Fill,
+    };
+    /// What a CSA or JKF record needs: the side as recorded, `relative` filled.
+    pub(crate) const RECORDED: Self = Self {
+        color: ColorSource::Recorded,
+        relative: RelativeFill::Fill,
+    };
+
+    fn from_flags(correct_color: bool, infer_relative: bool) -> Self {
+        Self {
+            color: if correct_color {
+                ColorSource::Position
+            } else {
+                ColorSource::Recorded
+            },
+            relative: if infer_relative {
+                RelativeFill::Fill
+            } else {
+                RelativeFill::Skip
+            },
+        }
+    }
+}
+
 impl JsonKifuFormat {
     /// Normalizes the JKF data.
     ///
-    /// If `correct_color` is true, the color of each move is corrected from the position's
-    /// side to move (for KIF/KI2 where color is assigned by move number parity and may be wrong).
-    /// If false, a color mismatch is treated as an error (for CSA/JKF where color is reliable).
-    /// If `infer_relative` is false, the slow `relative` (左/右/上/...) inference is skipped.
-    /// KIF parsing supplies an explicit `from`, so the inference is dead work for that path.
-    /// Downstream code that needs `relative` (e.g. KI2 conversion) can call
-    /// [`Self::populate_relative`] to fill it in lazily.
+    /// `correct_color`: when true, each move's `color` is overwritten with the
+    /// side to move in the position (KIF, KI2: the reader guessed it from the
+    /// ply). When false, a `color` that disagrees is an error (CSA, JKF: the
+    /// record states it).
+    ///
+    /// `infer_relative`: when false, `relative` (左/右/上/...) is left as read.
+    /// [`Self::populate_relative`] fills it in later.
+    ///
+    /// # A handicap numbered from Black
+    ///
+    /// Before anything else, a record that starts from a named handicap and
+    /// gives its first move to Black has every main-line `color` swapped. The
+    /// upper hand moves first in a handicap (R-HC-001), so a reader that
+    /// numbered from Black got every side backwards. This runs whatever
+    /// `correct_color` says.
     ///
     /// # What the position decides, and what the record does
     ///
@@ -166,6 +235,11 @@ impl JsonKifuFormat {
         correct_color: bool,
         infer_relative: bool,
     ) -> Result<(), NormalizeError> {
+        self.normalize_as(Normalization::from_flags(correct_color, infer_relative))
+    }
+
+    /// [`Self::normalize_with_options`], with the two choices named.
+    pub(crate) fn normalize_as(&mut self, how: Normalization) -> Result<(), NormalizeError> {
         normalize_initial(self)?;
         let pos = if let Some(initial) = &self.initial {
             if !matches!(initial.preset, Preset::PresetHirate | Preset::PresetOther)
@@ -194,14 +268,7 @@ impl JsonKifuFormat {
             // has no plies to normalize rather than being an error.
             None => return Ok(()),
         };
-        normalize_moves(
-            rest,
-            1,
-            pos,
-            [TimeFormat::default(); 2],
-            correct_color,
-            infer_relative,
-        )?;
+        normalize_moves(rest, 1, pos, [TimeFormat::default(); 2], how)?;
         Ok(())
     }
 
@@ -217,7 +284,7 @@ impl JsonKifuFormat {
         &mut self,
         correct_color: bool,
     ) -> Result<(), NormalizeError> {
-        self.normalize_with_options(correct_color, true)
+        self.normalize_as(Normalization::from_flags(correct_color, true))
     }
 
     /// Normalizes the JKF data, requiring the move colors to already be right.
@@ -238,7 +305,7 @@ impl JsonKifuFormat {
     /// Returns [`NormalizeError`] if a move cannot be resolved against the
     /// position it is played from.
     pub fn normalize(&mut self) -> Result<(), NormalizeError> {
-        self.normalize_with_options(false, true)
+        self.normalize_as(Normalization::RECORDED)
     }
 
     /// The position the moves start from, or `None` if `initial` cannot be
@@ -362,10 +429,9 @@ fn calculate_from(
 fn normalize_move(
     mmf: &mut MoveMoveFormat,
     pos: &PartialPosition,
-    correct_color: bool,
-    infer_relative: bool,
+    how: Normalization,
 ) -> Result<shogi_core::Move, NormalizeErrorKind> {
-    if correct_color {
+    if how.color == ColorSource::Position {
         // Correct the color from the position's side to move
         // (KIF/KI2 parser assigns color by move number parity, which is wrong for 後手番 games)
         match pos.side_to_move() {
@@ -427,7 +493,7 @@ fn normalize_move(
     }
     let mv = shogi_core::Move::try_from(&*mmf)?;
     // Set relative?
-    if infer_relative && mmf.relative.is_none() {
+    if how.relative == RelativeFill::Fill && mmf.relative.is_none() {
         // A move the notation cannot spell has no suffix to record; the writer
         // is where that has to become an error, not the JKF field.
         mmf.relative = match infer_relative_from_position(pos, mv) {
@@ -798,8 +864,7 @@ fn normalize_moves(
     first_ply: usize,
     mut pos: PartialPosition,
     mut totals: [TimeFormat; 2],
-    correct_color: bool,
-    infer_relative: bool,
+    how: Normalization,
 ) -> Result<(), NormalizeError> {
     let mut board = Board::new();
     for (offset, mf) in moves.iter_mut().enumerate() {
@@ -814,21 +879,14 @@ fn normalize_moves(
         // A fork is the alternative *to* this node's move (R-JKF-004), so it
         // starts from the position before it. Once that position is lost there
         // is nothing to normalize a fork against, and going ahead rewrites its
-        // moves against a board they never came from — `correct_color` would
+        // moves against a board they never came from — `ColorSource::Position` would
         // give them the wrong side.
         if board.is_known() {
             if let Some(forks) = &mut mf.forks {
                 for fork in forks.iter_mut() {
                     // A fork replaces this node, so its first element sits at
                     // the same ply (R-JKF-004).
-                    let _ = normalize_moves(
-                        fork,
-                        ply,
-                        pos.clone(),
-                        totals,
-                        correct_color,
-                        infer_relative,
-                    );
+                    let _ = normalize_moves(fork, ply, pos.clone(), totals, how);
                 }
             }
         }
@@ -863,7 +921,7 @@ fn normalize_moves(
         // `PartialPosition::make_move` leaves `pos` alone when it returns
         // `None`, so the guard below is safe to run for its effect.
         let mut candidate = *mmf;
-        match normalize_move(&mut candidate, &pos, correct_color, infer_relative) {
+        match normalize_move(&mut candidate, &pos, how) {
             Ok(mv) if pos.make_move(mv).is_some() => *mmf = candidate,
             Ok(mv) => board
                 .unplayable(|| NormalizeError::at(ply, NormalizeErrorKind::MakeMoveFailed(mv)))?,
@@ -1907,7 +1965,14 @@ mod tests {
     #[test]
     fn normalize_moves_empty() {
         let pos = PartialPosition::startpos();
-        assert!(normalize_moves(&mut [], 1, pos, [TimeFormat::default(); 2], false, true).is_ok());
+        assert!(normalize_moves(
+            &mut [],
+            1,
+            pos,
+            [TimeFormat::default(); 2],
+            Normalization::RECORDED
+        )
+        .is_ok());
     }
 
     #[test]
@@ -1934,14 +1999,13 @@ mod tests {
                     1,
                     pos,
                     [TimeFormat::default(); 2],
-                    false,
-                    true,
+                    Normalization::RECORDED,
                 )
                 .is_ok(),
                 "normalize should succeed"
             );
         }
-        // Wrong color with correct_color=false should fail
+        // A recorded color that disagrees with the position is an error
         {
             let pos = PartialPosition::startpos();
             assert!(
@@ -1956,14 +2020,13 @@ mod tests {
                     1,
                     pos,
                     [TimeFormat::default(); 2],
-                    false,
-                    true,
+                    Normalization::RECORDED,
                 )
                 .is_err(),
                 "normalize should fail with InvalidColor"
             );
         }
-        // Wrong color with correct_color=true should succeed and fix color
+        // A color guessed from the ply is overwritten with the side to move
         {
             let pos = PartialPosition::startpos();
             let mut moves = [MoveFormat {
@@ -1974,7 +2037,14 @@ mod tests {
                 ..Default::default()
             }];
             assert!(
-                normalize_moves(&mut moves, 1, pos, [TimeFormat::default(); 2], true, true).is_ok(),
+                normalize_moves(
+                    &mut moves,
+                    1,
+                    pos,
+                    [TimeFormat::default(); 2],
+                    Normalization::KI2
+                )
+                .is_ok(),
                 "normalize should succeed (color auto-corrected)"
             );
             assert_eq!(

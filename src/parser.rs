@@ -7,6 +7,7 @@ mod kif;
 
 use crate::error::ParseError;
 use crate::jkf::JsonKifuFormat;
+use crate::normalizer::Normalization;
 use encoding_rs::{Encoding, SHIFT_JIS, UTF_8};
 use nom::error::convert_error;
 use nom::Finish;
@@ -213,9 +214,7 @@ pub fn parse_kif_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
             if !s.trim().is_empty() && is_unrecognised(&jkf, read_header) {
                 return Err(ParseError::Kif(stopped_at(s, s)));
             }
-            // KIF moves carry an explicit `from`, so `relative` inference is dead work.
-            // Downstream consumers (e.g. KI2 conversion) can opt-in via `populate_relative()`.
-            jkf.normalize_with_options(true, false)?;
+            jkf.normalize_as(Normalization::KIF)?;
             Ok(jkf)
         }
         Err(err) => Err(ParseError::Kif(convert_error(s, err))),
@@ -260,7 +259,7 @@ pub fn parse_ki2_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
             if !s.trim().is_empty() && is_unrecognised(&jkf, read_header) {
                 return Err(ParseError::Ki2(stopped_at(s, s)));
             }
-            jkf.normalize_with_color_correction(true)?;
+            jkf.normalize_as(Normalization::KI2)?;
             Ok(jkf)
         }
         Err(err) => Err(ParseError::Ki2(convert_error(s, err))),
