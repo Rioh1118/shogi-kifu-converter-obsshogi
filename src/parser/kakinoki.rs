@@ -1285,16 +1285,32 @@ fn board_row(input: &str) -> IResult<&str, Vec<Piece>, VerboseError<&str>> {
     )(input)
 }
 
-/// Whether a board diagram could open on this line: the file numbers, or the
-/// frame that sits under them (R-KIF-014 / D6).
+/// Whether a board diagram could open on this line: the file numbers, the
+/// frame that sits under them (R-KIF-014 / D6), or a rank of a diagram written
+/// without either (GAP-039).
 ///
 /// Either alone says a diagram starts here — that is what lets [`board`] name
 /// the one of the two that is misspelled instead of unwinding to prose.
 fn opens_board(head: &str) -> bool {
-    head.starts_with("９ ８ ７ ６ ５ ４ ３ ２ １") || head.starts_with("+---")
+    head.starts_with("９ ８ ７ ６ ５ ４ ３ ２ １")
+        || head.starts_with("+---")
+        || head.starts_with('|')
 }
 
 fn board(input: &str) -> IResult<&str, [[Piece; 9]; 9], VerboseError<&str>> {
+    // A diagram may come as its nine ranks alone, without the file numbers and
+    // the frame (tsshogi's tests write one; GAP-039). R-KIF-014 has no primary
+    // source for the frame either. A rank is a line no other shape starts with
+    // `|`, so its first one is enough to say a diagram starts here.
+    if board_row(input).is_ok() {
+        let (rest, ranks) = board_ranks(input)?;
+        let (rest, _) = opt(delimited(
+            padding,
+            tag("+---------------------------+"),
+            pair(padding, end_of_line),
+        ))(rest)?;
+        return Ok((rest, ranks));
+    }
     // The two columns in front of `９` line the file numbers up with the frame
     // below them, so they are padding and not part of the word.
     let numbers = delimited(
@@ -1314,7 +1330,7 @@ fn board(input: &str) -> IResult<&str, [[Piece; 9]; 9], VerboseError<&str>> {
     // recoverable, the whole diagram unwinds and the message points at its first
     // line — the one line known to be intact — while the reader looking for the
     // fault is nine lines further down (D1).
-    let mut rest = match numbers {
+    let rest = match numbers {
         Ok((rest, _)) => match frame(rest) {
             Ok((rest, _)) => rest,
             Err(_) => return Err(broken_line(rest, "the board has no frame under its files")),
@@ -1339,12 +1355,24 @@ fn board(input: &str) -> IResult<&str, [[Piece; 9]; 9], VerboseError<&str>> {
             }
         }
     };
-    // Past the file numbers and the frame under them this is a board diagram,
-    // whatever the rest of it says, so a rank that cannot be read names itself.
-    // A recoverable error here unwinds the whole diagram and the message comes
-    // out pointing at its first line — which is the one line known to be
-    // intact. D1 asks for the line that broke, and the reader is someone
-    // looking for it in their file.
+    let (rest, ret) = board_ranks(rest)?;
+    let (rest, _) = delimited(
+        padding,
+        tag("+---------------------------+"),
+        pair(padding, end_of_line),
+    )(rest)
+    .map_err(|_| broken_line(rest, "the board has no frame under its last rank"))?;
+    Ok((rest, ret))
+}
+
+/// The nine ranks of a board diagram, top to bottom.
+///
+/// Called where the input has already said it is a diagram, so a rank that
+/// cannot be read names itself. A recoverable error here would unwind the whole
+/// diagram and the message would come out pointing at its first line — the one
+/// line known to be intact. D1 asks for the line that broke, and the reader is
+/// someone looking for it in their file.
+fn board_ranks(mut rest: &str) -> IResult<&str, [[Piece; 9]; 9], VerboseError<&str>> {
     let mut rows = Vec::with_capacity(9);
     while rows.len() < 9 {
         let (tail, row) = board_row(rest).map_err(|_| {
@@ -1365,12 +1393,6 @@ fn board(input: &str) -> IResult<&str, [[Piece; 9]; 9], VerboseError<&str>> {
             ret[8 - file][rank] = piece;
         }
     }
-    let (rest, _) = delimited(
-        padding,
-        tag("+---------------------------+"),
-        pair(padding, end_of_line),
-    )(rest)
-    .map_err(|_| broken_line(rest, "the board has no frame under its last rank"))?;
     Ok((rest, ret))
 }
 

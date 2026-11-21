@@ -902,3 +902,20 @@ fn padding_after_the_piece_is_padding() {
         assert_eq!(want.moves, got.moves, "{line}");
     }
 }
+
+/// GAP-039: a diagram written as its nine ranks alone, without the file
+/// numbers and the frame (tsshogi's `position.spec.ts`), is the same position
+/// as the framed one.
+#[test]
+fn a_board_without_its_frame_is_the_same_board() {
+    let ranks = "| ・ ・ ・ ・v玉 ・ ・ ・ ・|一\n| ・ ・ ・ ・ ・ ・ ・ ・ ・|二\n| ・ ・ ・v香 角 ・ ・ ・ ・|三\n| ・ ・ ・ ・v歩 ・ ・ ・ ・|四\n| ・ ・ ・ 銀 ・ ・ ・ ・ ・|五\n| ・ ・ ・ 玉 ・ ・ ・v龍 ・|六\n| ・ ・ 歩 ・ 金 歩 ・ 歩 ・|七\n| ・ ・ ・ ・ ・ ・ 桂 ・ ・|八\n| ・ ・ ・ ・ ・ ・ ・ ・ ・|九\n";
+    let white = "後手の持駒：歩八　香　桂二　銀二　金二　角　\n";
+    let black = "先手の持駒：歩六　香二　桂　銀　金　飛　\n先手番\n";
+    let frame = "+---------------------------+\n";
+    let framed = format!("{white}  ９ ８ ７ ６ ５ ４ ３ ２ １\n{frame}{ranks}{frame}{black}");
+    let want = crate::parser::parse_kif_str(&framed).expect("the framed diagram");
+    let bare = crate::parser::parse_kif_str(&format!("{white}{ranks}{black}"))
+        .expect("the same ranks without the frame");
+    assert_eq!(want.initial, bare.initial);
+    assert!(want.initial.is_some_and(|i| i.data.is_some()));
+}
