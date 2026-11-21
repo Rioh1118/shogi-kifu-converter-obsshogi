@@ -136,10 +136,19 @@ fn end_of_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
 /// which is waiting on a decision; do not read this table as a promise that KIF
 /// keeps such a line.
 ///
-/// The variants R-NOT-001 also lists (`☗`/`☖`, `⛊`/`⛉`, `▼`/`▽`) are not read yet:
-/// `research/90-gaps.md` GAP-024, which names every place that has to learn a
-/// new one together — the KI2 writer among them.
-pub(super) const SIDE_MARKS: [(char, Color); 2] = [('▲', Color::Black), ('△', Color::White)];
+/// `▼`/`▽` and `☗`/`☖` are the same two marks as other programs print them —
+/// filled for Black, outlined for White — and tsshogi reads all six. Left out,
+/// a `▽３四歩` in the middle of a KI2 line was not refused but dropped, and the
+/// record came back one move short (GAP-024, GAP-050). The writers print `▲`/`△`
+/// only.
+pub(super) const SIDE_MARKS: [(char, Color); 6] = [
+    ('▲', Color::Black),
+    ('△', Color::White),
+    ('▼', Color::Black),
+    ('▽', Color::White),
+    ('☗', Color::Black),
+    ('☖', Color::White),
+];
 
 /// The mark a KIF move line may carry in front of the move (R-KIF-005).
 ///
@@ -153,9 +162,7 @@ pub(super) const SIDE_MARKS: [(char, Color); 2] = [('▲', Color::Black), ('△'
 ///
 /// What the mark needs from this reader is to be allowed. tsshogi's move pattern
 /// has `[▲△▼▽]?` in it, so a record that opens on the consumer's TS side has to
-/// open here too, and refusing it refuses the file whole (D1). `▼` and `▽` are
-/// not in [`SIDE_MARKS`] yet, so those two are still refused
-/// (`research/90-gaps.md` GAP-024).
+/// open here too, and refusing it refuses the file whole (D1).
 pub(super) fn side_mark(input: &str) -> IResult<&str, char, VerboseError<&str>> {
     satisfy(|c| SIDE_MARKS.iter().any(|(mark, _)| *mark == c))(input)
 }
@@ -1400,7 +1407,29 @@ pub(super) fn move_to(input: &str) -> IResult<&str, Option<PlaceFormat>, Verbose
         // A file whose columns were re-aligned by a word processor has two.
         value(None, terminated(tag("同"), take_while(is_padding))),
         map(pair(place_x, place_y), |(x, y)| Some(PlaceFormat { x, y })),
+        // GAP-037: the square in Arabic digits — `76歩` as tsshogi's tests
+        // write it, `７６歩` as the 日本将棋連盟 records it (R-NOT-001 note).
+        map(
+            pair(arabic_digit, alt((place_y, arabic_digit))),
+            |(x, y)| Some(PlaceFormat { x, y }),
+        ),
     ))(input)
+}
+
+/// A digit 1-9, half-width or full-width.
+fn arabic_digit(input: &str) -> IResult<&str, u8, VerboseError<&str>> {
+    let mut chars = input.chars();
+    let digit = chars.next().and_then(|c| match c {
+        '1'..='9' => Some(c as u8 - b'0'),
+        '１'..='９' => Some((c as u32 - '０' as u32) as u8),
+        _ => None,
+    });
+    match digit {
+        Some(d) => Ok((chars.as_str(), d)),
+        None => Err(nom::Err::Error(VerboseError {
+            errors: vec![(input, nom::error::VerboseErrorKind::Context("a digit 1-9"))],
+        })),
+    }
 }
 
 /// The `後手番` line that says the position starts with White to move

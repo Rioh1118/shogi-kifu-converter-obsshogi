@@ -889,3 +889,47 @@ fn a_tsume_record_ends_with_詰_with_or_without_で() {
         );
     }
 }
+
+/// GAP-037: the square in Arabic digits, half-width (`▲26歩`, as tsshogi's
+/// tests write it) or full-width in both places (`▲２６歩`, the 日本将棋連盟
+/// style). A prose line that opens with a number is still prose.
+#[test]
+fn a_square_in_arabic_digits_is_a_square() {
+    let want = crate::parser::parse_ki2_str("▲２六歩 △３四歩\n▲７六歩\n").expect("kanji ranks");
+    for src in [
+        "▲26歩 △34歩\n▲76歩\n",
+        "▲２６歩 △３４歩\n▲７６歩\n",
+        "▲26歩 ▽34歩\n▲７六歩\n",
+    ] {
+        let got = crate::parser::parse_ki2_str(src).unwrap_or_else(|e| panic!("{src}: {e}"));
+        assert_eq!(want.moves, got.moves, "{src}");
+    }
+    let kif = crate::parser::parse_kif_str("1 76歩(77)\n2 34歩(33)\n").expect("KIF too");
+    assert_eq!(
+        Some(PlaceFormat { x: 7, y: 6 }),
+        kif.moves[1].move_.map(|m| m.to)
+    );
+    let noted = crate::parser::parse_ki2_str("▲２六歩 △３四歩\n12月の対局\n▲７六歩\n")
+        .expect("a line of prose that opens with a number is not a move");
+    assert_eq!(4, noted.moves.len());
+}
+
+/// GAP-024 / GAP-050: `▼▽` and `☗☖` are the same marks as `▲△`. A `▽` in the
+/// middle of a line was not refused but dropped, one move short.
+#[test]
+fn every_spelling_of_the_side_marks_keeps_every_move() {
+    for (black, white) in [('▲', '△'), ('▼', '▽'), ('☗', '☖')] {
+        let src = format!("{black}２六歩 {white}３四歩\n{black}７六歩\n");
+        let jkf = crate::parser::parse_ki2_str(&src).unwrap_or_else(|e| panic!("{src}: {e}"));
+        let colors: Vec<_> = jkf
+            .moves
+            .iter()
+            .filter_map(|mf| mf.move_.map(|m| m.color))
+            .collect();
+        assert_eq!(
+            vec![Color::Black, Color::White, Color::Black],
+            colors,
+            "{src}"
+        );
+    }
+}
