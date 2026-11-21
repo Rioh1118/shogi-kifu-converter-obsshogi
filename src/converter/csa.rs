@@ -125,10 +125,12 @@ fn write_header<W: Write>(header: &HashMap<String, String>, sink: &mut W) -> Res
 }
 
 fn write_initial_data<W: Write>(data: &StateFormat, sink: &mut W) -> Result {
-    for i in 0..9 {
-        sink.write_fmt(format_args!("P{}", i + 1))?;
-        for j in 0..9 {
-            let p = data.board[8 - j][i];
+    // `board[file - 1][rank - 1]`. A CSA row is one rank, written from file 9
+    // down to file 1 (R-CSA-006).
+    for rank in 0..9 {
+        sink.write_fmt(format_args!("P{}", rank + 1))?;
+        for column in data.board.iter().rev() {
+            let p = column[rank];
             if let (Some(c), Some(kind)) = (p.color, p.kind) {
                 write_color(c, sink)?;
                 write_kind(kind, sink)?;

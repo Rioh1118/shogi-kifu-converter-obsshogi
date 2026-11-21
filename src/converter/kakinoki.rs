@@ -87,10 +87,12 @@ fn write_initial_data<W: Write>(data: &StateFormat, sink: &mut W) -> Result {
     sink.write_char('\n')?;
     sink.write_str("  ９ ８ ７ ６ ５ ４ ３ ２ １\n")?;
     sink.write_str("+---------------------------+\n")?;
-    for i in 0..9 {
+    // `board[file - 1][rank - 1]`. A diagram row is one rank, drawn from file 9
+    // down to file 1 (R-KIF-014).
+    for rank in 0..9 {
         sink.write_char('|')?;
-        for j in 0..9 {
-            let p = data.board[8 - j][i];
+        for column in data.board.iter().rev() {
+            let p = column[rank];
             if let (Some(c), Some(kind)) = (p.color, p.kind) {
                 match c {
                     Color::Black => sink.write_char(' ')?,
@@ -102,7 +104,7 @@ fn write_initial_data<W: Write>(data: &StateFormat, sink: &mut W) -> Result {
             }
         }
         sink.write_char('|')?;
-        write_kansuji(i as u8 + 1, sink)?;
+        write_kansuji(rank as u8 + 1, sink)?;
         sink.write_char('\n')?;
     }
     sink.write_str("+---------------------------+\n")?;
