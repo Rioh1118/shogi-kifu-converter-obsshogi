@@ -79,9 +79,9 @@
 
 真偽値を返す関数（テスト以外に 22 個）は2つの形にそろえた。
 
-- 状態を問う: `is_*`（`is_padding`、`is_unrecognised`、`is_promotion_spellable`）
-- 動作を問う: 三人称の動詞（`opens_kif_line`、`ends_word`、`could_promote`）。標準ライブラリの `starts_with` と同じ形
+- 状態や可否を問う: `is_*` / `can_*`（`is_padding`、`is_unrecognised`、`can_promote`）
+- 動作を問う: 三人称の動詞（`opens_kif_line`、`ends_word`、`names_line`）。標準ライブラリの `starts_with` と同じ形
 
-前は `a_move_body_opens` のような文の形が8個、`promotion_was_on_the_table` のような名詞で始まる形が2個あった。
+前は `a_move_body_opens` のような文の形が10個、`promotion_was_on_the_table` のような名詞で始まる形が2個あった。
 
 略語は使わない（例: `pk2k` は `kind_from_piece_kind` に相当する）。

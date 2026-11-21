@@ -205,7 +205,7 @@ gate_target_dir() {
 #
 # `.claude/hooks/*.sh` は、このゲート自身を決めているので例外として拾う。
 #
-# `research/` は `.gitignore` されているので、ここへは来ない。
+# `research/` は `.md` だけなので種別が付かず、検証なしで通す。
 gate_kinds_for_path() {
   local path=$1 kinds=""
 

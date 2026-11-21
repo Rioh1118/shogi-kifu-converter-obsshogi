@@ -31,7 +31,7 @@ bash .claude/verify.sh    # cargo fmt --check + clippy -D warnings + test （約
 | `research/40-handicap.md` | 手合割 16 種の初期配置（正典） |
 | `research/90-gaps.md` | **再現を確かめた**実装とのギャップ |
 
-`research/` はコミットする。以前は `.gitignore` していて、手元から消えたとき復元できなかった（D26 と同じ日に作り直した）。
+`research/` はコミットする。手元だけに置くと、消えたときに復元できない。
 要件・判断（`95-decisions.md`）・ギャップ（`90-gaps.md`）を足したら、コードと同じコミットに載せる。
 
 規定には `R-<領域>-<番号>` の ID が振ってある。コメントやテスト名からこの ID を参照してよい。
