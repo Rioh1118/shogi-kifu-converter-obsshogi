@@ -1393,8 +1393,8 @@ fn a_digit_opens_a_move_line_only_when_a_move_follows_it() {
 
 // A mark at the head of a line is how a move opens, and the indentation in
 // front of it does not change that — `　▲有利でした` is refused exactly as
-// `▲有利でした` is. Whether a mark *anywhere* in a line should refuse it is
-// GAP-029, still open.
+// `▲有利でした` is. A mark behind a note marker (`※▲２六歩が本筋`) is a note
+// in both readers (GAP-029).
 #[test]
 fn a_mark_opens_a_line_from_wherever_the_line_starts() {
     use crate::parser::{parse_ki2_str, parse_kif_str};

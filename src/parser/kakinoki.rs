@@ -130,11 +130,8 @@ fn end_of_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
 /// refusing such a line even where it turns out to be prose is the trade D1
 /// takes (`parser::tests::a_record_the_reader_stops_in_the_middle_of_is_an_error`).
 ///
-/// A line that merely holds one somewhere — `※▲２六歩が本筋` — is prose to KIF
-/// and is skipped, while `ki2::is_prose_only_line` asks `contains` and
-/// refuses the whole file. That asymmetry is `research/90-gaps.md` GAP-029,
-/// which is waiting on a decision; do not read this table as a promise that KIF
-/// keeps such a line.
+/// A line that merely holds one somewhere behind a note marker —
+/// `※▲２六歩が本筋` — is prose to both readers and is skipped (GAP-029).
 ///
 /// `▼`/`▽` and `☗`/`☖` are the same two marks as other programs print them —
 /// filled for Black, outlined for White — and tsshogi reads all six. Left out,
@@ -262,7 +259,7 @@ pub(super) fn ends_word(c: char) -> bool {
 /// `（まで先手良し）`, `【変化】` — which is exactly where
 /// [`begins_next_line`] would otherwise look for the newline that was
 /// lost. Whatever replaced a newline, it is not one of these.
-const NOTE_MARKERS: [char; 8] = ['※', '（', '(', '【', '[', '「', '〈', '＜'];
+pub(super) const NOTE_MARKERS: [char; 8] = ['※', '（', '(', '【', '[', '「', '〈', '＜'];
 
 /// The word a fork declaration opens with (D3).
 ///
