@@ -187,6 +187,13 @@ pub enum MoveSpecial {
     /// 先手の不戦敗 — **JKF 標準にはないバリアント**（R-KIF-007 / D1）
     #[serde(rename = "FUSENPAI")]
     SpecialFusenpai,
+    /// 封じ手 — **JKF 標準にはないバリアント**（GAP-035 / D28）
+    ///
+    /// The game is adjourned with the next move sealed. Not in R-KIF-007, but
+    /// written by the records titles publish, and read by tsshogi and
+    /// Kifu-for-JS.
+    #[serde(rename = "FUUJITE")]
+    SpecialFuujite,
 }
 
 impl Kind {
@@ -293,7 +300,7 @@ impl MoveSpecial {
     /// (R-KIF-007, D7) — plus `every_special_is_in_the_list_of_every_special`,
     /// which catches a variant inserted anywhere but the end.
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 16] = [
+    pub(crate) const ALL: [Self; 17] = [
         Self::SpecialToryo,
         Self::SpecialChudan,
         Self::SpecialSennichite,
@@ -310,6 +317,7 @@ impl MoveSpecial {
         Self::SpecialError,
         Self::SpecialFusensho,
         Self::SpecialFusenpai,
+        Self::SpecialFuujite,
     ];
 }
 

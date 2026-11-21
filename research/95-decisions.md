@@ -29,3 +29,4 @@
 - **D25** KIF の `反則勝ち` は「直前の手が反則」の意味（R-KIF-007）。`±ILLEGAL_ACTION` の反則した側が手番の側なら、`反則勝ち` ではなく `反則負け` と書く。勝者は保たれ、読み戻すと種類は `ILLEGAL_MOVE` になる（CSA の定義でも「手番側の反則負け」で、意味は同じ）。勝者が入れ替わるより、種類の名前が変わる方が害が小さい。実装は読みやすさの整理とは別の変更にする（GAP-032）
 - **D26** 新しい clippy で落ちる検証は、ツールチェーンを固定せずコードを直して通す。固定するには `rust-toolchain.toml` をリポジトリ直下に足すことになり、「直下にファイルを増やさない」に反する
 - **D27** 用語は `.claude/plans/readable-rules/glossary.md` に従う。JKF のフィールド名がある概念はその名前に寄せる（fork、special、relative、from、initial position）。上手・下手は英語のコメントでも upper hand / lower hand のまま使い、先手・後手（Black / White）と混ぜない
+- **D28** 封じ手は JKF の拡張のバリアント `FUUJITE`（`MoveSpecial::SpecialFuujite`）として読む。KIF・KI2 は `封じ手` と書き戻し、CSA には語が無いので `%CHUDAN` と書く。`中断` として読むと、保存したときに公式の棋譜の `封じ手` が `中断` に書き換わる。D1 の `FUSENSHO`・`FUSENPAI` と同じく、JKF の標準の読み手は読めない。tsshogi は知らない名前をそのままの名前の終局として表示する（画面に `FUUJITE` と出る。consumer 側で表示名を当てる必要がある）

@@ -345,7 +345,7 @@ mod tests {
         use crate::jkf::{Color, Initial, Kind, MoveMoveFormat, PlaceFormat, Preset};
 
         // Two moves, so the special move sits at ply 3 with Black to move.
-        const TABLE: [Row; 16] = [
+        const TABLE: [Row; 17] = [
             Row {
                 special: SpecialToryo,
                 kif_word: "投了",
@@ -498,6 +498,17 @@ mod tests {
                 ki2_phrase: "不戦敗",
                 after_kif: SpecialFusenpai,
                 after_ki2: SpecialFusenpai,
+                after_csa: Some(SpecialChudan),
+            },
+            // D28: CSA has no word for an adjournment either, and 中断 is what
+            // happened to the game.
+            Row {
+                special: SpecialFuujite,
+                kif_word: "封じ手",
+                csa_word: "%CHUDAN",
+                ki2_phrase: "封じ手",
+                after_kif: SpecialFuujite,
+                after_ki2: SpecialFuujite,
                 after_csa: Some(SpecialChudan),
             },
             Row {

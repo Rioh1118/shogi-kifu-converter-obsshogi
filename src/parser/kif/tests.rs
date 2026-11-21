@@ -872,3 +872,19 @@ fn the_last_line_is_read_without_a_trailing_newline() {
         "the special move is on the last line"
     );
 }
+
+/// GAP-035: 封じ手 ends the first day of a two-day game. Not in R-KIF-007,
+/// but the 名人戦 record in Kifu-for-JS's test files has it as a numbered
+/// line with a time, the same shape as any other special move.
+#[test]
+fn a_sealed_move_is_read_and_written_back() {
+    let src = "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)   ( 0:01/00:00:01)\n   2 封じ手       (25:00/04:07:00)\n";
+    let jkf = crate::parser::parse_kif_str(src).expect("a sealed move reads");
+    assert_eq!(Some(MoveSpecial::SpecialFuujite), jkf.moves[2].special);
+    let back =
+        crate::parser::parse_kif_str(&jkf.try_to_string(crate::Format::Kif).expect("writes"))
+            .expect("reads back");
+    assert_eq!(Some(MoveSpecial::SpecialFuujite), back.moves[2].special);
+    let ki2 = crate::parser::parse_ki2_str("▲７六歩\nまで1手で封じ手\n").expect("KI2 reads");
+    assert_eq!(Some(MoveSpecial::SpecialFuujite), ki2.moves[2].special);
+}

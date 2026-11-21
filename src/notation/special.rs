@@ -41,6 +41,7 @@ impl MoveSpecial {
             // see `research/30-kif.md`.)
             MoveSpecial::SpecialFusensho => "不戦勝",
             MoveSpecial::SpecialFusenpai => "不戦敗",
+            MoveSpecial::SpecialFuujite => "封じ手",
             MoveSpecial::SpecialMatta | MoveSpecial::SpecialError => return None,
         })
     }
@@ -75,6 +76,7 @@ impl MoveSpecial {
             "不詰" => MoveSpecial::SpecialFuzumi,
             "不戦勝" => MoveSpecial::SpecialFusensho,
             "不戦敗" => MoveSpecial::SpecialFusenpai,
+            "封じ手" => MoveSpecial::SpecialFuujite,
             _ => return None,
         })
     }
@@ -150,7 +152,9 @@ impl MoveSpecial {
             // — is the most that can be said without asserting something CSA
             // does not mean; calling a no-show a foul would be worse than
             // losing the distinction (D11, the same trade as D7).
-            MoveSpecial::SpecialFusensho | MoveSpecial::SpecialFusenpai => "CHUDAN",
+            MoveSpecial::SpecialFusensho
+            | MoveSpecial::SpecialFusenpai
+            | MoveSpecial::SpecialFuujite => "CHUDAN",
             MoveSpecial::SpecialToryo => "TORYO",
             MoveSpecial::SpecialChudan => "CHUDAN",
             MoveSpecial::SpecialSennichite => "SENNICHITE",

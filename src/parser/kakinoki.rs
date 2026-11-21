@@ -402,13 +402,14 @@ fn is_whole_line_fork_header(head: &str) -> bool {
 /// Here rather than with the KIF reader because both readers ask: KI2 has to
 /// know that `   5 投了` is a line something wrote as a move, so that skipping
 /// it as prose does not take the special move with it (D1, `opens_numbered_line`).
-const KIF_SPECIAL_WORDS: [&str; 12] = [
+const KIF_SPECIAL_WORDS: [&str; 13] = [
     "切れ負け",
     "入玉勝ち",
     "反則負け",
     "反則勝ち",
     "不戦勝",
     "不戦敗",
+    "封じ手",
     "千日手",
     "持将棋",
     "投了",
