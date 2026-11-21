@@ -22,7 +22,6 @@
 #![deny(clippy::disallowed_methods)]
 
 pub mod converter;
-mod csa;
 pub mod error;
 mod handicap;
 pub mod jkf;
