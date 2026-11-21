@@ -621,6 +621,10 @@ fn move_body(input: &str) -> IResult<&str, NumberedBody, VerboseError<&str>> {
     let (input, _) = opt(side_mark)(input)?;
     let (input, to) = move_to(input)?;
     let (input, piece) = piece_kind(input)?;
+    // A writer that pads `同` to two columns puts the padding after the piece
+    // (`同銀　(79)`, tsshogi's tests) rather than after `同` (`同　銀(79)`).
+    // tsshogi's move pattern takes padding there (GAP-038).
+    let (input, _) = take_while(is_padding)(input)?;
     // R-KIF-006 asks a *writer* not to spell 不成. Other software spells it, and
     // a reader that counts only what a correct writer produces hands the line to
     // the skip, which drops the move (R-REQ-004).

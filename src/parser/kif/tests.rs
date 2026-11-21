@@ -888,3 +888,17 @@ fn a_sealed_move_is_read_and_written_back() {
     let ki2 = crate::parser::parse_ki2_str("▲７六歩\nまで1手で封じ手\n").expect("KI2 reads");
     assert_eq!(Some(MoveSpecial::SpecialFuujite), ki2.moves[2].special);
 }
+
+/// GAP-038: the padding that lines `同` up with a two-character square can
+/// come after the piece instead of after `同`.
+#[test]
+fn padding_after_the_piece_is_padding() {
+    let head = "1 ７六歩(77)\n2 ３四歩(33)\n3 ２二角成(88)\n";
+    let want =
+        crate::parser::parse_kif_str(&format!("{head}4 同　銀(31)\n")).expect("the usual spelling");
+    for line in ["4 同銀　(31)", "4 同銀(31)", "4 同　銀　(31)"] {
+        let got = crate::parser::parse_kif_str(&format!("{head}{line}\n"))
+            .unwrap_or_else(|e| panic!("{line}: {e}"));
+        assert_eq!(want.moves, got.moves, "{line}");
+    }
+}
