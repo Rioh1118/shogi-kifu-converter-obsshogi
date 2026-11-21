@@ -184,3 +184,30 @@ fn the_times_csa_has_keywords_for_are_written() {
         );
     }
 }
+
+/// A rank of the bulk form is nine squares of three characters (R-CSA-006).
+/// One cut short is missing pieces, not empty squares. The last empty square
+/// may lose its trailing blank to the end of the line.
+#[test]
+fn a_rank_cut_short_is_an_error() {
+    let upper = "P1-KY-KE-GI-KI-OU-KI-GI-KE-KY\nP2 * -HI *  *  *  *  * -KA * \nP3-FU-FU-FU-FU-FU-FU-FU-FU-FU\nP4 *  *  *  *  *  *  *  *  * \nP5 *  *  *  *  *  *  *  *  * \nP6 *  *  *  *  *  *  *  *  * \nP7+FU+FU+FU+FU+FU+FU+FU+FU+FU\nP8 * +KA *  *  *  *  * +HI *\n";
+    let full = format!("V2.2\n{upper}P9+KY+KE+GI+KI+OU+KI+GI+KE+KY\n+\n");
+    assert!(
+        parse_csa_str(&full).is_ok(),
+        "P8 without its last blank is whole"
+    );
+    let short = format!("V2.2\n{upper}P9+KY+KE+GI+KI+OU+KI+GI\n+\n");
+    let message = parse_csa_str(&short)
+        .expect_err("two squares are missing")
+        .to_string();
+    assert!(message.contains("line 10"), "{message}");
+}
+
+/// A comment with a comma in it comes back as one comment (R-CSA-008).
+#[test]
+fn a_comment_with_a_comma_comes_back_whole() {
+    let mut jkf = read("V2.2\nPI\n+\n+7776FU\n");
+    jkf.moves[1].comments = Some(vec!["7六歩, 角道を開ける".to_owned()]);
+    let back = read(&jkf.try_to_string(crate::Format::Csa).expect("writes CSA"));
+    assert_eq!(jkf.moves[1].comments, back.moves[1].comments);
+}

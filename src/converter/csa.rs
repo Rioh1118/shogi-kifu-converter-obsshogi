@@ -277,8 +277,10 @@ fn write_comment<W: Write>(comment: &str, sink: &mut W) -> WriteResult {
     //
     // KIF and KI2 write the bare marker instead, because there `*` on its own
     // reads back as the empty comment it was.
+    // A comment runs to the end of its line, commas included (R-CSA-008), so
+    // only a line ending splits one.
     for piece in comment
-        .split(|c| c == ',' || LINE_ENDS.contains(&c))
+        .split(|c| LINE_ENDS.contains(&c))
         .filter(|piece| !piece.is_empty())
     {
         sink.write_fmt(format_args!("'{piece}\n"))?;
@@ -357,13 +359,13 @@ fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> WriteResult {
 mod tests {
     use super::*;
 
-    // R-CSA-009: `,` ends a statement, and this crate's reader drops the rest of
-    // the file from there without a word (GAP-012). The notes shogi sites write
-    // carry one (`*▲囲い：居飛車穴熊, 一枚穴熊`), so a record saved as `.csa`
-    // came back short with `Ok` (GAP-023).
+    // R-CSA-009: `,` ends a statement, but a comment runs to the end of its line
+    // (R-CSA-008), commas included. The notes shogi sites write carry one
+    // (`*▲囲い：居飛車穴熊, 一枚穴熊`), and the record has to come back whole
+    // with the note as it was (GAP-023).
     //
-    // A header value cannot be split the way a comment can — `$EVENT` has
-    // nowhere to continue onto — so there the comma becomes the full-width form.
+    // A header value is a statement, so there the comma becomes the full-width
+    // form.
     #[test]
     fn a_comment_with_a_statement_separator_in_it_does_not_end_the_record() {
         let kif = "手合割：平手
@@ -377,11 +379,8 @@ mod tests {
         let csa = jkf.try_to_csa_owned().expect("writes CSA");
         let back = crate::parser::parse_csa_str(&csa).expect("reads back");
         assert_eq!(3, back.moves.len() - 1, "{csa}");
-        // The text is on the file; the comma is not, because CSA has nowhere to
-        // put it. (Reading it back into the record is another matter: the `csa`
-        // crate drops `'` lines, so the round trip loses comments whatever this
-        // writes.)
-        assert!(csa.contains("'囲い：居飛車穴熊\n' 一枚穴熊\n"), "{csa}");
+        assert!(csa.contains("'囲い：居飛車穴熊, 一枚穴熊\n"), "{csa}");
+        assert_eq!(jkf.moves[1].comments, back.moves[1].comments, "{csa}");
 
         // A newline ends a line as surely as a comma does, and a JKF comment can
         // hold one (nothing in JKF says otherwise, and the consumer builds its

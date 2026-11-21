@@ -292,8 +292,16 @@ fn header_key(keyword: &str) -> String {
 /// `-KY` or ` * ` for an empty square (R-CSA-006).
 fn board_rank(position: &mut Position, rank: usize, cells: &str) -> Result<(), String> {
     let cells: Vec<char> = cells.chars().collect();
+    // Nine squares of three characters (R-CSA-006). The reader has taken the
+    // blanks off the end of the line, so the last square, if empty, has lost
+    // one: 26 is the shortest a whole rank can be. Shorter, and squares are
+    // missing — reading them as empty takes pieces off the board without a
+    // word (D1).
     if cells.len() > 27 {
         return Err("a rank of the board has more than nine squares".to_owned());
+    }
+    if cells.len() < 26 {
+        return Err("a rank of the board has fewer than nine squares".to_owned());
     }
     for file_from_left in 0..9 {
         let cell: String = cells.iter().skip(file_from_left * 3).take(3).collect();
