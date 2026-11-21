@@ -34,7 +34,7 @@ fn on_one_line(value: &str) -> String {
     value.split(crate::notation::LINE_ENDS).collect()
 }
 
-/// Spells `pos` as USI: the starting position, then the moves played from it.
+/// Spells `pos` as USI: the initial position, then the moves played from it.
 fn write_usi<W: std::fmt::Write>(pos: &Position, sink: &mut W) -> std::fmt::Result {
     if pos.initial_position() == &PartialPosition::startpos() {
         sink.write_str("startpos")?;
@@ -83,7 +83,7 @@ impl JsonKifuFormat {
     /// # Errors
     ///
     /// Returns [`ConvertError`] when the record cannot be turned into a
-    /// position, which happens three ways: the starting position is a
+    /// position, which happens three ways: the initial position is a
     /// [`Preset::PresetOther`](crate::jkf::Preset::PresetOther) with no board
     /// (`InitialBoardNoDataWithPresetOTHER`), a coordinate is off the board
     /// (`InvalidSquare`), or a move cannot be played from the position before it
@@ -181,7 +181,7 @@ mod tests {
         );
     }
 
-    /// One row of the outcome vocabulary. A struct rather than a tuple because
+    /// One row of the special move vocabulary. A struct rather than a tuple because
     /// six of the seven fields are the same two types and a swapped pair would
     /// still compile.
     struct Row {
@@ -205,7 +205,7 @@ mod tests {
     /// Where a format loses information the row says so, because the difference
     /// between a known limit of a format and a writer quietly changing what a
     /// record says is the whole point. Pinning `to_kif` to `中断` for every
-    /// outcome has to fail here, and so does pinning `to_csa` to `%CHUDAN`.
+    /// special move has to fail here, and so does pinning `to_csa` to `%CHUDAN`.
     // Every piece, in every place a piece can be, through every format.
     //
     // A writer's table that no reader is tied to drifts in silence: swapping
@@ -320,11 +320,11 @@ mod tests {
     }
 
     #[test]
-    fn every_outcome_has_the_word_each_format_writes() {
+    fn every_special_has_the_word_each_format_writes() {
         use crate::jkf::MoveSpecial::*;
         use crate::jkf::{Color, Initial, Kind, MoveMoveFormat, PlaceFormat, Preset};
 
-        // Two moves, so the outcome sits at ply 3 with Black to move.
+        // Two moves, so the special move sits at ply 3 with Black to move.
         const TABLE: [Row; 16] = [
             Row {
                 special: SpecialToryo,
@@ -377,6 +377,10 @@ mod tests {
             // KIF's 反則勝ち is relative to whose turn it is, so it cannot say that
             // Black fouled while Black is to move. The KI2 phrase names the
             // winner outright and keeps the direction.
+            // GAP-032: Black fouled with Black to move. 反則勝ち says the move
+            // *before* was the foul (R-KIF-007), so it reads back as White's
+            // foul and the winner swaps. D25 decides to write 反則負け here
+            // instead; until then this row pins what the writer does.
             Row {
                 special: SpecialIllegalActionBlack,
                 kif_word: "反則勝ち",
@@ -503,7 +507,7 @@ mod tests {
             }
         }
 
-        // The record, not just its last `special`. Collapsing "the outcome was
+        // The record, not just its last `special`. Collapsing "the special move was
         // dropped" into the same `None` as "the parse failed" or "every move
         // vanished" would let exactly the failure this table exists to catch —
         // `Ok` with less in it — pass unnoticed.
@@ -562,7 +566,7 @@ mod tests {
                 read_back(&ki2, crate::parser::parse_ki2_str, "KI2"),
                 "{special:?} through KI2"
             );
-            // Both moves have to survive even where the outcome does not.
+            // Both moves have to survive even where the special move does not.
             assert_eq!(
                 (2, row.after_csa),
                 read_back(&csa, crate::parser::parse_csa_str, "CSA"),
@@ -626,7 +630,7 @@ mod tests {
     /// this, `to_usi` can stop writing the moves — or spell the even game as
     /// `sfen …` — and every test still passes.
     #[test]
-    fn usi_names_the_starting_position_and_the_moves() {
+    fn usi_names_the_initial_position_and_the_moves() {
         use crate::jkf::{Color, Initial, Kind, MoveMoveFormat, PlaceFormat, Preset};
         let pawn = |color, fx, fy, tx, ty| MoveFormat {
             move_: Some(MoveMoveFormat {

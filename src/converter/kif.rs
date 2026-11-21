@@ -1,7 +1,7 @@
 use super::kakinoki::{
     write_comment, write_header, write_initial, write_kansuji, write_sanyou_suji,
 };
-use super::WriteResult as Result;
+use super::WriteResult;
 use crate::error::ConvertError;
 use crate::jkf::*;
 use std::fmt::Write;
@@ -22,7 +22,7 @@ pub trait ToKif {
     /// [`InvalidSquare`]: ConvertError::InvalidSquare
     /// [`UnspellableNumber`]: ConvertError::UnspellableNumber
     /// [`UnknownPreset`]: ConvertError::UnknownPreset
-    fn to_kif<W: Write>(&self, sink: &mut W) -> Result;
+    fn to_kif<W: Write>(&self, sink: &mut W) -> WriteResult;
 
     /// Returns `self`'s string representation, or the error [`Self::to_kif`]
     /// gave.
@@ -48,7 +48,7 @@ pub trait ToKif {
 }
 
 impl ToKif for JsonKifuFormat {
-    fn to_kif<W: Write>(&self, sink: &mut W) -> Result {
+    fn to_kif<W: Write>(&self, sink: &mut W) -> WriteResult {
         write_header(&self.header, sink)?;
         write_initial(&self.header, &self.initial, sink)?;
         write_moves(&self.moves, sink)?;
@@ -56,7 +56,7 @@ impl ToKif for JsonKifuFormat {
     }
 }
 
-fn write_move_kind<W: Write>(kind: Kind, sink: &mut W, offset: &mut usize) -> Result {
+fn write_move_kind<W: Write>(kind: Kind, sink: &mut W, offset: &mut usize) -> WriteResult {
     // The offset is the width the move text takes in the column KIF pads the
     // consumed time into, counted from the word rather than kept beside it: a
     // table with the widths in it is a second place to remember that `成香` is
@@ -67,16 +67,16 @@ fn write_move_kind<W: Write>(kind: Kind, sink: &mut W, offset: &mut usize) -> Re
     Ok(())
 }
 
-fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) -> Result {
+fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) -> WriteResult {
     let mut forks_stack = Vec::new();
     // The ply is the number of the line being written, not the position in the
-    // array. A node with neither a move nor an outcome carries only comments,
+    // array. A node with neither a move nor a special move carries only comments,
     // which JKF allows and KIF has no line for; counting it anyway leaves a gap
-    // in the move numbers and shifts every `変化：N手` after it, so the branch
+    // in the move numbers and shifts every `変化：N手` after it, so the fork
     // lands on the wrong move — or on nothing, and is dropped.
     let mut i = index;
     for mf in moves {
-        let has_line = mf.occupies_a_ply();
+        let has_line = mf.occupies_ply();
         if has_line {
             sink.write_fmt(format_args!("{:4} ", i))?;
         }
@@ -160,7 +160,7 @@ fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) 
     Ok(())
 }
 
-fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
+fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> WriteResult {
     sink.write_str("手数----指手---------消費時間--\n")?;
     let Some((head, rest)) = moves.split_first() else {
         return Ok(());
@@ -283,7 +283,7 @@ mod tests {
 
     // JKF lets a node carry comments and nothing else; KIF has no line for one.
     // Counting it as a ply anyway leaves a gap in the move numbers and moves
-    // every `変化：N手` after it one step along, so the branch attaches to the
+    // every `変化：N手` after it one step along, so the fork attaches to the
     // wrong move — or to none, and is dropped without a word.
     #[test]
     fn a_comment_only_node_does_not_consume_a_ply() {
@@ -319,7 +319,7 @@ mod tests {
                 .filter_map(|mf| mf.forks.as_ref())
                 .map(Vec::len)
                 .sum::<usize>(),
-            "the branch survives: {kif:?}"
+            "the fork survives: {kif:?}"
         );
     }
 

@@ -73,8 +73,7 @@ argument-hint: "[対象: ファイル / モジュール名 / 対応表の名前]
 
 ## 置き場
 
-`research/tables/<対象>.md`。`research/` は gitignore されているので、
-**表そのものはコミットされない。** 表から出てきたテストと、
+`research/tables/<対象>.md`。表から出てきたテストと、
 埋まらなかったセルの要約を `research/90-gaps.md` に残すこと。
 
 ## 禁止事項

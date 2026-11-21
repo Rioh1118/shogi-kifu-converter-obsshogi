@@ -1,5 +1,5 @@
 use super::on_one_line;
-use super::WriteResult as Result;
+use super::WriteResult;
 use crate::error::ConvertError;
 use crate::jkf::*;
 use crate::notation::{board_word, KANSUJI, LINE_ENDS, SANYOU_SUJI};
@@ -12,7 +12,7 @@ use std::fmt::Write;
 /// than something to index the table with. The KIF parser leaves `to` at (0, 0)
 /// for a `同` move until the position fills it in, so an unnormalised record
 /// reaches here with a zero.
-pub(super) fn write_sanyou_suji<W: Write>(num: u8, sink: &mut W) -> Result {
+pub(super) fn write_sanyou_suji<W: Write>(num: u8, sink: &mut W) -> WriteResult {
     let c = num
         .checked_sub(1)
         .and_then(|i| SANYOU_SUJI.get(i as usize))
@@ -26,7 +26,7 @@ pub(super) fn write_sanyou_suji<W: Write>(num: u8, sink: &mut W) -> Result {
 /// Ranks are 1-9 and hand counts reach 18 for pawns. Anything past that has no
 /// spelling here — and writing `歩十十` would produce a file this crate's own
 /// parser cannot read back.
-pub(super) fn write_kansuji<W: Write>(mut num: u8, sink: &mut W) -> Result {
+pub(super) fn write_kansuji<W: Write>(mut num: u8, sink: &mut W) -> WriteResult {
     if num > 18 {
         return Err(ConvertError::UnspellableNumber(num));
     }
@@ -42,12 +42,12 @@ pub(super) fn write_kansuji<W: Write>(mut num: u8, sink: &mut W) -> Result {
     Ok(())
 }
 
-fn write_board_kind<W: Write>(kind: Kind, sink: &mut W) -> Result {
+fn write_board_kind<W: Write>(kind: Kind, sink: &mut W) -> WriteResult {
     sink.write_char(board_word(kind))?;
     Ok(())
 }
 
-fn write_hand<W: Write>(hand: &Hand, sink: &mut W) -> Result {
+fn write_hand<W: Write>(hand: &Hand, sink: &mut W) -> WriteResult {
     // The spelling comes from `notation`, where the reader takes it from as
     // well. A hand holds no promoted piece, so `board_word` and `move_word` are
     // the same character here; the order is R-KIF-014's and not a spelling.
@@ -71,7 +71,7 @@ fn write_hand<W: Write>(hand: &Hand, sink: &mut W) -> Result {
     Ok(())
 }
 
-fn write_initial_data<W: Write>(data: &StateFormat, sink: &mut W) -> Result {
+fn write_initial_data<W: Write>(data: &StateFormat, sink: &mut W) -> WriteResult {
     // `その他` is the one name the table has no entry for — it is not a
     // handicap, it is "the board says it" (`handicap::lookup`).
     sink.write_str(crate::handicap::KIF_KEYWORD)?;
@@ -87,10 +87,12 @@ fn write_initial_data<W: Write>(data: &StateFormat, sink: &mut W) -> Result {
     sink.write_char('\n')?;
     sink.write_str("  ９ ８ ７ ６ ５ ４ ３ ２ １\n")?;
     sink.write_str("+---------------------------+\n")?;
-    for i in 0..9 {
+    // `board[file - 1][rank - 1]`. A diagram row is one rank, drawn from file 9
+    // down to file 1 (R-KIF-014).
+    for rank in 0..9 {
         sink.write_char('|')?;
-        for j in 0..9 {
-            let p = data.board[8 - j][i];
+        for column in data.board.iter().rev() {
+            let p = column[rank];
             if let (Some(c), Some(kind)) = (p.color, p.kind) {
                 match c {
                     Color::Black => sink.write_char(' ')?,
@@ -102,7 +104,7 @@ fn write_initial_data<W: Write>(data: &StateFormat, sink: &mut W) -> Result {
             }
         }
         sink.write_char('|')?;
-        write_kansuji(i as u8 + 1, sink)?;
+        write_kansuji(rank as u8 + 1, sink)?;
         sink.write_char('\n')?;
     }
     sink.write_str("+---------------------------+\n")?;
@@ -123,7 +125,7 @@ fn write_initial_data<W: Write>(data: &StateFormat, sink: &mut W) -> Result {
     Ok(())
 }
 
-fn write_initial_preset<W: Write>(preset: Preset, sink: &mut W) -> Result {
+fn write_initial_preset<W: Write>(preset: Preset, sink: &mut W) -> WriteResult {
     // A `その他` with a board never reaches here — the board is written instead.
     let name = match crate::handicap::lookup(preset) {
         Some(handicap) => handicap.kif_name,
@@ -150,7 +152,7 @@ fn write_initial_preset<W: Write>(preset: Preset, sink: &mut W) -> Result {
 ///
 /// An empty comment is a `*` on its own, which is what the reader gives back for
 /// one: dropping it instead would make a record the writer quietly shortens.
-pub(super) fn write_comment<W: Write>(comment: &str, sink: &mut W) -> Result {
+pub(super) fn write_comment<W: Write>(comment: &str, sink: &mut W) -> WriteResult {
     for (i, line) in comment.split(LINE_ENDS).enumerate() {
         if i > 0 || !line.starts_with('&') {
             sink.write_char('*')?;
@@ -161,7 +163,10 @@ pub(super) fn write_comment<W: Write>(comment: &str, sink: &mut W) -> Result {
     Ok(())
 }
 
-pub(super) fn write_header<W: Write>(header: &HashMap<String, String>, sink: &mut W) -> Result {
+pub(super) fn write_header<W: Write>(
+    header: &HashMap<String, String>,
+    sink: &mut W,
+) -> WriteResult {
     for (k, v) in header {
         sink.write_str(k)?;
         sink.write_char('：')?;
@@ -179,7 +184,7 @@ pub(super) fn write_header<W: Write>(header: &HashMap<String, String>, sink: &mu
 /// Writes the line, or the board, that names the position the record starts
 /// from (D13).
 ///
-/// A record that leaves its starting position unsaid is read back as the even
+/// A record that leaves its initial position unsaid is read back as the even
 /// game, which is what it means (`initial` is optional in JKF), but a file that
 /// does not say so on its own is one nothing distinguishes from a save that was
 /// cut short — and for KI2, where a hirate opening leaves nothing else to write,
@@ -208,7 +213,7 @@ pub(super) fn write_initial<W: Write>(
     header: &HashMap<String, String>,
     initial: &Option<Initial>,
     sink: &mut W,
-) -> Result {
+) -> WriteResult {
     let preset = match initial {
         Some(Initial {
             data: Some(data), ..
@@ -226,7 +231,7 @@ pub(super) fn write_initial<W: Write>(
     if preset == Preset::PresetHirate
         && header
             .get(crate::handicap::KIF_KEYWORD)
-            .is_some_and(|name| !crate::handicap::is_a_known_name(name))
+            .is_some_and(|name| !crate::handicap::is_known_name(name))
     {
         return Ok(());
     }

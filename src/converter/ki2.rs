@@ -1,7 +1,7 @@
 use super::kakinoki::{
     write_comment, write_header, write_initial, write_kansuji, write_sanyou_suji,
 };
-use super::WriteResult as Result;
+use super::WriteResult;
 use crate::error::ConvertError;
 use crate::jkf::*;
 use std::fmt::Write;
@@ -27,7 +27,7 @@ pub trait ToKi2 {
     /// produces a file this crate cannot read back (R-KI2-003).
     ///
     /// [`UnspellableMove`]: ConvertError::UnspellableMove
-    fn to_ki2<W: Write>(&self, sink: &mut W) -> Result;
+    fn to_ki2<W: Write>(&self, sink: &mut W) -> WriteResult;
 
     /// Returns `self`'s string representation, or the error [`Self::to_ki2`]
     /// gave.
@@ -52,22 +52,22 @@ pub trait ToKi2 {
     }
 }
 
-fn write_move_kind<W: Write>(kind: Kind, sink: &mut W) -> Result {
+fn write_move_kind<W: Write>(kind: Kind, sink: &mut W) -> WriteResult {
     sink.write_str(crate::notation::move_word(kind))?;
     Ok(())
 }
 
 /// Whether this move has a `不成` to write (R-NOT-005,
-/// [`promotion_is_spellable`](crate::notation::promotion_is_spellable)).
+/// [`is_promotion_spellable`](crate::notation::is_promotion_spellable)).
 ///
 /// The rule is asked here, and not left to the normalizer, because a record
-/// reaches a writer without having been through it: past an outcome the first
-/// move the board cannot explain ends the tracking (R-RULE-002), a branch that
+/// reaches a writer without having been through it: past a special move the first
+/// move the board cannot explain ends the tracking (R-RULE-002), a fork that
 /// could not be normalized is kept as it was, and a JKF the consumer built never
 /// went through it at all (R-REQ-002). What the record says a move did is
 /// `promote` (D12); whether the notation has a word for it is what the piece and
 /// the squares say.
-fn promotion_was_on_the_table(mv: &MoveMoveFormat) -> bool {
+fn can_promote(mv: &MoveMoveFormat) -> bool {
     // A drop enters the board unpromoted, and R-NOT-005 has no word for one
     // whichever end of it the camp is at (R-JKF-003: no origin is what says a
     // move is a drop).
@@ -80,9 +80,9 @@ fn promotion_was_on_the_table(mv: &MoveMoveFormat) -> bool {
         shogi_core::Square::try_from(from),
         shogi_core::Square::try_from(&mv.to),
     ) {
-        (Ok(from), Ok(to)) => crate::notation::promotion_is_spellable(piece, from, to, color),
+        (Ok(from), Ok(to)) => crate::notation::is_promotion_spellable(piece, from, to, color),
         // The record stated an origin and the destination is the one that went
-        // missing: a `同` nothing resolved, because past an outcome the position
+        // missing: a `同` nothing resolved, because past a special move the position
         // stops being tracked and `to` stays at (0, 0)
         // (`research/90-gaps.md` GAP-025). R-NOT-005 asks which end of the move
         // the enemy camp is at, and this move has no end to name. Nothing is
@@ -118,7 +118,7 @@ fn write_moves<W: Write>(
     position: Option<shogi_core::PartialPosition>,
     start: Color,
     sink: &mut W,
-) -> Result {
+) -> WriteResult {
     let Some((head, rest)) = moves.split_first() else {
         return Ok(());
     };
@@ -127,29 +127,29 @@ fn write_moves<W: Write>(
             write_comment(comment, sink)?;
         }
     }
-    // The main line, then one `変化：N手` block per branch.
+    // The main line, then one `変化：N手` block per fork.
     //
     // The order is load-bearing. A reader has only the ply number to go on, so
     // a block is understood against the most recent block that starts earlier —
-    // which means a branch leaving ply 6 has to be written *before* one leaving
+    // which means a fork leaving ply 6 has to be written *before* one leaving
     // ply 5, or the ply-6 block reads as a continuation of the ply-5 one.
-    // Taking blocks off the end gives that, and pushing each node's branches in
+    // Taking blocks off the end gives that, and pushing each node's forks in
     // reverse keeps siblings in their original order.
     let mut stack = Vec::new();
     write_line(rest, 1, position, start, &mut stack, sink)?;
-    while let Some((start_ply, branch, at)) = stack.pop() {
+    while let Some((start_ply, fork, at)) = stack.pop() {
         sink.write_fmt(format_args!("\n変化：{start_ply}手\n"))?;
-        write_line(branch, start_ply, at, start, &mut stack, sink)?;
+        write_line(fork, start_ply, at, start, &mut stack, sink)?;
     }
     Ok(())
 }
 
-/// Writes one run of moves — the main line or one branch — and queues any
-/// branches that depart from it.
+/// Writes one run of moves — the main line or one fork — and queues any
+/// forks that depart from it.
 ///
-/// Each queued branch carries the position it departs from. Deriving it instead
-/// by replaying the main line is wrong for a branch inside a branch: that
-/// branch leaves a line the main line never visits, so the replay lands on a
+/// Each queued fork carries the position it departs from. Deriving it instead
+/// by replaying the main line is wrong for a fork inside a fork: that
+/// fork leaves a line the main line never visits, so the replay lands on a
 /// different board and the suffixes are spelled against the wrong candidates.
 fn write_line<'a, W: Write>(
     moves: &'a [MoveFormat],
@@ -158,22 +158,22 @@ fn write_line<'a, W: Write>(
     start: Color,
     stack: &mut Vec<(usize, &'a [MoveFormat], Option<shogi_core::PartialPosition>)>,
     sink: &mut W,
-) -> Result {
+) -> WriteResult {
     // Whether the cursor sits at the beginning of a line. Separators are
     // written *before* what they separate, because what a move needs in front
     // of it depends on what came before: a space after another move, nothing
     // after a line that is already terminated. Writing them afterwards instead
-    // means an outcome line has no way to close itself, and the moves that
+    // means a special move line has no way to close itself, and the moves that
     // follow get swallowed as part of the `まで…` text.
     let mut at_line_start = true;
     // The ply a KI2 line names, not the position in the array. A node carrying
     // only comments writes nothing to number, so counting it would put
     // `変化：N手` one move past where it belongs and `まで<N>手` one too high.
-    // `MoveFormat::occupies_a_ply` is the shared rule; the KIF writer and the
+    // `MoveFormat::occupies_ply` is the shared rule; the KIF writer and the
     // KI2 reader use the same one.
     let mut ply = first_ply;
     for mf in moves {
-        // A branch is the alternative *to* this move (R-JKF-004), so it is
+        // A fork is the alternative *to* this move (R-JKF-004), so it is
         // spelled against the position before this move is played.
         let departs_from = if mf.forks.is_some() {
             position.clone()
@@ -232,7 +232,7 @@ fn write_line<'a, W: Write>(
                 // D12: a promotion is what the record says, and it is spelled
                 // whatever the board makes of it.
                 Some(true) => sink.write_str("成")?,
-                Some(false) if promotion_was_on_the_table(mv) => sink.write_str("不成")?,
+                Some(false) if can_promote(mv) => sink.write_str("不成")?,
                 _ => {}
             }
             position = position.and_then(|mut pos| {
@@ -242,7 +242,7 @@ fn write_line<'a, W: Write>(
             });
             at_line_start = false;
         } else if let Some(special) = &mf.special {
-            // KI2 records the outcome as a `まで<N>手で…` line rather than as
+            // KI2 records the special move as a `まで<N>手で…` line rather than as
             // another move. Dropping it makes a finished game look abandoned,
             // and KI2 has no ply numbers, so nothing downstream can tell.
             if !at_line_start {
@@ -276,7 +276,7 @@ fn write_line<'a, W: Write>(
                 stack.push((ply, fork.as_slice(), departs_from.clone()));
             }
         }
-        if mf.occupies_a_ply() {
+        if mf.occupies_ply() {
             ply += 1;
         }
     }
@@ -287,14 +287,14 @@ fn write_line<'a, W: Write>(
 }
 
 impl ToKi2 for JsonKifuFormat {
-    fn to_ki2<W: Write>(&self, sink: &mut W) -> Result {
+    fn to_ki2<W: Write>(&self, sink: &mut W) -> WriteResult {
         write_header(&self.header, sink)?;
         write_initial(&self.header, &self.initial, sink)?;
         // R-HC-001: only the even game starts with Black. The board says so too
         // when there is one, but a record this crate cannot turn into a position
-        // still has to name the right side at its outcome.
+        // still has to name the right side at its special move.
         let start = crate::handicap::starting_side(self.initial.as_ref());
-        write_moves(&self.moves, self.starting_position(), start, sink)?;
+        write_moves(&self.moves, self.initial_position(), start, sink)?;
         Ok(())
     }
 }
@@ -335,7 +335,7 @@ mod tests {
         }
     }
 
-    /// Spells the move tree as `<ply>:<destination>` with branches in brackets,
+    /// Spells the move tree as `<ply>:<destination>` with forks in brackets,
     /// so a round trip can be compared as a whole rather than field by field.
     fn shape(moves: &[MoveFormat], first_ply: usize) -> String {
         moves
@@ -435,12 +435,12 @@ mod tests {
             .contains("▲５三角左成"));
     }
 
-    // KI2 records the outcome as a `まで<N>手で…` line. Writing the moves and
+    // KI2 records the special move as a `まで<N>手で…` line. Writing the moves and
     // dropping that line makes a finished game look abandoned, and KI2 carries
     // no ply numbers, so nothing downstream can tell that something went
     // missing. The spellings and the `まで<N>手で` wrapper are D5's.
     #[test]
-    fn outcome_survives_a_ki2_round_trip() {
+    fn special_survives_a_ki2_round_trip() {
         for (word, want, phrase) in [
             ("投了", MoveSpecial::SpecialToryo, "まで2手で後手の勝ち"),
             ("千日手", MoveSpecial::SpecialSennichite, "まで2手で千日手"),
@@ -490,12 +490,12 @@ mod tests {
         }
     }
 
-    // Every branch has to reach the file: saving a study as `.ki2` with only
+    // Every fork has to reach the file: saving a study as `.ki2` with only
     // the main line loses the rest with no error. The block order matters as
     // much as the blocks — a reader has only the ply number to work from.
     #[test]
-    fn branches_survive_a_ki2_round_trip() {
-        // Two branches leaving ply 2 and one leaving ply 3, so both the sibling
+    fn forks_survive_a_ki2_round_trip() {
+        // Two forks leaving ply 2 and one leaving ply 3, so both the sibling
         // order and the deeper-ply-first rule are exercised. The blocks are in
         // the order KIF itself uses: deepest departure first.
         let kif = "手合割：平手
@@ -520,21 +520,21 @@ mod tests {
         assert_eq!(
             3,
             ki2.lines().filter(|l| l.starts_with("変化：")).count(),
-            "every branch gets a block: {ki2:?}"
+            "every fork gets a block: {ki2:?}"
         );
         let back = crate::parser::parse_ki2_str(&ki2).expect("reads back");
         assert_eq!(shape(&jkf.moves[1..], 1), shape(&back.moves[1..], 1));
     }
 
     // A game can be interrupted and resumed, so `中断` shows up in the middle of
-    // a move list. KI2 records an outcome as a `まで…` line and nothing else
+    // a move list. KI2 records a special move as a `まで…` line and nothing else
     // (R-KI2-006 / D5), and the moves after it have to go on their own line: the
     // reader treats a run of moves that fills the rest of a `まで…` line as the
     // line below, whose newline is gone, and refuses the record (D17). So the
     // writer's newline there is not cosmetic — without it the file it produces
     // does not read back.
     #[test]
-    fn an_outcome_in_the_middle_does_not_swallow_the_moves_after_it() {
+    fn a_special_in_the_middle_does_not_swallow_the_moves_after_it() {
         let kif = "手合割：平手
 手数----指手---------消費時間--
    1 ７六歩(77)
@@ -558,7 +558,7 @@ mod tests {
     // and the side that resigned is the opposite one — reading the side off the
     // parity names the loser as the winner for every handicap record.
     #[test]
-    fn a_handicap_names_the_right_side_at_the_outcome() {
+    fn a_handicap_names_the_right_side_at_the_special() {
         for (handicap, first_move, want) in [
             ("平手", "７六歩(77)", "まで1手で先手の勝ち"),
             ("香落ち", "３四歩(33)", "まで1手で後手の勝ち"),
@@ -672,7 +672,7 @@ mod tests {
         assert!(ki2.contains("変化：2手"), "{ki2:?}");
         // KI2 has no node boundaries, so the comment comes back attached to the
         // move before it rather than on a node of its own. What must survive is
-        // the text and where the branch hangs.
+        // the text and where the fork hangs.
         let back = crate::parser::parse_ki2_str(&ki2).expect("reads back");
         assert_eq!(
             "1:76 2:34[2:84] 3:Some(SpecialToryo)",
@@ -688,12 +688,12 @@ mod tests {
         );
     }
 
-    // The companion to the case above, for the other half of `occupies_a_ply`:
-    // an outcome does take a ply number. `中断` sits mid-list in a game that was
+    // The companion to the case above, for the other half of `occupies_ply`:
+    // a special move does take a ply number. `中断` sits mid-list in a game that was
     // interrupted and resumed, so this is not a tail the writer can stop at —
     // every `変化：N手` after it is off by one if the node is skipped.
     #[test]
-    fn a_mid_list_outcome_consumes_a_ply() {
+    fn a_mid_list_special_consumes_a_ply() {
         let jkf = crate::parser::parse_kif_str(
             "手合割：平手
 手数----指手---------消費時間--
@@ -815,16 +815,16 @@ mod tests {
         }
     }
 
-    // A branch inside a branch leaves a line the main line never visits, so the
+    // A fork inside a fork leaves a line the main line never visits, so the
     // position it departs from cannot be recovered by replaying the main line.
     // Spelling it against the main line drops the suffix the reader needs
-    // (R-NOT-004), and the branch comes back ambiguous and is thrown away.
+    // (R-NOT-004), and the fork comes back ambiguous and is thrown away.
     //
     // Here the golds differ between the two lines: the main line has moved 6九
     // to 7八, which cannot reach 5八, so a main-line replay sees one candidate
     // and writes no suffix at all.
     #[test]
-    fn a_branch_inside_a_branch_is_spelled_from_its_own_position() {
+    fn a_fork_inside_a_fork_is_spelled_from_its_own_position() {
         let kif = "手合割：平手
 手数----指手---------消費時間--
    1 ７六歩(77)
@@ -847,7 +847,7 @@ mod tests {
         // Replaying the main line instead sees only 4九 and writes neither.
         assert!(
             ki2.contains("▲５八金上") && ki2.contains("▲５八金寄"),
-            "both golds reach 5八 in the branch, so both need a suffix: {ki2:?}"
+            "both golds reach 5八 in the fork, so both need a suffix: {ki2:?}"
         );
         let back = crate::parser::parse_ki2_str(&ki2).expect("reads back");
         assert_eq!(shape(&jkf.moves[1..], 1), shape(&back.moves[1..], 1));
@@ -856,7 +856,7 @@ mod tests {
     // R-NOT-005: `不成` exists only for a promotable piece with the enemy camp at
     // one end of the move. `△６八玉不成` is not something the notation can say.
     //
-    // The moves after an outcome are where this shows. `中断` takes a ply without
+    // The moves after a special move are where this shows. `中断` takes a ply without
     // taking a turn, so ply 3 is read as White's while its gold is Black's: the
     // board cannot explain that move, tracking ends there (R-RULE-002), and
     // nothing rewrites what the record said from then on. What the record said is
@@ -878,7 +878,7 @@ mod tests {
             "a gold has no 成 and no 不成: {ki2:?}"
         );
         // What the pawn on the line after it gets is not fixed here. The side it
-        // is written on comes out wrong past an outcome (`research/90-gaps.md`
+        // is written on comes out wrong past a special move (`research/90-gaps.md`
         // GAP-025), and which end of the move the enemy camp is at follows from
         // the side — so pinning it would pin the wrong turn as correct.
     }
@@ -922,7 +922,7 @@ mod tests {
     }
 
     // A `同` read from KI2 has neither end: KI2 states no origin (R-KI2-003) and
-    // past an outcome nothing resolves the destination either (GAP-025). The
+    // past a special move nothing resolves the destination either (GAP-025). The
     // record's own `不成` is then the only thing that says what the move did
     // (D4), so a writer that asks only about the destination writes a file
     // shorter than the one it read — and the consumer saves over the original
@@ -964,13 +964,13 @@ mod tests {
         assert_eq!(jkf.header, back.header, "{ki2}");
     }
 
-    // A record with no header, no starting position and no moves has the
-    // starting position as the only thing left to write. Without it the file is
+    // A record with no header, no initial position and no moves has the
+    // initial position as the only thing left to write. Without it the file is
     // zero bytes and the `Ok` says nothing is wrong, which no caller can tell
     // from a save that was cut short. Naming where the game starts is the least
     // a kifu can say, and it is what KIF and CSA write for the same record.
     #[test]
-    fn to_ki2_names_the_starting_position_of_an_empty_record() {
+    fn to_ki2_names_the_initial_position_of_an_empty_record() {
         let ki2 = JsonKifuFormat::default()
             .try_to_ki2_owned()
             .expect("writes KI2");

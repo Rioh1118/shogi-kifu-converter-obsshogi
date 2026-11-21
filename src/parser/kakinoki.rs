@@ -64,7 +64,7 @@ impl<'a> InformationData<'a> {
     ///
     /// An empty hand states nothing a preset does not already say, so it is not
     /// a reason to refuse a record and not a line to name.
-    fn a_hand_with_no_board(&self) -> Option<&'a str> {
+    fn hand_line_without_board(&self) -> Option<&'a str> {
         self.hands
             .iter()
             .flatten()
@@ -131,7 +131,7 @@ fn end_of_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
 /// takes (`parser::tests::a_record_the_reader_stops_in_the_middle_of_is_an_error`).
 ///
 /// A line that merely holds one somewhere — `※▲２六歩が本筋` — is prose to KIF
-/// and is skipped, while `ki2::a_line_only_prose_opens` asks `contains` and
+/// and is skipped, while `ki2::is_prose_only_line` asks `contains` and
 /// refuses the whole file. That asymmetry is `research/90-gaps.md` GAP-029,
 /// which is waiting on a decision; do not read this table as a promise that KIF
 /// keeps such a line.
@@ -146,7 +146,7 @@ pub(super) const SIDE_MARKS: [(char, Color); 2] = [('▲', Color::Black), ('△'
 /// Read and dropped. Whose move it is comes from the run: the first line of one
 /// takes its side from the ply (`handicap::side_to_move_at_ply`, which is the
 /// parity, corrected for a handicap by R-HC-001), and every line after it from
-/// the move before (`kif::move_line`'s `known_side`). An outcome line takes a
+/// the move before (`kif::move_line`'s `known_side`). A special move line takes a
 /// ply without taking a turn, so past one the parity is wrong and only the chain
 /// is right — which matters because 反則勝ち names its loser through whose turn
 /// it is (R-KIF-007).
@@ -235,17 +235,17 @@ pub(super) struct LineShapes {
     /// where it stops — see [`information_line_keyvalue`].
     pub(super) carries_a_line: fn(&str) -> bool,
     /// Whether text that starts where a line starts opens one.
-    pub(super) opens_a_line: fn(&str) -> bool,
+    pub(super) opens_line: fn(&str) -> bool,
 }
 
 /// Where a word on a line ends: padding, the line ending, or the mark a note
 /// opens with.
 ///
-/// The outcome word on a `まで…` line and the number on a `変化：` line both stop
+/// The special move word on a `まで…` line and the number on a `変化：` line both stop
 /// here. One function, because the two would drift: the same character added to
-/// one and not the other changes what an outcome word is in one place and
-/// whether an empty branch block is reported in the other.
-pub(super) fn ends_a_word(c: char) -> bool {
+/// one and not the other changes what a special move word is in one place and
+/// whether an empty fork block is reported in the other.
+pub(super) fn ends_word(c: char) -> bool {
     is_padding(c) || crate::notation::LINE_ENDS.contains(&c) || NOTE_MARKERS.contains(&c)
 }
 
@@ -253,27 +253,27 @@ pub(super) fn ends_a_word(c: char) -> bool {
 ///
 /// Prose about a move puts one of these in front of it — `※▲２六歩が本筋`,
 /// `（まで先手良し）`, `【変化】` — which is exactly where
-/// [`begins_the_line_below`] would otherwise look for the newline that was
+/// [`begins_next_line`] would otherwise look for the newline that was
 /// lost. Whatever replaced a newline, it is not one of these.
 const NOTE_MARKERS: [char; 8] = ['※', '（', '(', '【', '[', '「', '〈', '＜'];
 
-/// The word a branch declaration opens with (D3).
+/// The word a fork declaration opens with (D3).
 ///
-/// One spelling, because the guard in [`opens_a_branch_header`] and the parser
-/// in [`branch_header_ply`] both look for it: a guard that knows a narrower word
+/// One spelling, because the guard in [`opens_fork_header`] and the parser
+/// in [`fork_header_ply`] both look for it: a guard that knows a narrower word
 /// than the parser silently stops the parser from ever being asked, which is the
 /// "counted set ≠ consumed set" failure this pair keeps having.
-const BRANCH_KEYWORD: &str = "変化";
+const FORK_KEYWORD: &str = "変化";
 
 /// The shapes both formats share: a comment, a bookmark, a `#` note, a `変化：`
-/// header, a `まで…` outcome.
-pub(super) fn opens_a_shared_line(head: &str) -> bool {
+/// header, a `まで…` special move.
+pub(super) fn opens_shared_line(head: &str) -> bool {
     // Past the indentation, for every shape and not just the one whose parser
     // happens to look past it. A predicate that answers `true` for `　変化：2手`
     // and `false` for `　*コメント` has two contracts, and the callers cannot see
     // which one they are getting.
     let head = head.trim_start_matches(is_padding);
-    head.starts_with(['*', '&', '#']) || opens_a_branch_header(head) || head.starts_with("まで")
+    head.starts_with(['*', '&', '#']) || opens_fork_header(head) || head.starts_with("まで")
 }
 
 /// Whether `head` is the beginning of a `変化：<N>手` header.
@@ -281,50 +281,50 @@ pub(super) fn opens_a_shared_line(head: &str) -> bool {
 /// The number is what makes it one. `変化：` on its own is two characters a
 /// sentence can open with.
 ///
-/// Built on [`branch_header_ply`], so that what a reader *counts* as a branch
+/// Built on [`fork_header_ply`], so that what a reader *counts* as a fork
 /// header and what it can *consume* are the same set. Held apart they drift, and
 /// the drift shows up in opposite directions: a count wider than the read makes
-/// a branch that reads as the main line carrying on (R-JKF-004), and a read
+/// a fork that reads as the main line carrying on (R-JKF-004), and a read
 /// wider than the count refuses records the format has always allowed (D17).
 ///
 /// The `starts_with` in front is a guard, not a second answer: it is the
-/// parser's own prefix ([`BRANCH_KEYWORD`]), and it is here because this runs on
-/// nearly every line while `branch_header_ply` builds a `VerboseError` on each
+/// parser's own prefix ([`FORK_KEYWORD`]), and it is here because this runs on
+/// nearly every line while `fork_header_ply` builds a `VerboseError` on each
 /// miss — the cost `kif::skip_interruptions` is hand-written to avoid.
-pub(super) fn opens_a_branch_header(head: &str) -> bool {
+pub(super) fn opens_fork_header(head: &str) -> bool {
     head.trim_start_matches(is_padding)
-        .starts_with(BRANCH_KEYWORD)
-        && branch_header_ply(head).is_ok()
+        .starts_with(FORK_KEYWORD)
+        && fork_header_ply(head).is_ok()
 }
 
-/// Whether an empty block under this `変化：` line is a branch that went missing.
+/// Whether an empty block under this `変化：` line is a fork that went missing.
 ///
 /// True when the number is the last thing the line says — padding, a note
 /// marker or the line ending after it. `変化：2手 別案` and `変化：2手（本命）`
 /// are true as well: what follows is a note *on* the header, not a sentence the
 /// header is part of.
 ///
-/// Not what makes it a header. A number followed by a word is still a branch
+/// Not what makes it a header. A number followed by a word is still a fork
 /// declaration (D20) — `変化：3手目` names ply 3 — and reading it as prose lets
-/// the branch run on as the main line, which changes whose game it is
+/// the fork run on as the main line, which changes whose game it is
 /// (R-JKF-004).
 ///
 /// What this decides is whether an **empty** block under such a line is worth
-/// reporting: `変化：2手` with nothing beneath it is a branch that went missing
+/// reporting: `変化：2手` with nothing beneath it is a fork that went missing
 /// and D1 says so, while `変化：2手を参照` with nothing beneath it is a note
-/// about a branch and there was never anything to lose.
+/// about a fork and there was never anything to lose.
 ///
 /// The padding, the line ending and [`NOTE_MARKERS`] are the same set D17 uses
 /// for the end of a line, but **D17 is not the reason** — that rule is about
 /// what is left after a line the reader finished with, and this is a question
 /// about the head of one. D20 is the decision.
-pub(super) fn an_empty_block_here_is_worth_reporting(head: &str) -> bool {
-    matches!(branch_header_ply(head), Ok((rest, _)) if rest.starts_with(ends_a_word) || rest.is_empty())
+pub(super) fn is_reportable_empty_block(head: &str) -> bool {
+    matches!(fork_header_ply(head), Ok((rest, _)) if rest.starts_with(ends_word) || rest.is_empty())
 }
 
 /// Reads `変化：<N>手` and returns `N`.
 ///
-/// The same shape [`opens_a_branch_header`] recognises, so that a spelling one
+/// The same shape [`opens_fork_header`] recognises, so that a spelling one
 /// of them takes is a spelling the other takes: a header counted but not
 /// consumable is a line that belongs to nobody — not skipped as prose, not read
 /// as a header — and the leftover-input check then refuses a record over a line
@@ -336,7 +336,7 @@ pub(super) fn an_empty_block_here_is_worth_reporting(head: &str) -> bool {
 ///
 /// The number saturates rather than failing (D19). A ply too large for a `usize`
 /// is not a spelling this reader cannot read — KIF does not look at the number at
-/// all, and KI2 hands it to `attach_branch`, which asks whether a node is there
+/// all, and KI2 hands it to `attach_fork`, which asks whether a node is there
 /// and finds none. Refusing a record over a digit nobody reads is exactly the
 /// difference this function exists to close. (Real records need three digits;
 /// the ceiling is here so that a damaged one is not fatal, not to support it.)
@@ -346,13 +346,13 @@ pub(super) fn an_empty_block_here_is_worth_reporting(head: &str) -> bool {
 /// way, so consuming it here keeps the counted set and the consumed set equal.
 ///
 /// Ply 0 is read here and refused by the reader that uses it. Plies count from 1
-/// (R-JKF-001), so `変化：０手` names no move for a branch to be an alternative
+/// (R-JKF-001), so `変化：０手` names no move for a fork to be an alternative
 /// to — but only KI2 looks at the number (D3, D19), and refusing the line here
 /// would reject KIF records over a digit KIF never reads. See
-/// `ki2::branch_header`.
-pub(super) fn branch_header_ply(input: &str) -> IResult<&str, usize, VerboseError<&str>> {
+/// `ki2::fork_header`.
+pub(super) fn fork_header_ply(input: &str) -> IResult<&str, usize, VerboseError<&str>> {
     let unreadable = || nom::Err::Error(VerboseError::from_error_kind(input, ErrorKind::Digit));
-    let (rest, _) = preceded(pair(padding, tag(BRANCH_KEYWORD)), colon)(input)?;
+    let (rest, _) = preceded(pair(padding, tag(FORK_KEYWORD)), colon)(input)?;
     let rest = rest.trim_start_matches(is_padding);
     // Folded a digit at a time, so that the test for "is this a digit" and the
     // arithmetic that assumes it are the same expression. Split apart, widening
@@ -372,7 +372,7 @@ pub(super) fn branch_header_ply(input: &str) -> IResult<&str, usize, VerboseErro
         return Err(unreadable());
     }
     // `手` is what the writers put after the number, but nothing requires it of
-    // a reader — tsshogi's `branchRegExp` reads the number and stops.
+    // a reader — tsshogi's `forkRegExp` reads the number and stops.
     let (rest, _) = opt(tag("手"))(&rest[taken..])?;
     Ok((rest, ply))
 }
@@ -382,26 +382,26 @@ pub(super) fn branch_header_ply(input: &str) -> IResult<&str, usize, VerboseErro
 ///
 /// Asked where a line has already ended, not where one begins. `変化：2手` in
 /// the annotation column of a move line — `  83 投了    変化：2手  ( 0:00)` —
-/// is prose about a branch; reading it as the header of one says the record
+/// is prose about a fork; reading it as the header of one says the record
 /// runs into the line below it, which it does not, and refuses the whole file
 /// over a note (D17).
 ///
-/// Not the same question as [`an_empty_block_here_is_worth_reporting`], which
+/// Not the same question as [`is_reportable_empty_block`], which
 /// allows a note after the number: `変化：2手（本命）` fills no line but does
 /// declare a block. Check which one you mean before calling either.
-fn a_branch_header_fills_the_line(head: &str) -> bool {
-    match branch_header_ply(head) {
+fn is_whole_line_fork_header(head: &str) -> bool {
+    match fork_header_ply(head) {
         Ok((rest, _)) => end_of_line(rest.trim_start_matches(is_padding)).is_ok(),
         Err(_) => false,
     }
 }
 
-/// The KIF outcome words, longest first so that a word is never cut short by a
+/// The KIF special move words, longest first so that a word is never cut short by a
 /// prefix of itself. [`MoveSpecial::from_kif_word`] holds the mapping.
 ///
 /// Here rather than with the KIF reader because both readers ask: KI2 has to
 /// know that `   5 投了` is a line something wrote as a move, so that skipping
-/// it as prose does not take the outcome with it (D1, `opens_a_numbered_line`).
+/// it as prose does not take the special move with it (D1, `opens_numbered_line`).
 const KIF_SPECIAL_WORDS: [&str; 12] = [
     "切れ負け",
     "入玉勝ち",
@@ -417,13 +417,13 @@ const KIF_SPECIAL_WORDS: [&str; 12] = [
     "不詰",
 ];
 
-/// Reads an outcome word, returning the word itself.
+/// Reads a special move word, returning the word itself.
 ///
 /// The word, not a [`MoveSpecial`], because 反則勝ち does not name its loser:
 /// the line says only that the move before it was the foul (R-KIF-007), and
 /// whose move that was is the caller's to know. A reader that had to supply a
 /// colour here would be choosing one it does not have.
-fn outcome_word(input: &str) -> IResult<&str, &'static str, VerboseError<&str>> {
+fn special_word(input: &str) -> IResult<&str, &'static str, VerboseError<&str>> {
     for word in KIF_SPECIAL_WORDS {
         if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>(word)(input) {
             return Ok((rest, word));
@@ -456,12 +456,12 @@ fn move_time_format(input: &str) -> IResult<&str, TimeFormat, VerboseError<&str>
 }
 
 /// The `( 0:03/00:00:03)` a KIF move line may carry after the move or the
-/// outcome word (R-KIF-007 / R-KIF-008).
+/// special move word (R-KIF-007 / R-KIF-008).
 ///
 /// Here rather than beside the reader that consumes it, because the shared
 /// question "does this line hold a move" has to be answered with the same shape
 /// the reader will take: a `1投了 ( 0:03/00:00:03)` counted as prose is skipped,
-/// and the outcome of the game goes with it (D1).
+/// and the special move that ends the game goes with it (D1).
 pub(super) fn move_time(input: &str) -> IResult<&str, Time, VerboseError<&str>> {
     delimited(
         tag("("),
@@ -514,8 +514,8 @@ fn move_origin(input: &str) -> IResult<&str, Option<PlaceFormat>, VerboseError<&
 /// move (`known_side`) and falls back to the ply only at the head of a run
 /// (`side_mark`).
 pub(super) enum NumberedBody {
-    /// One of the outcome words.
-    Outcome(&'static str),
+    /// One of the special move words.
+    Special(&'static str),
     /// A move.
     Move {
         /// `None` for 同 — the square is the one the move before went to.
@@ -532,13 +532,13 @@ pub(super) enum NumberedBody {
 /// Reads a `<手数> <指し手> [<消費時間>]` line up to the point where the line-end
 /// rule (`ends_here`) takes over.
 ///
-/// **The one answer to "what does this line say".** [`opens_a_numbered_line`] is
+/// **The one answer to "what does this line say".** [`opens_numbered_line`] is
 /// this function's verdict and holds no spelling of its own, and
 /// `kif::move_line` builds its [`MoveFormat`] out of what this returns rather
 /// than reading the text a second time. A predicate written separately from the
 /// reader drifts from it, and the drift is silent in one direction: a line the
 /// reader would have taken but the predicate does not count is skipped as prose,
-/// and the move — or the outcome of the game — is gone from a record that still
+/// and the move — or the special move that ends the game — is gone from a record that still
 /// comes back `Ok` (D1).
 ///
 /// The three answers are the contract:
@@ -548,8 +548,8 @@ pub(super) enum NumberedBody {
 ///   reports it, and the predicate counts it so that no skip takes it.
 /// - `Err(Error)` — not one of these lines at all. Prose.
 ///
-/// It must not call `ends_here`: that asks `LineShapes::opens_a_line`, which
-/// asks [`opens_a_numbered_line`], which asks this.
+/// It must not call `ends_here`: that asks `LineShapes::opens_line`, which
+/// asks [`opens_numbered_line`], which asks this.
 pub(super) fn numbered_line(
     input: &str,
 ) -> IResult<&str, (usize, NumberedBody, Option<Time>), VerboseError<&str>> {
@@ -573,7 +573,7 @@ pub(super) fn numbered_line(
     // inside a move line, and calling it a note hands the file back as a shorter
     // game (D1). A line that ends — even at the end of the file, with a newline
     // — is judged by what it says.
-    let committed = !gap.is_empty() || a_move_body_opens(rest) || rest.is_empty();
+    let committed = !gap.is_empty() || opens_move_body(rest) || rest.is_empty();
     // A number too long to hold is still a ply number (D19 keeps a record over a
     // number it cannot use), so it is only prose if nothing else on the line
     // said this was a move line.
@@ -592,7 +592,7 @@ pub(super) fn numbered_line(
             )))
         }
     };
-    let (rest, body) = alt((map(outcome_word, NumberedBody::Outcome), move_body))(rest).map_err(
+    let (rest, body) = alt((map(special_word, NumberedBody::Special), move_body))(rest).map_err(
         |err| match err {
             nom::Err::Error(_) if committed => broken_line(line, "this move cannot be read"),
             err => err,
@@ -645,7 +645,7 @@ fn move_body(input: &str) -> IResult<&str, NumberedBody, VerboseError<&str>> {
 /// The shapes the reader itself uses, not a spelling of their own: a mark
 /// (R-KIF-005), a destination, or the file of one (`2８` is a move line the file
 /// stopped inside of).
-fn a_move_body_opens(rest: &str) -> bool {
+fn opens_move_body(rest: &str) -> bool {
     side_mark(rest).is_ok() || move_to(rest).is_ok() || place_x(rest).is_ok()
 }
 
@@ -665,14 +665,14 @@ fn a_move_body_opens(rest: &str) -> bool {
 /// Shared, though only KIF writes such a line: a KI2 that holds one is a record
 /// something went wrong with, and skipping it as prose would take the move with
 /// it (D1).
-pub(super) fn opens_a_numbered_line(head: &str) -> bool {
+pub(super) fn opens_numbered_line(head: &str) -> bool {
     !matches!(numbered_line(head), Err(nom::Err::Error(_)))
 }
 
 /// Whether `tail` — what is left of a line the reader has finished with —
 /// begins the line that should have been underneath it.
 ///
-/// `shapes.opens_a_line` asks the same question of text that starts where a line
+/// `shapes.opens_line` asks the same question of text that starts where a line
 /// starts; this one asks it of text that starts where a line ends.
 ///
 /// What follows a finished line is one of two things. Either the line below,
@@ -694,16 +694,16 @@ pub(super) fn opens_a_numbered_line(head: &str) -> bool {
 /// overflow: a record whose only fault is a full-width space before the newline
 /// — which `nom`'s `space0` does not take and [`is_padding`] does — is refused
 /// whole, with an error naming a line it does not run into.
-fn begins_the_line_below(shapes: LineShapes, tail: &str) -> bool {
+fn begins_next_line(shapes: LineShapes, tail: &str) -> bool {
     // A `変化：` here has to be the whole of the line it would begin. Everywhere
     // else the question is asked at the head of a line, where a header followed
     // by a note is still a header; here it is asked past the end of one, where
     // the same characters are the note.
     let opens = |head: &str| {
-        if opens_a_branch_header(head) {
-            return a_branch_header_fills_the_line(head);
+        if opens_fork_header(head) {
+            return is_whole_line_fork_header(head);
         }
-        (shapes.opens_a_line)(head)
+        (shapes.opens_line)(head)
     };
     let head = tail.trim_start_matches(is_padding);
     if opens(head) {
@@ -744,7 +744,7 @@ pub(super) fn ends_here<'a>(
     if let Ok(ended) = end_of_line(rest.trim_start_matches(is_padding)) {
         return Ok(ended);
     }
-    if begins_the_line_below(shapes, rest) {
+    if begins_next_line(shapes, rest) {
         return Err(broken_line(line, "this line runs into the one below it"));
     }
     preceded(not_line_ending, end_of_line)(rest)
@@ -797,9 +797,9 @@ fn comment_line(input: &str) -> IResult<&str, String, VerboseError<&str>> {
 /// of the skip**: whether [`parse_without_moves`] came back with a diagram (a
 /// record has one board and it is read there), and whether the reader has taken
 /// its first move. Each is known in exactly one place, so this carries the
-/// answer from there instead of letting every skip derive it again — three
-/// skips with three derivations is how a `.ki2` came back as an empty 平手 with
-/// the position gone (GAP-007, D4).
+/// answer from there instead of letting every skip derive it again. Three
+/// skips deriving it three ways disagree, and a `.ki2` then reads as an empty
+/// 平手 with the position gone (GAP-007, D4).
 ///
 /// There is no way to make one out of a `bool`: [`parse_without_moves`] hands
 /// out the only ones there are, and [`Self::after`] is the only thing
@@ -816,7 +816,7 @@ impl WhereABoardCouldBe {
     /// or `+123` below cannot be a board — the board is above the moves — and
     /// the format has always allowed such a line. A run of comments or a `まで…`
     /// line does not, so the diagram of a record that carries the last game's
-    /// outcome at its head is still a diagram.
+    /// special move at its head is still a diagram.
     ///
     /// Takes the run rather than a `bool` so that "what counts as a move" is
     /// answered here and not once per caller — four callers with four answers is
@@ -829,7 +829,7 @@ impl WhereABoardCouldBe {
         }
     }
 
-    fn a_frame_line_is_worth_keeping(self) -> bool {
+    fn keeps_frame_line(self) -> bool {
         self.0
     }
 
@@ -849,7 +849,7 @@ impl WhereABoardCouldBe {
 ///
 /// What it declines to start on is not every shape the reader knows — it is the
 /// ones that mean something else at the head of a line: a line ending (a blank
-/// line belongs to the caller), a numbered move line ([`opens_a_numbered_line`]
+/// line belongs to the caller), a numbered move line ([`opens_numbered_line`]
 /// — shared, because a KI2 that holds one is a record something went wrong with
 /// and the move must not go with the line), `*` and `&` (a comment and a bookmark,
 /// R-KIF-010 / R-KIF-011), and [`SIDE_MARKS`] (a KI2 move). `#`, `変化：` and
@@ -903,13 +903,13 @@ pub(super) fn not_move_line(
     // been read no `|` or `+` line can be a piece of one, and refusing them
     // buys nothing — it just drops `|先手|後手|` and `+123` from records the
     // format has always allowed.
-    if where_a_board_could_be.a_frame_line_is_worth_keeping() && head.starts_with(['|', '+']) {
+    if where_a_board_could_be.keeps_frame_line() && head.starts_with(['|', '+']) {
         return Err(nom::Err::Error(VerboseError::from_error_kind(
             input,
             ErrorKind::Not,
         )));
     }
-    if opens_a_numbered_line(head) {
+    if opens_numbered_line(head) {
         return Err(nom::Err::Error(VerboseError::from_error_kind(
             input,
             ErrorKind::Not,
@@ -1113,7 +1113,7 @@ fn information_line_hands(input: &str) -> IResult<&str, Information<'_>, Verbose
 
 /// Whether `key` is one of the words that name a line of the opening block, and
 /// so may be written with either colon ([`colon`]).
-fn a_key_that_names_its_line(key: &str) -> bool {
+fn names_line(key: &str) -> bool {
     key == crate::handicap::KIF_KEYWORD || key.ends_with("の持駒")
 }
 
@@ -1189,7 +1189,7 @@ fn information_line_keyvalue<'a>(
         // board for: `手合割:詰将棋` would otherwise land nowhere and fall to the
         // prose skip, losing even the word the file wrote. GAP-021 keeps such a
         // value under `header`, which is where this puts it.
-        if mark == ':' && !a_key_that_names_its_line(key) {
+        if mark == ':' && !names_line(key) {
             return Err(nom::Err::Error(VerboseError::from_error_kind(
                 input,
                 ErrorKind::OneOf,
@@ -1278,7 +1278,7 @@ fn board_row(input: &str) -> IResult<&str, Vec<Piece>, VerboseError<&str>> {
 ///
 /// Either alone says a diagram starts here — that is what lets [`board`] name
 /// the one of the two that is misspelled instead of unwinding to prose.
-fn a_board_opens(head: &str) -> bool {
+fn opens_board(head: &str) -> bool {
     head.starts_with("９ ８ ７ ６ ５ ４ ３ ２ １") || head.starts_with("+---")
 }
 
@@ -1441,7 +1441,7 @@ pub(super) type HeaderBlock<'a> = (JsonKifuFormat, Vec<String>, WhereABoardCould
 /// are the only thing that differs inside it.
 ///
 /// Returns the comments that stood among those lines as well — see
-/// [`comments_on_the_starting_position`].
+/// [`comments_on_the_initial_position`].
 ///
 /// The third of what it hands back is [`WhereABoardCouldBe`] — this is the one
 /// place that knows whether the record's diagram was read, and the skips below
@@ -1462,7 +1462,7 @@ pub(super) fn parse_without_moves(
     // whole and hands back a record with the position gone (D1, D21, GAP-007).
     //
     // What may be skipped here is only what is not a line of this format at all
-    // (`shapes.opens_a_line` decides, so the move list still gets its lines) and
+    // (`shapes.opens_line` decides, so the move list still gets its lines) and
     // not a piece of a board (`not_move_line` with the guard on, since the board
     // may still be arriving).
     fn skippable(shapes: LineShapes, input: &str) -> IResult<&str, &str, VerboseError<&str>> {
@@ -1471,7 +1471,7 @@ pub(super) fn parse_without_moves(
         // and skipping that line leaves the reader naming the frame below it
         // (D1 asks for the line that broke).
         let head = input.trim_start_matches(is_padding);
-        if (shapes.opens_a_line)(head) || a_board_opens(head) {
+        if (shapes.opens_line)(head) || opens_board(head) {
             return Err(nom::Err::Error(VerboseError::from_error_kind(
                 input,
                 ErrorKind::Not,
@@ -1530,7 +1530,7 @@ pub(super) fn parse_without_moves(
     // `手合割` line states nothing the preset does not already say, and refusing
     // it would drop records tsshogi opens — R-KIF-014 warns about exactly that
     // disagreement, since the board block is a convention and not in the spec.
-    if let Some(line) = info.a_hand_with_no_board().filter(|_| !has_a_board) {
+    if let Some(line) = info.hand_line_without_board().filter(|_| !has_a_board) {
         return Err(broken_line(
             line,
             "this record states a hand but has no board for it",
@@ -1570,7 +1570,7 @@ pub(super) fn parse_without_moves(
             // the same question now that prose is skipped here: a file that is
             // not a kifu at all would answer yes, and the empty record it comes
             // back as is what the consumer picks an encoding on
-            // (`recognised_nothing`, D8).
+            // (`is_unrecognised`, D8).
             read_a_line_of_its_own,
         ),
     ))
@@ -1578,9 +1578,9 @@ pub(super) fn parse_without_moves(
 
 /// Puts the comments that stood among the header lines in front of the ones the
 /// move reader found above the first move — they are all comments on the
-/// starting position (R-KIF-010), and the file's order is the order they were
+/// initial position (R-KIF-010), and the file's order is the order they were
 /// written in.
-pub(super) fn comments_on_the_starting_position(
+pub(super) fn comments_on_the_initial_position(
     from_the_header: Vec<String>,
     moves: &mut [MoveFormat],
 ) {
@@ -1740,11 +1740,11 @@ mod tests {
                 "{special:?} writes {word:?}, which the reader does not look for"
             );
         }
-        // And nothing in the list is a word no outcome names.
+        // And nothing in the list is a word no special move names.
         for word in KIF_SPECIAL_WORDS {
             assert!(
                 MoveSpecial::from_kif_word(word, Color::Black).is_some(),
-                "{word:?} reads as no outcome"
+                "{word:?} reads as no special move"
             );
         }
     }
@@ -2098,7 +2098,7 @@ mod tests {
             ))
             .unwrap_or_else(|e| panic!("{pad:?} on a move line: {e}"));
             assert_eq!(2, indented.moves.len() - 1, "{pad:?}: the moves went");
-            // So is a branch header, and the diagnostic under it survives.
+            // So is a fork header, and the diagnostic under it survives.
             assert!(
                 parse_kif_str(&format!("{KIF}\n{pad}変化：2手\n")).is_err(),
                 "{pad:?}: `a 変化 block with no moves under it` went quiet"
@@ -2215,13 +2215,13 @@ mod tests {
     /// KIF side passes, and what these cases are about.
     const NOTHING: LineShapes = LineShapes {
         carries_a_line: |_| false,
-        opens_a_line: opens_a_shared_line,
+        opens_line: opens_shared_line,
     };
 
     /// One that finds a `▲` enough, for the case that has to be refused.
     const ANY_MOVE_MARK: LineShapes = LineShapes {
         carries_a_line: |value| value.contains('▲'),
-        opens_a_line: opens_a_shared_line,
+        opens_line: opens_shared_line,
     };
 
     // What separates a line that lost its ending from a line that trails off
@@ -2249,15 +2249,15 @@ mod tests {
             (kif::SHAPES, "まで82手で先手の勝ち"),
             (ki2::SHAPES, " ▲７六歩 △３四歩"),
             (ki2::SHAPES, "△８四歩"),
-            // A branch header this reader cannot parse is still one. Reading
+            // A fork header this reader cannot parse is still one. Reading
             // only the half-width spelling here let `変化：２手` through as an
-            // annotation, and the branch under it carried on as the main line.
+            // annotation, and the fork under it carried on as the main line.
             (kif::SHAPES, "変化：２手"),
             (ki2::SHAPES, "変化：２手"),
             (kif::SHAPES, "変化： 2手"),
         ] {
             assert!(
-                begins_the_line_below(shapes, tail),
+                begins_next_line(shapes, tail),
                 "{tail:?} is a line of its own"
             );
         }
@@ -2297,8 +2297,8 @@ mod tests {
             (ki2::SHAPES, " △８四歩が最善だった"),
             (ki2::SHAPES, "　△３三桂が敗着"),
             (ki2::SHAPES, " △８四歩から"),
-            // A branch header that does not own the line it would begin is
-            // prose about a branch. `  83 投了    変化：2手  ( 0:00)` is how
+            // A fork header that does not own the line it would begin is
+            // prose about a fork. `  83 投了    変化：2手  ( 0:00)` is how
             // the annotation column of a move line reads.
             (kif::SHAPES, "    変化：2手     ( 0:00/00:00:00)"),
             (kif::SHAPES, "    変化：２手     ( 0:00/00:00:00)"),
@@ -2306,17 +2306,17 @@ mod tests {
             (ki2::SHAPES, " 変化：２手を参照"),
         ] {
             assert!(
-                !begins_the_line_below(shapes, &format!("{tail}\n")),
+                !begins_next_line(shapes, &format!("{tail}\n")),
                 "{tail:?} is an annotation, and dropping it loses nothing"
             );
         }
     }
 
-    // What a reader counts as a branch header and what it can consume are the
+    // What a reader counts as a fork header and what it can consume are the
     // same set, so that no line falls between them: counted, and so not skipped
     // as prose; unreadable, and so reported by the leftover-input check (D1).
     #[test]
-    fn every_branch_header_that_counts_as_one_can_be_read_as_one() {
+    fn every_fork_header_that_counts_as_one_can_be_read_as_one() {
         for (head, ply) in [
             ("変化：2手", 2),
             ("変化：２手", 2),
@@ -2331,20 +2331,19 @@ mod tests {
             ("変化：18446744073709551615手", usize::MAX),
             ("変化：18446744073709551616手", usize::MAX),
             ("変化：99999999999999999999手", usize::MAX),
-            // Ply 0 is read here. Refusing it belongs to `ki2::branch_header`,
+            // Ply 0 is read here. Refusing it belongs to `ki2::fork_header`,
             // the only reader that uses the number (D3).
             ("変化：0手", 0),
             ("変化：０手", 0),
         ] {
-            assert!(opens_a_branch_header(head), "{head:?}");
-            let (rest, read) =
-                branch_header_ply(head).unwrap_or_else(|e| panic!("{head:?}: {e:?}"));
+            assert!(opens_fork_header(head), "{head:?}");
+            let (rest, read) = fork_header_ply(head).unwrap_or_else(|e| panic!("{head:?}: {e:?}"));
             assert_eq!(ply, read, "{head:?}");
             assert!(rest.is_empty(), "{head:?} left {rest:?}");
         }
         for head in ["変化：ここから", "変化：", "変化：手", "変わり：2手"] {
-            assert!(!opens_a_branch_header(head), "{head:?}");
-            assert!(branch_header_ply(head).is_err(), "{head:?}");
+            assert!(!opens_fork_header(head), "{head:?}");
+            assert!(fork_header_ply(head).is_err(), "{head:?}");
         }
     }
 
@@ -2448,7 +2447,7 @@ mod tests {
             assert_eq!(
                 1,
                 jkf.moves.iter().filter(|m| m.forks.is_some()).count(),
-                "{first:?}: the branch went"
+                "{first:?}: the fork went"
             );
         }
         // A number followed by something that is neither padding nor a move is
@@ -2611,7 +2610,7 @@ mod tests {
                 "まで2手で投了",
             ] {
                 assert!(
-                    opens_a_shared_line(&format!("{pad}{line}")),
+                    opens_shared_line(&format!("{pad}{line}")),
                     "{pad:?} + {line:?}"
                 );
             }
@@ -2715,15 +2714,15 @@ mod tests {
                 parse_ki2_str(&record(&rows)).is_err(),
                 "{name}, as a KI2 with no moves"
             );
-            // And with the last game's outcome line left above it. An outcome
+            // And with the last game's special move line left above it. A special move
             // is not a move: the diagram below it is still a diagram.
-            let with_an_outcome = format!("まで122手で先手の勝ち\n{}", record(&rows));
+            let with_a_special = format!("まで122手で先手の勝ち\n{}", record(&rows));
             assert!(
-                parse_ki2_str(&with_an_outcome).is_err(),
+                parse_ki2_str(&with_a_special).is_err(),
                 "{name}, as a KI2 under a まで line"
             );
             assert!(
-                parse_kif_str(&with_an_outcome).is_err(),
+                parse_kif_str(&with_a_special).is_err(),
                 "{name}, as a KIF under a まで line"
             );
         }
@@ -2811,11 +2810,11 @@ mod tests {
 
     // The first line of a run is the one the skip sees before any reader does,
     // so what counts as a move line there has to be what `kif::move_line` will
-    // consume — including the `( 0:03/00:00:03)` a KIF writes after an outcome
+    // consume — including the `( 0:03/00:00:03)` a KIF writes after a special move
     // (R-KIF-007). Counting it as prose skips the line, and the game comes back
-    // `Ok` with no outcome at all (D1).
+    // `Ok` with no special move at all (D1).
     #[test]
-    fn an_outcome_at_the_head_of_a_run_keeps_its_clock() {
+    fn a_special_at_the_head_of_a_run_keeps_its_clock() {
         use crate::parser::{parse_ki2_str, parse_kif_str};
         const HEAD: &str = "手合割：平手\n手数----指手---------消費時間--\n";
         for (line, special) in [
@@ -2847,23 +2846,19 @@ mod tests {
                 "{line:?}"
             );
         }
-        // D18: a `変化：` block whose only line is an outcome is a branch, not
+        // D18: a `変化：` block whose only line is a special move is a fork, not
         // an empty block.
-        let branched = parse_kif_str(concat!(
+        let forked = parse_kif_str(concat!(
             "手合割：平手\n手数----指手---------消費時間--\n",
             "   1 ７六歩(77)\n   2 ８四歩(83)\n\n変化：2手\n2投了 ( 0:03/00:00:03)\n"
         ))
         .expect("reads");
         assert_eq!(
             1,
-            branched
-                .moves
-                .iter()
-                .filter(|mf| mf.forks.is_some())
-                .count()
+            forked.moves.iter().filter(|mf| mf.forks.is_some()).count()
         );
         // And a KIF move line that ends up in a `.ki2` is reported, never
-        // skipped — the outcome would go with it.
+        // skipped — the special move would go with it.
         assert!(parse_ki2_str("手合割：平手\n▲７六歩 △８四歩\n3投了 ( 0:03/00:00:03)\n").is_err());
     }
 
@@ -2980,7 +2975,7 @@ mod tests {
             // end somewhere: a file that stops mid-line is a record cut short,
             // not a line the reader has no shape for.
             assert!(
-                !opens_a_numbered_line(&format!("{}\n", note.trim_start_matches(is_padding))),
+                !opens_numbered_line(&format!("{}\n", note.trim_start_matches(is_padding))),
                 "{note:?}"
             );
             let kif = parse_kif_str(&format!("{KIF}{note}\n"))
@@ -3020,16 +3015,16 @@ mod tests {
         }
     }
 
-    // A `変化：<数字>` line is a branch declaration whatever follows the number
+    // A `変化：<数字>` line is a fork declaration whatever follows the number
     // (D20). What the suffix decides is whether an empty block under it is a
-    // branch that went missing (D1) or a note that never had one.
+    // fork that went missing (D1) or a note that never had one.
     #[test]
-    fn a_branch_header_is_the_whole_of_what_its_number_says() {
+    fn a_fork_header_is_the_whole_of_what_its_number_says() {
         use crate::parser::{parse_ki2_str, parse_kif_str};
         const KIF: &str =
             "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n   2 ８四歩(83)\n";
         const KI2: &str = "手合割：平手\n▲７六歩 △８四歩\n";
-        // A note about a branch, with nothing under it: skipped, in both
+        // A note about a fork, with nothing under it: skipped, in both
         // formats.
         for note in [
             "変化：2手を参照",
@@ -3037,7 +3032,7 @@ mod tests {
             "変化：2手目以下は別途",
             "変化：ここから",
         ] {
-            assert!(!an_empty_block_here_is_worth_reporting(note), "{note:?}");
+            assert!(!is_reportable_empty_block(note), "{note:?}");
             let kif = parse_kif_str(&format!("{KIF}{note}\n"))
                 .unwrap_or_else(|e| panic!("{note:?} in a KIF: {e}"));
             assert_eq!(2, kif.moves.len() - 1, "{note:?}");
@@ -3045,9 +3040,9 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{note:?} in a KI2: {e}"));
             assert_eq!(2, ki2.moves.len() - 1, "{note:?}");
         }
-        // And with a block under it, every one of those is the branch it says
+        // And with a block under it, every one of those is the fork it says
         // it is — the suffix is a note on the header, not a different kind of
-        // line. Reading it as prose lets the branch run on as the main line,
+        // line. Reading it as prose lets the fork run on as the main line,
         // which changes whose game it is (R-JKF-004).
         for header in [
             "変化：2手",
@@ -3058,7 +3053,7 @@ mod tests {
             "変化：2手。",
             "変化：2手/A",
         ] {
-            assert!(opens_a_branch_header(header), "{header:?}");
+            assert!(opens_fork_header(header), "{header:?}");
             let jkf = parse_kif_str(&format!("{KIF}\n{header}\n   2 ３四歩(33)\n"))
                 .unwrap_or_else(|e| panic!("{header:?}: {e}"));
             assert_eq!(
@@ -3075,7 +3070,7 @@ mod tests {
             );
         }
         // A header that says nothing but its number, with nothing under it, is
-        // a branch that went missing and still says so (D1).
+        // a fork that went missing and still says so (D1).
         assert!(parse_kif_str(&format!("{KIF}\n変化：2手\n")).is_err());
         assert!(parse_ki2_str(&format!("{KI2}変化：2手\n")).is_err());
     }
@@ -3173,7 +3168,7 @@ mod tests {
                 "手合割：{pad:?}香落ち: the handicap went, and the sides with it"
             );
             assert!(
-                crate::handicap::is_a_known_name(&format!("{pad}香落ち")),
+                crate::handicap::is_known_name(&format!("{pad}香落ち")),
                 "{pad:?}: the writer would drop the preset line the reader read (D16)"
             );
             let key_padded = parse_kif_str(&format!(
@@ -3209,7 +3204,7 @@ mod tests {
             .unwrap_or_else(|e| panic!("変化{colon}: {e}"));
             assert!(
                 ki2.moves[3].forks.is_some(),
-                "変化{colon}: the branch read as the main line carrying on: {:?}",
+                "変化{colon}: the fork read as the main line carrying on: {:?}",
                 ki2.moves
             );
         }
@@ -3284,7 +3279,7 @@ mod tests {
         assert!(information_line_keyvalue(NOTHING)("&しおり：ここ\n").is_err());
     }
 
-    // R-KIF-010: comments before the first move belong to the starting position.
+    // R-KIF-010: comments before the first move belong to the initial position.
     // KIF ends its header block with `手数----指手---------消費時間--`, which
     // R-KIF-012 says a record need not have and KI2 has no equivalent of — so a
     // header rule that eats `*` lines eats them out of every KI2 and out of any
@@ -3327,7 +3322,7 @@ mod tests {
                 "{opener}: the header under the comment is gone: {:?}",
                 kif.header
             );
-            let initial = kif.initial.as_ref().expect("a starting position");
+            let initial = kif.initial.as_ref().expect("an initial position");
             assert_eq!(Preset::PresetKY, initial.preset, "{opener}");
             assert_eq!(
                 Color::White,

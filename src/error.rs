@@ -14,7 +14,7 @@ pub enum ConvertError {
     /// Invalid [`shogi_core::PieceKind`] for [`shogi_core::Hand`]
     #[error("Invalid piece kind for `Hand`: {0:?}")]
     InvalidHandPiece(shogi_core::PieceKind),
-    /// The starting position names a handicap with no board (R-HC-004)
+    /// The initial position names a handicap with no board (R-HC-004)
     #[error("No board for preset: {0:?}")]
     UnknownPreset(crate::jkf::Preset),
     /// A number the notation has no characters for
@@ -60,9 +60,9 @@ impl From<std::fmt::Error> for ConvertError {
 /// The move is half the answer. A caller that is handed a directory of kifu and
 /// told "invalid move" cannot act on it; told which ply, it can show the line.
 ///
-/// A branch that fails to normalize is kept as it was rather than reported
+/// A fork that fails to normalize is kept as it was rather than reported
 /// (R-RULE-002 — a recorded illegal move is valid input, and dropping the
-/// branch would edit the file). So a `ply` here always counts along the main
+/// fork would edit the file). So a `ply` here always counts along the main
 /// line.
 #[derive(Debug, PartialEq)]
 pub struct NormalizeError {

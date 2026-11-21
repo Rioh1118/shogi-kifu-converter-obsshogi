@@ -7,6 +7,7 @@ mod kif;
 
 use crate::error::ParseError;
 use crate::jkf::JsonKifuFormat;
+use crate::normalizer::Normalization;
 use encoding_rs::{Encoding, SHIFT_JIS, UTF_8};
 use nom::error::convert_error;
 use nom::Finish;
@@ -141,9 +142,9 @@ fn decode_kifu(buf: &[u8], first: &'static Encoding) -> Result<String, ParseErro
 /// The error for input the reader stopped on, with `rest` located in `whole`.
 ///
 /// D1: a reader that stops early has to say so. Returning `Ok` with the record
-/// truncated is the worst of the three outcomes — the caller cannot tell it
+/// truncated is the worst of the three results — the caller cannot tell it
 /// from a short game, so obs-shogi indexes a fraction of the moves and nobody
-/// finds out (GAP-005: 79% of `bug_big.kif` went missing this way).
+/// finds out (GAP-005).
 ///
 /// It also decides an encoding: the consumer tries encodings in turn and takes
 /// the first `Ok`, so a mojibake decode that yields an empty record wins over
@@ -169,12 +170,12 @@ fn stopped_at(whole: &str, rest: &str) -> String {
 ///
 /// That empty record is worse than an error, because the consumer picks a text
 /// encoding on this answer: obs-shogi tries encodings in turn and takes the
-/// first `Ok`, so `bug_big.kif` — which D1 means to reject at its unreadable
-/// line — instead came back as a UTF-16LE mojibake holding zero moves, and
-/// *that* won. The error D1 exists to raise never reached anyone.
+/// first `Ok`. A record D1 rejects at its unreadable line would lose to the
+/// empty record a wrong encoding decodes it into, and the error would never
+/// reach the user (GAP-005).
 ///
 /// A header-only kifu is not this: it fills in `header` or `initial`.
-fn recognised_nothing(jkf: &JsonKifuFormat, read_header: bool) -> bool {
+fn is_unrecognised(jkf: &JsonKifuFormat, read_header: bool) -> bool {
     !read_header
         && jkf
             .moves
@@ -210,12 +211,10 @@ pub fn parse_kif_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
             if !rest.trim().is_empty() {
                 return Err(ParseError::Kif(stopped_at(s, rest)));
             }
-            if !s.trim().is_empty() && recognised_nothing(&jkf, read_header) {
+            if !s.trim().is_empty() && is_unrecognised(&jkf, read_header) {
                 return Err(ParseError::Kif(stopped_at(s, s)));
             }
-            // KIF moves carry an explicit `from`, so `relative` inference is dead work.
-            // Downstream consumers (e.g. KI2 conversion) can opt-in via `populate_relative()`.
-            jkf.normalize_with_options(true, false)?;
+            jkf.normalize_as(Normalization::KIF)?;
             Ok(jkf)
         }
         Err(err) => Err(ParseError::Kif(convert_error(s, err))),
@@ -257,10 +256,10 @@ pub fn parse_ki2_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
             if !rest.trim().is_empty() {
                 return Err(ParseError::Ki2(stopped_at(s, rest)));
             }
-            if !s.trim().is_empty() && recognised_nothing(&jkf, read_header) {
+            if !s.trim().is_empty() && is_unrecognised(&jkf, read_header) {
                 return Err(ParseError::Ki2(stopped_at(s, s)));
             }
-            jkf.normalize_with_color_correction(true)?;
+            jkf.normalize_as(Normalization::KI2)?;
             Ok(jkf)
         }
         Err(err) => Err(ParseError::Ki2(convert_error(s, err))),
@@ -413,9 +412,8 @@ mod tests {
     }
 
     // D1: a reader that stops early has to say so. Returning `Ok` with the
-    // record truncated is the worst of the three outcomes — the caller cannot
-    // tell it from a short game. `bug_big.kif` lost 79% of its moves this way
-    // and reported success (GAP-005).
+    // record truncated is the worst of the three results — the caller cannot
+    // tell it from a short game (GAP-005).
     //
     // The word that stopped the reader is the one thing it cannot recover, so
     // the error has to carry it and point at its own line.
@@ -462,7 +460,7 @@ mod tests {
     // A record loses one byte — the `\n` at the end of a line arrives as a
     // space, a NUL, a comma — and the line under it is read as part of the line
     // above. Whatever that line held is gone: a move, the whole move list, a
-    // branch. The record comes back `Ok` all the same, and no caller can tell it
+    // fork. The record comes back `Ok` all the same, and no caller can tell it
     // from a shorter game.
     //
     // The move counts here are the point: each case has to be an error, not a
@@ -484,27 +482,27 @@ mod tests {
             refusal(err, 4);
         }
 
-        // A `変化：N手` header joined to the first move of its branch. The whole
-        // branch goes missing.
-        let with_branch = format!("{KIF}\n変化：3手\n   3 ８八銀(79)   ( 0:01/00:00:03)\n");
-        // R-JKF-004: the branch is the alternative *to* ply 3, so it hangs off
+        // A `変化：N手` header joined to the first move of its fork. The whole
+        // fork goes missing.
+        let with_fork = format!("{KIF}\n変化：3手\n   3 ８八銀(79)   ( 0:01/00:00:03)\n");
+        // R-JKF-004: the fork is the alternative *to* ply 3, so it hangs off
         // that node — `moves[3]`, the initial position's slot being `moves[0]`.
-        assert!(parse_kif_str(&with_branch).expect("parses").moves[3]
+        assert!(parse_kif_str(&with_fork).expect("parses").moves[3]
             .forks
             .is_some());
-        let err = parse_kif_str(&with_branch.replace("変化：3手\n", "変化：3手 "))
+        let err = parse_kif_str(&with_fork.replace("変化：3手\n", "変化：3手 "))
             .expect_err("the joined header is an error");
         refusal(err, 7);
 
-        // KI2: the starting position joined to the moves. Every move is read as
+        // KI2: the initial position joined to the moves. Every move is read as
         // part of the header value, and the record comes back with none.
         const KI2: &str = "手合割：平手\n▲７六歩 △３四歩 ▲２二角成\n";
         assert_eq!(3, parse_ki2_str(KI2).expect("parses").moves.len() - 1);
         let err = parse_ki2_str(&KI2.replace("平手\n", "平手 ")).expect_err("an error");
         refusal(err, 1);
 
-        // KI2 again, at the branch header. What follows it need not be a move:
-        // an outcome line joined to the header takes the block with it.
+        // KI2 again, at the fork header. What follows it need not be a move:
+        // a special move line joined to the header takes the block with it.
         for tail in ["△８四歩", "まで1手で中断"] {
             let joined = format!("手合割：平手\n▲７六歩 △３四歩\n\n変化：2手 {tail}\n");
             let err = parse_ki2_str(&joined).expect_err("the joined header is an error");
@@ -534,22 +532,22 @@ mod tests {
                 "{header}"
             );
         }
-        // The run is what a KI2 record whose starting position lost its newline
+        // The run is what a KI2 record whose initial position lost its newline
         // leaves in the value.
         let err = parse_ki2_str("手合割：平手 ▲７六歩 △３四歩\n").expect_err("an error");
         refusal(err, 1);
     }
 
-    // A `変化：N手` says a branch follows it. A file that ends right after one
-    // was cut short, and coming back with one fewer branch says nothing about
+    // A `変化：N手` says a fork follows it. A file that ends right after one
+    // was cut short, and coming back with one fewer fork says nothing about
     // that.
     //
     // Whether a blank line happens to sit in front of the header is not a
     // difference the answer can turn on, so both spellings are here: a run that
     // swallows the header on its way past leaves nothing to ask about, and the
-    // branch goes missing quietly in exactly that case.
+    // fork goes missing quietly in exactly that case.
     #[test]
-    fn a_branch_header_with_nothing_under_it_is_an_error() {
+    fn a_fork_header_with_nothing_under_it_is_an_error() {
         const KIF: &str = "手合割：平手
 手数----指手---------消費時間--
    1 ７六歩(77)
@@ -568,7 +566,7 @@ mod tests {
         // different cause. D1's leftover-input check names that line, and saying
         // "no moves under it" instead would name a cause that is not the one —
         // `パス` is a word this reader has no meaning for (D8), not a missing
-        // branch.
+        // fork.
         let err = parse_kif_str(&format!("{KIF}\n変化：2手\n   2 パス\n")).expect_err("an error");
         let text = refusal(err, 7);
         assert!(text.contains("パス"), "the error names the word: {text}");
@@ -594,10 +592,10 @@ mod tests {
     // rather than an error.
     //
     // The consumer decides a text encoding on this answer: obs-shogi tries
-    // encodings in turn and takes the first `Ok`. `bug_big.kif` is meant to be
-    // rejected at its unreadable line (D1/D8) — instead the UTF-16LE attempt
-    // decoded it to one long line of mojibake, that came back `Ok` with zero
-    // moves, and *that* won. The error D1 exists to raise reached nobody.
+    // encodings in turn and takes the first `Ok`. A record rejected at its
+    // unreadable line (D1/D8) decodes under a wrong encoding into one long line
+    // of mojibake; if that were `Ok` with zero moves, it would be taken and the
+    // error would reach nobody.
     #[test]
     fn a_file_that_is_not_a_kifu_is_an_error_not_an_empty_record() {
         for src in [

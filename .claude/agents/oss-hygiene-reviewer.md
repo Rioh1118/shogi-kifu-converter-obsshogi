@@ -14,7 +14,7 @@ color: green
 - **crates.io には公開していない。** consumer（obs-shogi）は
   `git = "..."` + `tag = "vX.Y.Z"` で参照している
 - 外部の貢献者は想定していない。**重い運用文書を増やすことが目的ではない**
-- `research/` と `.claude/` は `.gitignore` / 上流に無いディレクトリ
+- `research/` と `.claude/` は上流に無いディレクトリ（どちらもコミットする）
 
 ## 見るもの
 
@@ -69,9 +69,6 @@ color: green
 
 - **リポジトリ直下に新しいファイルが増えていないか。**
   作業用は `.claude/` か `research/` へ
-- `.gitignore` に加えたもの（`/research`）が意図どおり効いているか。
-  `git status --porcelain` に `research/` が出ていないことを確認する
-- **`research/` の中身がコミットに混ざっていないか。** 混ざっていたら BLOCK
 - `test/` が `.gitignore` されている。ここに置かれた再現用棋譜が
   リポジトリから見えないことを、誰かが前提にしていないか
 

@@ -1,6 +1,6 @@
 use crate::error::{ConvertError, NormalizeError, NormalizeErrorKind};
 use crate::jkf::*;
-use crate::notation::pk2k;
+use crate::notation::kind_from_piece_kind;
 use shogi_core::PartialPosition;
 use shogi_legality_lite::prelegality::is_valid;
 
@@ -112,16 +112,85 @@ fn add_timeformat(lhs: &TimeFormat, rhs: &TimeFormat) -> TimeFormat {
     }
 }
 
+/// Where a move's `color` comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ColorSource {
+    /// The record states each move's side (CSA, JKF). A `color` that
+    /// disagrees with the side to move is an error.
+    Recorded,
+    /// The reader numbered the moves and guessed the side from the ply (KIF,
+    /// KI2). `color` is overwritten with the side to move in the position.
+    Position,
+}
+
+/// Whether `relative` (左/右/上/...) is filled in from the position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RelativeFill {
+    /// Fill every `relative` that is `None`.
+    Fill,
+    /// Leave `relative` as read. A KIF states the origin, so the inference is
+    /// dead work on that path (R-REQ-006).
+    Skip,
+}
+
+/// What normalization does with the two fields a record may leave to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Normalization {
+    pub(crate) color: ColorSource,
+    pub(crate) relative: RelativeFill,
+}
+
+impl Normalization {
+    /// What a KIF record needs: the side from the position, no `relative`.
+    pub(crate) const KIF: Self = Self {
+        color: ColorSource::Position,
+        relative: RelativeFill::Skip,
+    };
+    /// What a KI2 record needs: the side from the position, `relative` filled.
+    pub(crate) const KI2: Self = Self {
+        color: ColorSource::Position,
+        relative: RelativeFill::Fill,
+    };
+    /// What a CSA or JKF record needs: the side as recorded, `relative` filled.
+    pub(crate) const RECORDED: Self = Self {
+        color: ColorSource::Recorded,
+        relative: RelativeFill::Fill,
+    };
+
+    fn from_flags(correct_color: bool, infer_relative: bool) -> Self {
+        Self {
+            color: if correct_color {
+                ColorSource::Position
+            } else {
+                ColorSource::Recorded
+            },
+            relative: if infer_relative {
+                RelativeFill::Fill
+            } else {
+                RelativeFill::Skip
+            },
+        }
+    }
+}
+
 impl JsonKifuFormat {
     /// Normalizes the JKF data.
     ///
-    /// If `correct_color` is true, the color of each move is corrected from the position's
-    /// side to move (for KIF/KI2 where color is assigned by move number parity and may be wrong).
-    /// If false, a color mismatch is treated as an error (for CSA/JKF where color is reliable).
-    /// If `infer_relative` is false, the slow `relative` (左/右/上/...) inference is skipped.
-    /// KIF parsing supplies an explicit `from`, so the inference is dead work for that path.
-    /// Downstream code that needs `relative` (e.g. KI2 conversion) can call
-    /// [`Self::populate_relative`] to fill it in lazily.
+    /// `correct_color`: when true, each move's `color` is overwritten with the
+    /// side to move in the position (KIF, KI2: the reader guessed it from the
+    /// ply). When false, a `color` that disagrees is an error (CSA, JKF: the
+    /// record states it).
+    ///
+    /// `infer_relative`: when false, `relative` (左/右/上/...) is left as read.
+    /// [`Self::populate_relative`] fills it in later.
+    ///
+    /// # A handicap numbered from Black
+    ///
+    /// Before anything else, a record that starts from a named handicap and
+    /// gives its first move to Black has every main-line `color` swapped. The
+    /// upper hand moves first in a handicap (R-HC-001), so a reader that
+    /// numbered from Black got every side backwards. This runs whatever
+    /// `correct_color` says.
     ///
     /// # What the position decides, and what the record does
     ///
@@ -154,10 +223,10 @@ impl JsonKifuFormat {
     ///
     /// # Errors
     ///
-    /// Returns [`NormalizeError`] if a move before the record's first outcome
+    /// Returns [`NormalizeError`] if a move before the record's first special move
     /// cannot be resolved against the position it is played from.
     ///
-    /// Past an outcome it does not: a record need not continue the position
+    /// Past a special move it does not: a record need not continue the position
     /// before it (R-RULE-002), so the first move the board cannot explain ends
     /// the tracking, and every field from there on is left as the input had it.
     /// **Whatever the parser accepted, this accepts.**
@@ -166,6 +235,11 @@ impl JsonKifuFormat {
         correct_color: bool,
         infer_relative: bool,
     ) -> Result<(), NormalizeError> {
+        self.normalize_as(Normalization::from_flags(correct_color, infer_relative))
+    }
+
+    /// [`Self::normalize_with_options`], with the two choices named.
+    pub(crate) fn normalize_as(&mut self, how: Normalization) -> Result<(), NormalizeError> {
         normalize_initial(self)?;
         let pos = if let Some(initial) = &self.initial {
             if !matches!(initial.preset, Preset::PresetHirate | Preset::PresetOther)
@@ -194,14 +268,7 @@ impl JsonKifuFormat {
             // has no plies to normalize rather than being an error.
             None => return Ok(()),
         };
-        normalize_moves(
-            rest,
-            1,
-            pos,
-            [TimeFormat::default(); 2],
-            correct_color,
-            infer_relative,
-        )?;
+        normalize_moves(rest, 1, pos, [TimeFormat::default(); 2], how)?;
         Ok(())
     }
 
@@ -217,7 +284,7 @@ impl JsonKifuFormat {
         &mut self,
         correct_color: bool,
     ) -> Result<(), NormalizeError> {
-        self.normalize_with_options(correct_color, true)
+        self.normalize_as(Normalization::from_flags(correct_color, true))
     }
 
     /// Normalizes the JKF data, requiring the move colors to already be right.
@@ -238,12 +305,12 @@ impl JsonKifuFormat {
     /// Returns [`NormalizeError`] if a move cannot be resolved against the
     /// position it is played from.
     pub fn normalize(&mut self) -> Result<(), NormalizeError> {
-        self.normalize_with_options(false, true)
+        self.normalize_as(Normalization::RECORDED)
     }
 
     /// The position the moves start from, or `None` if `initial` cannot be
     /// turned into one.
-    pub(crate) fn starting_position(&self) -> Option<PartialPosition> {
+    pub(crate) fn initial_position(&self) -> Option<PartialPosition> {
         match &self.initial {
             Some(initial) => PartialPosition::try_from(initial).ok(),
             None => Some(PartialPosition::startpos()),
@@ -261,7 +328,7 @@ impl JsonKifuFormat {
     /// # Errors
     ///
     /// Returns [`NormalizeError`] for a move the position before it does not
-    /// explain — but only up to the first outcome. Past one, a record need not
+    /// explain — but only up to the first special move. Past one, a record need not
     /// continue the position before it (R-RULE-002), so the walk stops tracking
     /// the board and leaves the rest of the record alone. **Whatever the parser
     /// accepted, this accepts.**
@@ -362,10 +429,9 @@ fn calculate_from(
 fn normalize_move(
     mmf: &mut MoveMoveFormat,
     pos: &PartialPosition,
-    correct_color: bool,
-    infer_relative: bool,
+    how: Normalization,
 ) -> Result<shogi_core::Move, NormalizeErrorKind> {
-    if correct_color {
+    if how.color == ColorSource::Position {
         // Correct the color from the position's side to move
         // (KIF/KI2 parser assigns color by move number parity, which is wrong for 後手番 games)
         match pos.side_to_move() {
@@ -410,9 +476,11 @@ fn normalize_move(
                 None
             };
             mmf.promote = decide_promote(&*mmf, from_piece_kind, from, to, pos.side_to_move());
-            mmf.piece = pk2k(from_piece_kind);
+            mmf.piece = kind_from_piece_kind(from_piece_kind);
             // Set capture?
-            mmf.capture = pos.piece_at(to).map(|p| pk2k(p.piece_kind()));
+            mmf.capture = pos
+                .piece_at(to)
+                .map(|p| kind_from_piece_kind(p.piece_kind()));
         } else {
             // An origin off the board is a coordinate we could not read, not a
             // statement that the piece came from the hand. JKF says a drop by
@@ -425,7 +493,7 @@ fn normalize_move(
     }
     let mv = shogi_core::Move::try_from(&*mmf)?;
     // Set relative?
-    if infer_relative && mmf.relative.is_none() {
+    if how.relative == RelativeFill::Fill && mmf.relative.is_none() {
         // A move the notation cannot spell has no suffix to record; the writer
         // is where that has to become an error, not the JKF field.
         mmf.relative = match infer_relative_from_position(pos, mv) {
@@ -480,7 +548,7 @@ fn decide_promote(
     });
     if promoted {
         Some(true)
-    } else if crate::notation::promotion_is_spellable(from_piece_kind, from, to, side) {
+    } else if crate::notation::is_promotion_spellable(from_piece_kind, from, to, side) {
         Some(false)
     } else {
         None
@@ -736,26 +804,26 @@ pub(crate) fn infer_relative_from_position(pos: &PartialPosition, mv: shogi_core
 
 /// Whether a walk over a run of moves still knows the board.
 ///
-/// A record carries on past an outcome — a game that was interrupted and
+/// A record carries on past a special move — a game that was interrupted and
 /// resumed picks up from wherever it left off — so a move that will not apply
 /// to the position before it is not a broken record (R-RULE-002). It is the
 /// point where the walk stops knowing the board, and everything after it has to
 /// be left alone rather than rewritten against a position it never came from.
-/// Before any outcome, the same failure *is* a broken record.
+/// Before any special move, the same failure *is* a broken record.
 ///
 /// The rule is here rather than inside a walk because every walk over the tree
 /// needs it, and one that grows its own copy grows the same hole:
 /// `populate_relative` had no notion of it and returned `Err` for records the
 /// parser and `normalize` both accept (GAP-016).
 struct Board {
-    after_outcome: bool,
+    after_special: bool,
     known: bool,
 }
 
 impl Board {
     const fn new() -> Self {
         Self {
-            after_outcome: false,
+            after_special: false,
             known: true,
         }
     }
@@ -765,18 +833,18 @@ impl Board {
         self.known
     }
 
-    /// Notes a node that holds no move. An outcome among them is what makes a
+    /// Notes a node that holds no move. A special move among them is what makes a
     /// later unplayable move something other than a broken record.
     fn saw(&mut self, mf: &MoveFormat) {
-        self.after_outcome |= mf.special.is_some();
+        self.after_special |= mf.special.is_some();
     }
 
     /// Reports a move the position before it does not explain.
     ///
-    /// Past an outcome this drops the board and returns `Ok`; before one it is
+    /// Past a special move this drops the board and returns `Ok`; before one it is
     /// the error `err` builds.
     fn unplayable(&mut self, err: impl FnOnce() -> NormalizeError) -> Result<(), NormalizeError> {
-        if self.after_outcome {
+        if self.after_special {
             self.known = false;
             Ok(())
         } else {
@@ -796,37 +864,29 @@ fn normalize_moves(
     first_ply: usize,
     mut pos: PartialPosition,
     mut totals: [TimeFormat; 2],
-    correct_color: bool,
-    infer_relative: bool,
+    how: Normalization,
 ) -> Result<(), NormalizeError> {
     let mut board = Board::new();
     for (offset, mf) in moves.iter_mut().enumerate() {
         let ply = first_ply + offset;
-        // A branch that cannot be normalized is still a branch. A kifu recording
-        // an illegal move is valid input (R-RULE-002), and dropping the branch
+        // A fork that cannot be normalized is still a fork. A kifu recording
+        // an illegal move is valid input (R-RULE-002), and dropping the fork
         // here returns `Ok` with the record one line shorter — the caller saves
         // it back and the variation is gone from the file for good.
         //
         // `populate_relative_moves` keeps them for the same reason.
         //
-        // A branch is the alternative *to* this node's move (R-JKF-004), so it
+        // A fork is the alternative *to* this node's move (R-JKF-004), so it
         // starts from the position before it. Once that position is lost there
-        // is nothing to normalize a branch against, and going ahead rewrites its
-        // moves against a board they never came from — `correct_color` would
+        // is nothing to normalize a fork against, and going ahead rewrites its
+        // moves against a board they never came from — `ColorSource::Position` would
         // give them the wrong side.
         if board.is_known() {
             if let Some(forks) = &mut mf.forks {
                 for fork in forks.iter_mut() {
-                    // A branch replaces this node, so its first element sits at
+                    // A fork replaces this node, so its first element sits at
                     // the same ply (R-JKF-004).
-                    let _ = normalize_moves(
-                        fork,
-                        ply,
-                        pos.clone(),
-                        totals,
-                        correct_color,
-                        infer_relative,
-                    );
+                    let _ = normalize_moves(fork, ply, pos.clone(), totals, how);
                 }
             }
         }
@@ -840,11 +900,11 @@ fn normalize_moves(
                 time.total = totals[pos.side_to_move().array_index()];
             }
         }
-        // A node without a move holds a comment or an outcome. Neither ends the
+        // A node without a move holds a comment or a special move. Neither ends the
         // record: `中断` appears mid-list in a game that was interrupted and
         // resumed, and a comment can sit between two moves. Stopping here would
         // leave every later move with its parsed colour, its `from` unresolved
-        // and its branches unnormalized.
+        // and its forks unnormalized.
         let Some(mmf) = &mut mf.move_ else {
             board.saw(mf);
             continue;
@@ -861,7 +921,7 @@ fn normalize_moves(
         // `PartialPosition::make_move` leaves `pos` alone when it returns
         // `None`, so the guard below is safe to run for its effect.
         let mut candidate = *mmf;
-        match normalize_move(&mut candidate, &pos, correct_color, infer_relative) {
+        match normalize_move(&mut candidate, &pos, how) {
             Ok(mv) if pos.make_move(mv).is_some() => *mmf = candidate,
             Ok(mv) => board
                 .unplayable(|| NormalizeError::at(ply, NormalizeErrorKind::MakeMoveFailed(mv)))?,
@@ -883,7 +943,7 @@ fn populate_relative_moves(
         if board.is_known() {
             if let Some(forks) = &mut mf.forks {
                 for v in forks.iter_mut() {
-                    // A branch that cannot be replayed is still a branch
+                    // A fork that cannot be replayed is still a fork
                     // (R-RULE-002), the same as in `normalize_moves`. Dropping
                     // it here would lose a variation to fill in a derived field.
                     let _ = populate_relative_moves(v, ply, pos.clone());
@@ -1086,7 +1146,7 @@ mod tests {
 
     // `同` carries no destination of its own — it means the square the previous
     // move went to (R-NOT-002) — and only normalization can fill it in. Stopping
-    // at the outcome node leaves `to` at (0,0), which no writer can spell, so
+    // at the special move node leaves `to` at (0,0), which no writer can spell, so
     // saving a game that was interrupted and resumed fails outright.
     #[test]
     fn a_move_after_an_interruption_is_still_normalized() {
@@ -1112,7 +1172,7 @@ mod tests {
     // `直` is the only way to read `▲５八金直` when more than one gold reaches
     // the square, and it is the one arm of `calculate_from`'s match that the
     // 左/右 rewrite did not touch. Left unfiltered, the move comes back ambiguous
-    // and the branch holding it is dropped.
+    // and the fork holding it is dropped.
     #[test]
     fn a_gold_moving_straight_up_is_read_from_直() {
         let kif = "手合割：その他
@@ -1303,7 +1363,7 @@ mod tests {
         );
     }
 
-    // A branch whose moves cannot be replayed is still a branch. Dropping it
+    // A fork whose moves cannot be replayed is still a fork. Dropping it
     // returns `Ok` with the record one variation shorter, and the next save
     // writes the shortened record over the original — the loss is permanent and
     // nothing ever said so. Kifu holding illegal moves are valid input
@@ -1312,7 +1372,7 @@ mod tests {
     // The moves after `中断` here do not continue the position before it, which
     // is what a resumed game looks like.
     #[test]
-    fn a_branch_that_cannot_be_replayed_is_kept() {
+    fn a_fork_that_cannot_be_replayed_is_kept() {
         let kif = "手合割：平手
 手数----指手---------消費時間--
    1 ７六歩(77)
@@ -1326,8 +1386,8 @@ mod tests {
    4 ９九角(88)
 ";
         let jkf = crate::parser::parse_kif_str(kif).expect("parses");
-        let forks = jkf.moves[2].forks.as_ref().expect("a branch at ply 2");
-        assert_eq!(1, forks.len(), "the branch survives normalization");
+        let forks = jkf.moves[2].forks.as_ref().expect("a fork at ply 2");
+        assert_eq!(1, forks.len(), "the fork survives normalization");
         assert_eq!(3, forks[0].len(), "and keeps all three of its nodes");
     }
 
@@ -1456,11 +1516,11 @@ mod tests {
         }
     }
 
-    // The board is dropped at the *first* move an outcome's position cannot
+    // The board is dropped at the *first* move a special move's position cannot
     // explain, and stays dropped. Without that, every later move is normalized
     // against a board the game left behind.
     #[test]
-    fn the_board_stays_dropped_after_an_outcome() {
+    fn the_board_stays_dropped_after_a_special() {
         let kif = "手合割：平手
 手数----指手---------消費時間--
    1 ７六歩(77)
@@ -1476,16 +1536,16 @@ mod tests {
         );
     }
 
-    // A branch hanging off a node past the point the board was lost has no
+    // A fork hanging off a node past the point the board was lost has no
     // position to be normalized against either. Normalizing it anyway rewrites
     // its moves — `correct_color` alone flips the side — against a board they
     // never came from.
     //
-    // The branch has to leave an *odd* ply. The board was lost with White to
+    // The fork has to leave an *odd* ply. The board was lost with White to
     // move, so at an even ply the stale board and the ply number name the same
-    // side and normalizing the branch anyway makes no visible difference.
+    // side and normalizing the fork anyway makes no visible difference.
     #[test]
-    fn a_branch_past_the_lost_board_is_left_alone() {
+    fn a_fork_past_the_lost_board_is_left_alone() {
         let kif = "手合割：平手
 手数----指手---------消費時間--
    1 ７六歩(77)
@@ -1498,7 +1558,7 @@ mod tests {
    5 ４四歩(43)
 ";
         let jkf = crate::parser::parse_kif_str(kif).expect("parses");
-        let fork = &jkf.moves[5].forks.as_ref().expect("a branch")[0];
+        let fork = &jkf.moves[5].forks.as_ref().expect("a fork")[0];
         let mv = fork[0].move_.expect("a move");
         assert_eq!(Color::Black, mv.color, "the side the ply number gave it");
         assert_eq!(Some(PlaceFormat { x: 4, y: 3 }), mv.from);
@@ -1626,7 +1686,7 @@ mod tests {
             "the drop was rewritten as a board move"
         );
         // And the board gold is still on 4九, not on 3八.
-        let pos = jkf.starting_position().expect("a position");
+        let pos = jkf.initial_position().expect("a position");
         let mut pos = pos;
         pos.make_move(shogi_core::Move::try_from(&jkf.moves[1].move_.unwrap()).expect("a move"))
             .expect("the drop applies");
@@ -1768,9 +1828,9 @@ mod tests {
     }
 
     // GAP-016: `normalize_moves` treats a move that will not apply after an
-    // outcome as the end of what it knows about the board (R-RULE-002), and
-    // `populate_relative_moves` had no such notion — so a record the parser
-    // accepted and `to_ki2` could write came back as `Err` from the one call in
+    // special move as the end of what it knows about the board (R-RULE-002).
+    // `populate_relative_moves` has to follow the same rule, or a record the
+    // parser accepted and `to_ki2` can write is an `Err` from the one call in
     // between. The rule belongs to the walk, not to one of the two functions
     // that do it, or the next walk added grows the same hole.
     #[test]
@@ -1905,7 +1965,14 @@ mod tests {
     #[test]
     fn normalize_moves_empty() {
         let pos = PartialPosition::startpos();
-        assert!(normalize_moves(&mut [], 1, pos, [TimeFormat::default(); 2], false, true).is_ok());
+        assert!(normalize_moves(
+            &mut [],
+            1,
+            pos,
+            [TimeFormat::default(); 2],
+            Normalization::RECORDED
+        )
+        .is_ok());
     }
 
     #[test]
@@ -1932,14 +1999,13 @@ mod tests {
                     1,
                     pos,
                     [TimeFormat::default(); 2],
-                    false,
-                    true,
+                    Normalization::RECORDED,
                 )
                 .is_ok(),
                 "normalize should succeed"
             );
         }
-        // Wrong color with correct_color=false should fail
+        // A recorded color that disagrees with the position is an error
         {
             let pos = PartialPosition::startpos();
             assert!(
@@ -1954,14 +2020,13 @@ mod tests {
                     1,
                     pos,
                     [TimeFormat::default(); 2],
-                    false,
-                    true,
+                    Normalization::RECORDED,
                 )
                 .is_err(),
                 "normalize should fail with InvalidColor"
             );
         }
-        // Wrong color with correct_color=true should succeed and fix color
+        // A color guessed from the ply is overwritten with the side to move
         {
             let pos = PartialPosition::startpos();
             let mut moves = [MoveFormat {
@@ -1972,7 +2037,14 @@ mod tests {
                 ..Default::default()
             }];
             assert!(
-                normalize_moves(&mut moves, 1, pos, [TimeFormat::default(); 2], true, true).is_ok(),
+                normalize_moves(
+                    &mut moves,
+                    1,
+                    pos,
+                    [TimeFormat::default(); 2],
+                    Normalization::KI2
+                )
+                .is_ok(),
                 "normalize should succeed (color auto-corrected)"
             );
             assert_eq!(
