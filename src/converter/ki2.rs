@@ -62,7 +62,7 @@ fn write_move_kind<W: Write>(kind: Kind, sink: &mut W) -> Result {
 ///
 /// The rule is asked here, and not left to the normalizer, because a record
 /// reaches a writer without having been through it: past an outcome the first
-/// move the board cannot explain ends the tracking (R-RULE-002), a branch that
+/// move the board cannot explain ends the tracking (R-RULE-002), a fork that
 /// could not be normalized is kept as it was, and a JKF the consumer built never
 /// went through it at all (R-REQ-002). What the record says a move did is
 /// `promote` (D12); whether the notation has a word for it is what the piece and
@@ -127,29 +127,29 @@ fn write_moves<W: Write>(
             write_comment(comment, sink)?;
         }
     }
-    // The main line, then one `変化：N手` block per branch.
+    // The main line, then one `変化：N手` block per fork.
     //
     // The order is load-bearing. A reader has only the ply number to go on, so
     // a block is understood against the most recent block that starts earlier —
-    // which means a branch leaving ply 6 has to be written *before* one leaving
+    // which means a fork leaving ply 6 has to be written *before* one leaving
     // ply 5, or the ply-6 block reads as a continuation of the ply-5 one.
-    // Taking blocks off the end gives that, and pushing each node's branches in
+    // Taking blocks off the end gives that, and pushing each node's forks in
     // reverse keeps siblings in their original order.
     let mut stack = Vec::new();
     write_line(rest, 1, position, start, &mut stack, sink)?;
-    while let Some((start_ply, branch, at)) = stack.pop() {
+    while let Some((start_ply, fork, at)) = stack.pop() {
         sink.write_fmt(format_args!("\n変化：{start_ply}手\n"))?;
-        write_line(branch, start_ply, at, start, &mut stack, sink)?;
+        write_line(fork, start_ply, at, start, &mut stack, sink)?;
     }
     Ok(())
 }
 
-/// Writes one run of moves — the main line or one branch — and queues any
-/// branches that depart from it.
+/// Writes one run of moves — the main line or one fork — and queues any
+/// forks that depart from it.
 ///
-/// Each queued branch carries the position it departs from. Deriving it instead
-/// by replaying the main line is wrong for a branch inside a branch: that
-/// branch leaves a line the main line never visits, so the replay lands on a
+/// Each queued fork carries the position it departs from. Deriving it instead
+/// by replaying the main line is wrong for a fork inside a fork: that
+/// fork leaves a line the main line never visits, so the replay lands on a
 /// different board and the suffixes are spelled against the wrong candidates.
 fn write_line<'a, W: Write>(
     moves: &'a [MoveFormat],
@@ -173,7 +173,7 @@ fn write_line<'a, W: Write>(
     // KI2 reader use the same one.
     let mut ply = first_ply;
     for mf in moves {
-        // A branch is the alternative *to* this move (R-JKF-004), so it is
+        // A fork is the alternative *to* this move (R-JKF-004), so it is
         // spelled against the position before this move is played.
         let departs_from = if mf.forks.is_some() {
             position.clone()
@@ -335,7 +335,7 @@ mod tests {
         }
     }
 
-    /// Spells the move tree as `<ply>:<destination>` with branches in brackets,
+    /// Spells the move tree as `<ply>:<destination>` with forks in brackets,
     /// so a round trip can be compared as a whole rather than field by field.
     fn shape(moves: &[MoveFormat], first_ply: usize) -> String {
         moves
@@ -490,12 +490,12 @@ mod tests {
         }
     }
 
-    // Every branch has to reach the file: saving a study as `.ki2` with only
+    // Every fork has to reach the file: saving a study as `.ki2` with only
     // the main line loses the rest with no error. The block order matters as
     // much as the blocks — a reader has only the ply number to work from.
     #[test]
-    fn branches_survive_a_ki2_round_trip() {
-        // Two branches leaving ply 2 and one leaving ply 3, so both the sibling
+    fn forkes_survive_a_ki2_round_trip() {
+        // Two forks leaving ply 2 and one leaving ply 3, so both the sibling
         // order and the deeper-ply-first rule are exercised. The blocks are in
         // the order KIF itself uses: deepest departure first.
         let kif = "手合割：平手
@@ -520,7 +520,7 @@ mod tests {
         assert_eq!(
             3,
             ki2.lines().filter(|l| l.starts_with("変化：")).count(),
-            "every branch gets a block: {ki2:?}"
+            "every fork gets a block: {ki2:?}"
         );
         let back = crate::parser::parse_ki2_str(&ki2).expect("reads back");
         assert_eq!(shape(&jkf.moves[1..], 1), shape(&back.moves[1..], 1));
@@ -672,7 +672,7 @@ mod tests {
         assert!(ki2.contains("変化：2手"), "{ki2:?}");
         // KI2 has no node boundaries, so the comment comes back attached to the
         // move before it rather than on a node of its own. What must survive is
-        // the text and where the branch hangs.
+        // the text and where the fork hangs.
         let back = crate::parser::parse_ki2_str(&ki2).expect("reads back");
         assert_eq!(
             "1:76 2:34[2:84] 3:Some(SpecialToryo)",
@@ -815,16 +815,16 @@ mod tests {
         }
     }
 
-    // A branch inside a branch leaves a line the main line never visits, so the
+    // A fork inside a fork leaves a line the main line never visits, so the
     // position it departs from cannot be recovered by replaying the main line.
     // Spelling it against the main line drops the suffix the reader needs
-    // (R-NOT-004), and the branch comes back ambiguous and is thrown away.
+    // (R-NOT-004), and the fork comes back ambiguous and is thrown away.
     //
     // Here the golds differ between the two lines: the main line has moved 6九
     // to 7八, which cannot reach 5八, so a main-line replay sees one candidate
     // and writes no suffix at all.
     #[test]
-    fn a_branch_inside_a_branch_is_spelled_from_its_own_position() {
+    fn a_fork_inside_a_fork_is_spelled_from_its_own_position() {
         let kif = "手合割：平手
 手数----指手---------消費時間--
    1 ７六歩(77)
@@ -847,7 +847,7 @@ mod tests {
         // Replaying the main line instead sees only 4九 and writes neither.
         assert!(
             ki2.contains("▲５八金上") && ki2.contains("▲５八金寄"),
-            "both golds reach 5八 in the branch, so both need a suffix: {ki2:?}"
+            "both golds reach 5八 in the fork, so both need a suffix: {ki2:?}"
         );
         let back = crate::parser::parse_ki2_str(&ki2).expect("reads back");
         assert_eq!(shape(&jkf.moves[1..], 1), shape(&back.moves[1..], 1));

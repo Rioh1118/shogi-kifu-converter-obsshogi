@@ -72,7 +72,7 @@ fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) 
     // The ply is the number of the line being written, not the position in the
     // array. A node with neither a move nor an outcome carries only comments,
     // which JKF allows and KIF has no line for; counting it anyway leaves a gap
-    // in the move numbers and shifts every `変化：N手` after it, so the branch
+    // in the move numbers and shifts every `変化：N手` after it, so the fork
     // lands on the wrong move — or on nothing, and is dropped.
     let mut i = index;
     for mf in moves {
@@ -283,7 +283,7 @@ mod tests {
 
     // JKF lets a node carry comments and nothing else; KIF has no line for one.
     // Counting it as a ply anyway leaves a gap in the move numbers and moves
-    // every `変化：N手` after it one step along, so the branch attaches to the
+    // every `変化：N手` after it one step along, so the fork attaches to the
     // wrong move — or to none, and is dropped without a word.
     #[test]
     fn a_comment_only_node_does_not_consume_a_ply() {
@@ -319,7 +319,7 @@ mod tests {
                 .filter_map(|mf| mf.forks.as_ref())
                 .map(Vec::len)
                 .sum::<usize>(),
-            "the branch survives: {kif:?}"
+            "the fork survives: {kif:?}"
         );
     }
 

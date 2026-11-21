@@ -1,5 +1,5 @@
 use super::kakinoki::{
-    branch_header_ply, broken_line, comments_on_the_starting_position, ends_here, ends_word,
+    broken_line, comments_on_the_starting_position, ends_here, ends_word, fork_header_ply,
     is_reportable_empty_block, move_comment_line, move_to, not_move_line, opens_shared_line,
     parse_without_moves, piece_kind, program_comment_line, LineShapes, WhereABoardCouldBe,
     SIDE_MARKS,
@@ -264,16 +264,16 @@ fn end_of_game_line(
 /// KIF, and the two readers have to build the same tree from the same file.
 ///
 /// The header owns the rest of its line. Reading to the end of the line and
-/// dropping what was there takes the first move of the branch with it whenever
+/// dropping what was there takes the first move of the fork with it whenever
 /// the newline between them is lost.
-fn branch_header(input: &str) -> IResult<&str, (usize, &str), VerboseError<&str>> {
+fn fork_header(input: &str) -> IResult<&str, (usize, &str), VerboseError<&str>> {
     let (line, _) = many0(line_ending)(input)?;
-    let (rest, ply) = branch_header_ply(line)?;
+    let (rest, ply) = fork_header_ply(line)?;
     // KI2 is the reader that uses the number (D3, D19), so it is the one that
     // says when the number cannot be used. Plies count from 1 (R-JKF-001), so
-    // `変化：０手` names no move for a branch to be an alternative to; carried
-    // on, it reaches `attach_branch`, which cannot find a departure point and
-    // returns — taking the branch and everything under it without a word
+    // `変化：０手` names no move for a fork to be an alternative to; carried
+    // on, it reaches `attach_fork`, which cannot find a departure point and
+    // returns — taking the fork and everything under it without a word
     // (`research/90-gaps.md` GAP-018). Refused, the line is left for the
     // leftover-input check to report (D1).
     if ply == 0 {
@@ -348,8 +348,8 @@ fn move_run(
             // The writers count the same way (`MoveFormat::occupies_ply`).
             let numbered = out.iter().filter(|mf| mf.occupies_ply()).count();
             // Saturating because `first_ply` comes from a `変化：N手` line and a
-            // record can say any `N` (`branch_header_ply`, D19). The ply is only
-            // used to decide whose turn an outcome is, and a branch that far out
+            // record can say any `N` (`fork_header_ply`, D19). The ply is only
+            // used to decide whose turn an outcome is, and a fork that far out
             // has no node to attach to anyway — an overflow here would be a
             // panic in a Tauri command (R-REQ-002).
             let ply = first_ply.saturating_add(numbered);
@@ -382,9 +382,9 @@ fn move_run(
 ///
 /// **The only skip in this reader.** Every shape the reader does have belongs to
 /// whoever reads it, not to this skip. A `まで…` is the outcome and [`move_run`]
-/// reads it; a `変化：` says a branch starts and [`moves`] reads it; `*` and `&`
+/// reads it; a `変化：` says a fork starts and [`moves`] reads it; `*` and `&`
 /// are comments. Skipping one takes what it said with it, and the record comes
-/// back `Ok` without it — an outcome that never happened, or a branch whose
+/// back `Ok` without it — an outcome that never happened, or a fork whose
 /// moves are read as the main line carrying on (R-JKF-004). Two skips is how
 /// that happens: one of them learns a shape and the other goes on swallowing it.
 ///
@@ -400,7 +400,7 @@ fn is_prose_only_line(
 ) -> IResult<&str, &str, VerboseError<&str>> {
     // Past the padding, the same as `begins_next_line` looks past it. A
     // `変化：` one tab in is still a `変化：`, and asking from the raw start
-    // hands it to the skip below — the branch is gone and its moves carry on as
+    // hands it to the skip below — the fork is gone and its moves carry on as
     // the main line (R-JKF-004).
     if opens_shared_line(input.trim_start_matches(is_padding)) {
         return Err(nom::Err::Error(VerboseError::from_error_kind(
@@ -418,18 +418,18 @@ fn is_prose_only_line(
     Ok((rest, line))
 }
 
-/// Attaches `branch` as an alternative to the move at ply `start_ply`.
+/// Attaches `fork` as an alternative to the move at ply `start_ply`.
 ///
-/// `path` is the run of branch choices taken to get here, as
-/// `(ply the branch departs from, index among that node's branches)`. KI2 names
-/// the departure ply explicitly, and a later `変化：` is read against the branch
-/// most recently entered, so the path is first cut back to the branches that
+/// `path` is the run of fork choices taken to get here, as
+/// `(ply the fork departs from, index among that node's forks)`. KI2 names
+/// the departure ply explicitly, and a later `変化：` is read against the fork
+/// most recently entered, so the path is first cut back to the forks that
 /// start before `start_ply`.
-fn attach_branch(
+fn attach_fork(
     main: &mut [MoveFormat],
     path: &mut Vec<(usize, usize)>,
     start_ply: usize,
-    branch: Vec<MoveFormat>,
+    fork: Vec<MoveFormat>,
 ) {
     path.retain(|&(ply, _)| ply < start_ply);
     let mut level: &mut [MoveFormat] = main;
@@ -455,7 +455,7 @@ fn attach_branch(
         return;
     };
     let forks = node.forks.get_or_insert_with(Vec::new);
-    forks.push(branch);
+    forks.push(fork);
     path.push((start_ply, forks.len() - 1));
 }
 
@@ -474,8 +474,8 @@ fn moves(
     // (`kif::skippable_line_above_the_main_line`), and tsshogi does it deliberately: its
     // `kakinoki.mjs` cites shogihome #570 for records whose header block holds
     // one, and says a `変化：` before the moves start must be ignored. Left in
-    // place it reaches the branch loop below, which reads the whole game as a
-    // branch of a main line that has no node to hang it on — `attach_branch`
+    // place it reaches the fork loop below, which reads the whole game as a
+    // fork of a main line that has no node to hang it on — `attach_fork`
     // finds nothing and returns, and the record comes back `Ok` with no moves
     // at all (D1, R-JKF-004).
     //
@@ -492,7 +492,7 @@ fn moves(
             continue;
         }
         match alt((
-            nom::combinator::recognize(branch_header),
+            nom::combinator::recognize(fork_header),
             nom::combinator::recognize(program_comment_line),
             nom::combinator::recognize(|input| is_prose_only_line(where_a_board_could_be, input)),
             line_ending,
@@ -516,20 +516,20 @@ fn moves(
     // `変化：N手` blocks, in the order the file lists them.
     let mut path = Vec::new();
     loop {
-        match branch_header(input) {
+        match fork_header(input) {
             Ok((mut rest, (mut start_ply, mut header))) => {
                 // Headers in a row are one declaration: the last of them says
-                // which ply the branch leaves, and the ones over it are spare
-                // lines rather than branches that went missing.
+                // which ply the fork leaves, and the ones over it are spare
+                // lines rather than forks that went missing.
                 loop {
-                    match branch_header(rest) {
+                    match fork_header(rest) {
                         Ok((after, (ply, line))) => {
                             rest = after;
                             start_ply = ply;
                             header = line;
                         }
                         // The same as at the top of the loop: a header that ran
-                        // into the moves under it is the branch, gone. Taking it
+                        // into the moves under it is the fork, gone. Taking it
                         // for "no more headers" reports the header above this
                         // one, and says its block is empty when what is broken
                         // is the line below it.
@@ -537,16 +537,16 @@ fn moves(
                         Err(_) => break,
                     }
                 }
-                let (rest, branch) = move_run(start, start_ply, where_a_board_could_be)(rest)?;
-                if branch.is_empty() {
-                    // The header says a branch follows. Reading nothing under it
-                    // means the branch is gone, and carrying on returns a record
-                    // that is a whole branch short without saying so.
+                let (rest, fork) = move_run(start, start_ply, where_a_board_could_be)(rest)?;
+                if fork.is_empty() {
+                    // The header says a fork follows. Reading nothing under it
+                    // means the fork is gone, and carrying on returns a record
+                    // that is a whole fork short without saying so.
                     //
                     // Unless the line says more than the number. `変化：2手を参照`
-                    // is a note *about* a branch — nothing was ever under it to
-                    // lose — while `変化：2手` alone is a branch that went
-                    // missing. Both are branch declarations (D20); what tells
+                    // is a note *about* a fork — nothing was ever under it to
+                    // lose — while `変化：2手` alone is a fork that went
+                    // missing. Both are fork declarations (D20); what tells
                     // them apart is whether the line says anything else (D1).
                     if is_reportable_empty_block(header) {
                         return Err(broken_line(header, "a 変化 block with no moves under it"));
@@ -554,13 +554,13 @@ fn moves(
                     input = rest;
                     continue;
                 }
-                attach_branch(&mut out[1..], &mut path, start_ply, branch);
+                attach_fork(&mut out[1..], &mut path, start_ply, fork);
                 input = rest;
                 continue;
             }
-            // A `Failure` is `branch_header` saying the line *is* a header and is
+            // A `Failure` is `fork_header` saying the line *is* a header and is
             // broken — it ran into the moves under it. Taking it for "not a
-            // branch header" hands the line to the skip below, which drops the
+            // fork header" hands the line to the skip below, which drops the
             // whole block and returns `Ok`.
             Err(err @ nom::Err::Failure(_)) => return Err(err),
             Err(_) => {}
@@ -743,10 +743,10 @@ mod tests {
     }
 
     // A comment can open a `変化：` block — that is what this crate's own writer
-    // produces for a JKF branch whose first node carries only comments. Failing
+    // produces for a JKF fork whose first node carries only comments. Failing
     // to read it ends the move list and throws away every block after it.
     #[test]
-    fn a_branch_may_open_with_a_comment() {
+    fn a_fork_may_open_with_a_comment() {
         let ki2 = "▲７六歩 △３四歩
 
 変化：2手
@@ -757,7 +757,7 @@ mod tests {
 △４四歩
 ";
         let jkf = crate::parser::parse_ki2_str(ki2).expect("parses");
-        let forks = jkf.moves[2].forks.as_ref().expect("branches at ply 2");
+        let forks = jkf.moves[2].forks.as_ref().expect("forks at ply 2");
         assert_eq!(2, forks.len(), "both blocks survive: {:?}", jkf.moves);
         assert_eq!(
             Some(&vec!["この分岐の狙い".to_owned()]),
@@ -818,18 +818,18 @@ mod tests {
 まで2手で反則勝ち
 ";
         let jkf = parse_ki2_str(KI2).expect("parses");
-        let branch = &jkf.moves[2].forks.as_ref().expect("a branch at ply 2")[0];
-        assert_eq!(3, branch.len(), "comment node, move, outcome: {branch:?}");
+        let fork = &jkf.moves[2].forks.as_ref().expect("a fork at ply 2")[0];
+        assert_eq!(3, fork.len(), "comment node, move, outcome: {fork:?}");
         assert_eq!(
             Some(vec![String::from("このあとは")]),
-            branch[0].comments,
-            "the branch opens with a node that is only a comment"
+            fork[0].comments,
+            "the fork opens with a node that is only a comment"
         );
-        // Ply 2 is the branch's move, so the outcome takes ply 3 — Black's.
+        // Ply 2 is the fork's move, so the outcome takes ply 3 — Black's.
         // R-CSA-007: `+ILLEGAL_ACTION` is Black fouling, so White wins.
         assert_eq!(
             Some(MoveSpecial::SpecialIllegalActionWhite),
-            branch[2].special
+            fork[2].special
         );
 
         // And again through the writer, which is where the shape comes from.
@@ -840,9 +840,9 @@ mod tests {
 
     // Only prose is skipped. A line this reader has a shape for belongs to
     // whoever reads it: a `まで…` is the outcome (KI2 has no other way to record
-    // one, R-KI2-006 / D5), and a `変化：` says a branch starts — including a
+    // one, R-KI2-006 / D5), and a `変化：` says a fork starts — including a
     // spelling this reader cannot read, which the leftover-input check then
-    // reports (D1) rather than hiding a branch inside the main line (R-JKF-004).
+    // reports (D1) rather than hiding a fork inside the main line (R-JKF-004).
     #[test]
     fn a_line_the_reader_has_a_shape_for_is_never_skipped() {
         use crate::parser::parse_ki2_str;
@@ -855,8 +855,8 @@ mod tests {
                 "{before:?}: the outcome is gone"
             );
         }
-        // A branch header is one however its number is spelled, and every
-        // spelling `opens_fork_header` counts is one `branch_header_ply`
+        // A fork header is one however its number is spelled, and every
+        // spelling `opens_fork_header` counts is one `fork_header_ply`
         // consumes. A spelling only one of the two knows is a line nobody owns:
         // counted, so not skipped as prose; unreadable, so not consumed.
         for header in ["変化：2手", "変化：２手", "変化： 2手", "変化：２手"] {
@@ -900,9 +900,9 @@ mod tests {
         }
     }
 
-    // Plies count from 1 (R-JKF-001), so `変化：０手` names no move for a branch
-    // to be an alternative to. Read as a number it reaches `attach_branch`,
-    // which cannot find a departure point and returns — taking the branch and
+    // Plies count from 1 (R-JKF-001), so `変化：０手` names no move for a fork
+    // to be an alternative to. Read as a number it reaches `attach_fork`,
+    // which cannot find a departure point and returns — taking the fork and
     // the outcome under it without a word (GAP-018). Refused, the line is what
     // the leftover-input check reports (D1).
     //
@@ -910,7 +910,7 @@ mod tests {
     // the move lines and the declaration is never looked at (D3), so refusing
     // would reject a record over a digit KIF does not read.
     #[test]
-    fn a_branch_that_departs_from_no_ply_is_refused_rather_than_dropped() {
+    fn a_fork_that_departs_from_no_ply_is_refused_rather_than_dropped() {
         use crate::parser::{parse_ki2_str, parse_kif_str};
         const KI2: &str = "手合割：平手\n▲７六歩 △８四歩 ▲２六歩 △４四歩\n";
         const KIF: &str =
@@ -921,7 +921,7 @@ mod tests {
                     "{KI2}変化：{zero}手\n△８四歩 ▲２五歩\nまで6手で中断\n"
                 ))
                 .is_err(),
-                "変化：{zero}手: the branch and the outcome went without a word"
+                "変化：{zero}手: the fork and the outcome went without a word"
             );
             let kif = parse_kif_str(&format!("{KIF}変化：{zero}手\n   2 ３四歩(33)\n"))
                 .unwrap_or_else(|e| panic!("変化：{zero}手 in KIF: {e}"));
@@ -932,9 +932,9 @@ mod tests {
             );
         }
         // A ply too large to use is not a spelling that cannot be read: the
-        // record still says a branch starts, and D19 puts the ceiling at
+        // record still says a fork starts, and D19 puts the ceiling at
         // "a damaged record is not fatal" rather than at supporting the number.
-        // The branch itself has no node to hang on, so it goes the way every
+        // The fork itself has no node to hang on, so it goes the way every
         // out-of-range departure ply goes (GAP-018) — that is the part D19
         // accepts, and it is different from `変化：０手`, which is refused
         // because a record cannot mean it.
@@ -953,7 +953,7 @@ mod tests {
             assert_eq!(
                 0,
                 ki2.moves.iter().filter(|m| m.forks.is_some()).count(),
-                "変化：{huge}手: KI2 has no node at that ply, so the branch goes (GAP-018)"
+                "変化：{huge}手: KI2 has no node at that ply, so the fork goes (GAP-018)"
             );
         }
     }
@@ -961,10 +961,10 @@ mod tests {
     // A `変化：` above the first move names no move to be an alternative to.
     // tsshogi reads such records deliberately (shogihome #570) and ignores the
     // line; KIF has always done the same (`kif::skippable_line_above_the_main_line`). Left in, it
-    // makes the whole game a branch of a main line with no node to hang it on,
-    // and `attach_branch` drops it without a word — `Ok`, no moves at all.
+    // makes the whole game a fork of a main line with no node to hang it on,
+    // and `attach_fork` drops it without a word — `Ok`, no moves at all.
     #[test]
-    fn a_branch_header_above_the_first_move_is_read_and_dropped() {
+    fn a_fork_header_above_the_first_move_is_read_and_dropped() {
         use crate::parser::parse_ki2_str;
         // The header block holds whatever the writer left between its last
         // keyword and the first move, in whatever order, at whatever column. A
@@ -987,7 +987,7 @@ mod tests {
                     assert_eq!(
                         3,
                         jkf.moves.iter().filter(|m| m.move_.is_some()).count(),
-                        "{src:?}: the game was read as a branch and dropped"
+                        "{src:?}: the game was read as a fork and dropped"
                     );
                 }
             }
@@ -1000,7 +1000,7 @@ mod tests {
             Some(&vec![String::from("a"), String::from("b")]),
             kept.moves[0].comments.as_ref()
         );
-        // A branch that does name a move is still a branch, and one with an
+        // A fork that does name a move is still a fork, and one with an
         // empty block still says so (D1).
         let jkf = parse_ki2_str("手合割：平手\n▲７六歩 △８四歩 ▲２六歩\n変化：3手\n▲２五歩\n")
             .expect("reads");
@@ -1043,7 +1043,7 @@ mod tests {
     // reader of that line, not just to the ones that ask `is_padding`: a line
     // whose shape is only recognised from column 0 falls to the prose skip, and
     // what it said goes with it — the outcome KI2 has no other place for
-    // (R-KI2-006 / D5), or a branch whose moves then read as the main line
+    // (R-KI2-006 / D5), or a fork whose moves then read as the main line
     // carrying on (R-JKF-004).
     #[test]
     fn a_line_is_the_line_it_is_however_far_in_it_starts() {
@@ -1056,12 +1056,12 @@ mod tests {
                 outcome.moves.last().expect("a node").special.is_some(),
                 "{pad:?}: the outcome is gone"
             );
-            let branch = parse_ki2_str(&format!("{MOVES}{pad}変化：2手\n▲２六歩\n"))
+            let fork = parse_ki2_str(&format!("{MOVES}{pad}変化：2手\n▲２六歩\n"))
                 .unwrap_or_else(|e| panic!("{pad:?}: {e}"));
             assert!(
-                branch.moves[2].forks.is_some(),
-                "{pad:?}: the branch reads as the main line carrying on: {:?}",
-                branch.moves
+                fork.moves[2].forks.is_some(),
+                "{pad:?}: the fork reads as the main line carrying on: {:?}",
+                fork.moves
             );
             let run = parse_ki2_str(&format!("手合割：平手\n{pad}▲７六歩 △３四歩\n"))
                 .unwrap_or_else(|e| panic!("{pad:?}: {e}"));
@@ -1075,7 +1075,7 @@ mod tests {
     // the line as a note lets a lost newline through in silence. Both directions
     // in one table.
     #[test]
-    fn a_note_after_an_outcome_or_a_branch_header_is_a_note() {
+    fn a_note_after_an_outcome_or_a_fork_header_is_a_note() {
         use crate::parser::parse_ki2_str;
         const MOVES: &str = "手合割：平手\n▲７六歩 △３四歩\n";
         for line in [
@@ -1091,7 +1091,7 @@ mod tests {
             );
         }
         let jkf = parse_ki2_str("手合割：平手\n▲７六歩 △３四歩\n変化：2手 △８四歩から\n△８四歩\n")
-            .expect("a branch header takes a note too");
+            .expect("a fork header takes a note too");
         assert!(jkf.moves[2].forks.is_some(), "{:?}", jkf.moves);
         // And what fills the line is the line below, whose newline is gone.
         for line in [
@@ -1205,7 +1205,7 @@ mod tests {
             .expect("parses");
         assert!(
             jkf.moves[2].forks.is_some(),
-            "the branch after the prose is gone: {:?}",
+            "the fork after the prose is gone: {:?}",
             jkf.moves
         );
     }

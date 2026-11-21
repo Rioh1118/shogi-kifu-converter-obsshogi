@@ -462,7 +462,7 @@ mod tests {
     // A record loses one byte — the `\n` at the end of a line arrives as a
     // space, a NUL, a comma — and the line under it is read as part of the line
     // above. Whatever that line held is gone: a move, the whole move list, a
-    // branch. The record comes back `Ok` all the same, and no caller can tell it
+    // fork. The record comes back `Ok` all the same, and no caller can tell it
     // from a shorter game.
     //
     // The move counts here are the point: each case has to be an error, not a
@@ -484,15 +484,15 @@ mod tests {
             refusal(err, 4);
         }
 
-        // A `変化：N手` header joined to the first move of its branch. The whole
-        // branch goes missing.
-        let with_branch = format!("{KIF}\n変化：3手\n   3 ８八銀(79)   ( 0:01/00:00:03)\n");
-        // R-JKF-004: the branch is the alternative *to* ply 3, so it hangs off
+        // A `変化：N手` header joined to the first move of its fork. The whole
+        // fork goes missing.
+        let with_fork = format!("{KIF}\n変化：3手\n   3 ８八銀(79)   ( 0:01/00:00:03)\n");
+        // R-JKF-004: the fork is the alternative *to* ply 3, so it hangs off
         // that node — `moves[3]`, the initial position's slot being `moves[0]`.
-        assert!(parse_kif_str(&with_branch).expect("parses").moves[3]
+        assert!(parse_kif_str(&with_fork).expect("parses").moves[3]
             .forks
             .is_some());
-        let err = parse_kif_str(&with_branch.replace("変化：3手\n", "変化：3手 "))
+        let err = parse_kif_str(&with_fork.replace("変化：3手\n", "変化：3手 "))
             .expect_err("the joined header is an error");
         refusal(err, 7);
 
@@ -503,7 +503,7 @@ mod tests {
         let err = parse_ki2_str(&KI2.replace("平手\n", "平手 ")).expect_err("an error");
         refusal(err, 1);
 
-        // KI2 again, at the branch header. What follows it need not be a move:
+        // KI2 again, at the fork header. What follows it need not be a move:
         // an outcome line joined to the header takes the block with it.
         for tail in ["△８四歩", "まで1手で中断"] {
             let joined = format!("手合割：平手\n▲７六歩 △３四歩\n\n変化：2手 {tail}\n");
@@ -540,16 +540,16 @@ mod tests {
         refusal(err, 1);
     }
 
-    // A `変化：N手` says a branch follows it. A file that ends right after one
-    // was cut short, and coming back with one fewer branch says nothing about
+    // A `変化：N手` says a fork follows it. A file that ends right after one
+    // was cut short, and coming back with one fewer fork says nothing about
     // that.
     //
     // Whether a blank line happens to sit in front of the header is not a
     // difference the answer can turn on, so both spellings are here: a run that
     // swallows the header on its way past leaves nothing to ask about, and the
-    // branch goes missing quietly in exactly that case.
+    // fork goes missing quietly in exactly that case.
     #[test]
-    fn a_branch_header_with_nothing_under_it_is_an_error() {
+    fn a_fork_header_with_nothing_under_it_is_an_error() {
         const KIF: &str = "手合割：平手
 手数----指手---------消費時間--
    1 ７六歩(77)
@@ -568,7 +568,7 @@ mod tests {
         // different cause. D1's leftover-input check names that line, and saying
         // "no moves under it" instead would name a cause that is not the one —
         // `パス` is a word this reader has no meaning for (D8), not a missing
-        // branch.
+        // fork.
         let err = parse_kif_str(&format!("{KIF}\n変化：2手\n   2 パス\n")).expect_err("an error");
         let text = refusal(err, 7);
         assert!(text.contains("パス"), "the error names the word: {text}");

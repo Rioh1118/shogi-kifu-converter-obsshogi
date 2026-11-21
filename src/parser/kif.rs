@@ -1,5 +1,5 @@
 use super::kakinoki::{
-    blank_line, branch_header_ply, broken_line, comments_on_the_starting_position, ends_here,
+    blank_line, broken_line, comments_on_the_starting_position, ends_here, fork_header_ply,
     is_reportable_empty_block, move_comment_line, not_move_line, numbered_line, opens_fork_header,
     opens_numbered_line, opens_shared_line, parse_without_moves, LineShapes, NumberedBody,
     WhereABoardCouldBe,
@@ -33,20 +33,20 @@ fn opens_kif_line(head: &str) -> bool {
     opens_shared_line(head) || opens_numbered_line(head)
 }
 
-/// The `変化：<N>手` line that opens a branch.
+/// The `変化：<N>手` line that opens a fork.
 ///
 /// The number is read only to be thrown away: the tree comes from the ply
 /// numbers on the move lines, not from this declaration (D3). The line is still
 /// matched rather than left to [`not_move_line`], because a line the reader has
 /// no shape for is skipped whole — so a `変化：` joined with the move under it
-/// takes a whole branch with it, and the record comes back `Ok` with one fewer.
-/// Returns the line itself, which is where an error about the branch has to
+/// takes a whole fork with it, and the record comes back `Ok` with one fewer.
+/// Returns the line itself, which is where an error about the fork has to
 /// point.
-fn branch_header_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
+fn fork_header_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
     // The number itself is not used: KIF builds the tree from the ply numbers on
     // the move lines (D3). It is read anyway so that this consumes exactly what
     // `opens_fork_header` counts.
-    let (rest, _) = branch_header_ply(input)?;
+    let (rest, _) = fork_header_ply(input)?;
     let (rest, _) = ends_here(SHAPES, input, rest)?;
     Ok((rest, input))
 }
@@ -56,22 +56,22 @@ fn branch_header_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
 /// closing remark.
 ///
 /// Above it, and only there, because a `変化：` there is nothing to act on: a
-/// branch cannot come before the moves it is an alternative to, and one written
+/// fork cannot come before the moves it is an alternative to, and one written
 /// there anyway is what tsshogi skips as well.
 fn skippable_line_above_the_main_line(
     where_a_board_could_be: WhereABoardCouldBe,
     input: &str,
 ) -> IResult<&str, &str, VerboseError<&str>> {
-    alt((blank_line, branch_header_line, |input| {
+    alt((blank_line, fork_header_line, |input| {
         not_move_line(where_a_board_could_be, input)
     }))(input)
 }
 
 /// The same, except that a `変化：` line is left where it is.
 ///
-/// [`entire_moves`] is the one that reads branch headers, because it is the one
+/// [`entire_moves`] is the one that reads fork headers, because it is the one
 /// that knows whether a run follows. A line that merely looks like one is
-/// declined too: a header the reader refuses ([`branch_header_line`]) has to
+/// declined too: a header the reader refuses ([`fork_header_line`]) has to
 /// reach that loop to be refused, not be skipped as unreadable prose.
 fn skippable_line_between_runs(
     where_a_board_could_be: WhereABoardCouldBe,
@@ -90,7 +90,7 @@ fn skippable_line_between_runs(
 
 /// Skips the blank lines and `#` lines that may sit between two moves of a run
 /// (R-KIF-002). Ending the run on one leaves every move after it to be read as
-/// a branch of a ply that does not exist, and dropped (GAP-008).
+/// a fork of a ply that does not exist, and dropped (GAP-008).
 ///
 /// Only these two. A line the format has no meaning for still ends the run, and
 /// the leftover-input check then reports it (D1) rather than guessing.
@@ -250,7 +250,7 @@ fn moves_with_index(
         let skipped = skip_interruptions(input);
         // `many1` stops on `Error` and throws anything else back. Swallowing a
         // `Failure` here would drop the rest of the record without a word,
-        // which is the failure this branch exists to remove.
+        // which is the failure this fork exists to remove.
         match move_with_comments(start, Some(side), skipped) {
             Ok((rest, (_, mf))) => {
                 side = next_side(&mf, side);
@@ -369,18 +369,18 @@ fn entire_moves(
     let mut forks = Vec::new();
     // One `変化：N手` header and the run under it per turn. Reading them one at a
     // time is what makes "this header has no moves under it" answerable: a skip
-    // that takes headers along the way leaves nothing to ask about, and a branch
+    // that takes headers along the way leaves nothing to ask about, and a fork
     // goes missing without a word.
     loop {
         let (rest, _) =
             many0(|input| skippable_line_between_runs(where_a_board_could_be, input))(input)?;
         // Headers in a row, taken as one. KIF does not read the declaration at
         // all — the tree comes from the ply numbers (D3) — so a second `変化：`
-        // over the first is a spare line, not a branch that went missing.
+        // over the first is a spare line, not a fork that went missing.
         let mut header = None;
         let mut rest = rest;
         loop {
-            match branch_header_line(rest) {
+            match fork_header_line(rest) {
                 Ok((after, line)) => {
                     header = Some(line);
                     let (after, _) =
@@ -390,7 +390,7 @@ fn entire_moves(
                     rest = after;
                 }
                 // The header is there and cannot be read — it ran into the moves
-                // under it. That is the branch, gone.
+                // under it. That is the fork, gone.
                 Err(err @ nom::Err::Failure(_)) => return Err(err),
                 // Not a header. A run can still follow: the tree comes from the
                 // ply numbers, not from the declaration (D3).
@@ -404,15 +404,15 @@ fn entire_moves(
             }
             Err(nom::Err::Error(_)) => {
                 // A header with nothing under it but the end of the file, or the
-                // next header, is a branch that is gone.
+                // next header, is a fork that is gone.
                 //
                 // Anything else there is a different fault with a different
                 // cause, and the leftover-input check (D1) names it and where it
                 // is; saying "no moves under it" instead would name a line that
                 // has moves under it and a cause that is not the one.
                 match header {
-                    // `変化：2手を参照` is a note *about* a branch — nothing was
-                    // ever under it to lose — while `変化：2手` alone is a branch
+                    // `変化：2手を参照` is a note *about* a fork — nothing was
+                    // ever under it to lose — while `変化：2手` alone is a fork
                     // that went missing. Both are declarations (D20); what tells
                     // them apart is whether the line says anything else (D1).
                     Some(line) if rest.trim().is_empty() && is_reportable_empty_block(line) => {
@@ -1119,7 +1119,7 @@ mod tests {
     // panics with `index out of bounds`, which is why the lookup is
     // `checked_sub`: neither the panic nor the silent drop is the answer.
     #[test]
-    fn a_branch_numbered_past_the_end_carries_the_run_on() {
+    fn a_fork_numbered_past_the_end_carries_the_run_on() {
         let input = &r#"
 手数----指手---------消費時間--
    1 ７六歩(77)    (00:00 / 00:00:00)
@@ -1158,7 +1158,7 @@ mod tests {
     // is what a reader that stopped on a line it could not place produces —
     // must not lose the moves after the jump.
     #[test]
-    fn a_branch_numbered_past_the_main_line_carries_it_on() {
+    fn a_fork_numbered_past_the_main_line_carries_it_on() {
         let input = &r#"
 手数----指手---------消費時間--
    1 ７六歩(77)    (00:00 / 00:00:00)
@@ -1175,7 +1175,7 @@ mod tests {
         assert_eq!(3, moves.len(), "index 0 plus two moves");
         assert!(
             moves.iter().all(|m| m.forks.is_none()),
-            "nothing branched: {moves:?}"
+            "nothing forked: {moves:?}"
         );
     }
 
@@ -1193,7 +1193,7 @@ mod tests {
     // The ply is the number on the line, not the position in the array, so the
     // comment node must not shift where the block attaches either.
     #[test]
-    fn a_branch_can_open_with_a_comment_and_survives_a_kif_round_trip() {
+    fn a_fork_can_open_with_a_comment_and_survives_a_kif_round_trip() {
         use crate::converter::ToKif;
         use crate::parser::{parse_ki2_str, parse_kif_str};
         for opening in ["*このあとは", "&しおり"] {
@@ -1201,11 +1201,11 @@ mod tests {
                 "手合割：平手\n▲７六歩 △３四歩\nまで2手で中断\n\n変化：2手\n{opening}\n△８四歩\nまで2手で反則勝ち\n"
             );
             let jkf = parse_ki2_str(&ki2).unwrap_or_else(|e| panic!("{opening}: {e}"));
-            let branch = &jkf.moves[2]
+            let fork = &jkf.moves[2]
                 .forks
                 .as_ref()
-                .unwrap_or_else(|| panic!("{opening}: no branch"))[0];
-            assert_eq!(3, branch.len(), "{opening}: comment, move, outcome");
+                .unwrap_or_else(|| panic!("{opening}: no fork"))[0];
+            assert_eq!(3, fork.len(), "{opening}: comment, move, outcome");
 
             let kif = jkf
                 .try_to_kif_owned()
@@ -1217,11 +1217,11 @@ mod tests {
         }
     }
 
-    // The same node must not move the branch either. Here the block that opens
+    // The same node must not move the fork either. Here the block that opens
     // with a comment is itself the target of a later `変化：`, so counting array
     // slots instead of ply numbers hangs the second block off the wrong move.
     #[test]
-    fn a_comment_node_does_not_shift_where_a_branch_attaches() {
+    fn a_comment_node_does_not_shift_where_a_fork_attaches() {
         use crate::parser::parse_kif_str;
         let kif = "手合割：平手
 手数----指手---------消費時間--
@@ -1238,7 +1238,7 @@ mod tests {
    3 ７八金(69)
 ";
         let jkf = parse_kif_str(kif).expect("parses");
-        let outer = &jkf.moves[2].forks.as_ref().expect("a branch at ply 2")[0];
+        let outer = &jkf.moves[2].forks.as_ref().expect("a fork at ply 2")[0];
         assert_eq!(
             [false, true, true],
             [0, 1, 2].map(|i| outer[i].occupies_ply()),
@@ -1248,13 +1248,13 @@ mod tests {
         // `outer[3]`, which does not exist.
         assert!(
             outer[2].forks.is_some(),
-            "the inner branch hangs off ply 3: {outer:?}"
+            "the inner fork hangs off ply 3: {outer:?}"
         );
     }
 
     // R-KIF-002: a blank line and a `#` line may sit anywhere in the move list.
     // Ending the run of moves on one left every move after it to be read as a
-    // branch of a ply that is not there, and dropped — the record came back
+    // fork of a ply that is not there, and dropped — the record came back
     // with one move and `Ok` (GAP-008). tsshogi reads all three.
     //
     // The blank line is the harder of the two: a skip that starts on the newline
@@ -1276,26 +1276,26 @@ mod tests {
     // The blank line before a `変化：` block is what ends the run, so tolerating
     // blank lines inside a run must not swallow the block that follows one. The
     // two readings of a blank line compete: the run skips it and carries on,
-    // and the branch reader needs it to have ended the run. What settles it is
+    // and the fork reader needs it to have ended the run. What settles it is
     // what comes after — a numbered move line continues the run, a `変化：`
     // header does not.
     #[test]
-    fn a_blank_line_still_lets_a_branch_start() {
+    fn a_blank_line_still_lets_a_fork_start() {
         use crate::parser::parse_kif_str;
         const HEAD: &str =
             "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n   2 ３四歩(33)\n";
-        const BRANCH: &str = "\n変化：2\n   2 ８四歩(83)\n";
+        const FORK: &str = "\n変化：2\n   2 ８四歩(83)\n";
 
         for (middle, main_line) in [("", 2), ("\n   3 ２六歩(27)\n", 3)] {
-            let jkf = parse_kif_str(&format!("{HEAD}{middle}{BRANCH}"))
+            let jkf = parse_kif_str(&format!("{HEAD}{middle}{FORK}"))
                 .unwrap_or_else(|e| panic!("{middle:?} was rejected: {e}"));
             assert_eq!(main_line, jkf.moves.len() - 1, "{middle:?}");
             let forks = jkf.moves[2]
                 .forks
                 .as_ref()
-                .unwrap_or_else(|| panic!("no branch at ply 2 for {middle:?}"));
+                .unwrap_or_else(|| panic!("no fork at ply 2 for {middle:?}"));
             assert_eq!(1, forks.len(), "{middle:?}");
-            assert_eq!(1, forks[0].len(), "the branch holds its one move");
+            assert_eq!(1, forks[0].len(), "the fork holds its one move");
         }
     }
 

@@ -244,7 +244,7 @@ pub(super) struct LineShapes {
 /// The outcome word on a `まで…` line and the number on a `変化：` line both stop
 /// here. One function, because the two would drift: the same character added to
 /// one and not the other changes what an outcome word is in one place and
-/// whether an empty branch block is reported in the other.
+/// whether an empty fork block is reported in the other.
 pub(super) fn ends_word(c: char) -> bool {
     is_padding(c) || crate::notation::LINE_ENDS.contains(&c) || NOTE_MARKERS.contains(&c)
 }
@@ -257,13 +257,13 @@ pub(super) fn ends_word(c: char) -> bool {
 /// lost. Whatever replaced a newline, it is not one of these.
 const NOTE_MARKERS: [char; 8] = ['※', '（', '(', '【', '[', '「', '〈', '＜'];
 
-/// The word a branch declaration opens with (D3).
+/// The word a fork declaration opens with (D3).
 ///
 /// One spelling, because the guard in [`opens_fork_header`] and the parser
-/// in [`branch_header_ply`] both look for it: a guard that knows a narrower word
+/// in [`fork_header_ply`] both look for it: a guard that knows a narrower word
 /// than the parser silently stops the parser from ever being asked, which is the
 /// "counted set ≠ consumed set" failure this pair keeps having.
-const BRANCH_KEYWORD: &str = "変化";
+const FORK_KEYWORD: &str = "変化";
 
 /// The shapes both formats share: a comment, a bookmark, a `#` note, a `変化：`
 /// header, a `まで…` outcome.
@@ -281,45 +281,45 @@ pub(super) fn opens_shared_line(head: &str) -> bool {
 /// The number is what makes it one. `変化：` on its own is two characters a
 /// sentence can open with.
 ///
-/// Built on [`branch_header_ply`], so that what a reader *counts* as a branch
+/// Built on [`fork_header_ply`], so that what a reader *counts* as a fork
 /// header and what it can *consume* are the same set. Held apart they drift, and
 /// the drift shows up in opposite directions: a count wider than the read makes
-/// a branch that reads as the main line carrying on (R-JKF-004), and a read
+/// a fork that reads as the main line carrying on (R-JKF-004), and a read
 /// wider than the count refuses records the format has always allowed (D17).
 ///
 /// The `starts_with` in front is a guard, not a second answer: it is the
-/// parser's own prefix ([`BRANCH_KEYWORD`]), and it is here because this runs on
-/// nearly every line while `branch_header_ply` builds a `VerboseError` on each
+/// parser's own prefix ([`FORK_KEYWORD`]), and it is here because this runs on
+/// nearly every line while `fork_header_ply` builds a `VerboseError` on each
 /// miss — the cost `kif::skip_interruptions` is hand-written to avoid.
 pub(super) fn opens_fork_header(head: &str) -> bool {
     head.trim_start_matches(is_padding)
-        .starts_with(BRANCH_KEYWORD)
-        && branch_header_ply(head).is_ok()
+        .starts_with(FORK_KEYWORD)
+        && fork_header_ply(head).is_ok()
 }
 
-/// Whether an empty block under this `変化：` line is a branch that went missing.
+/// Whether an empty block under this `変化：` line is a fork that went missing.
 ///
 /// True when the number is the last thing the line says — padding, a note
 /// marker or the line ending after it. `変化：2手 別案` and `変化：2手（本命）`
 /// are true as well: what follows is a note *on* the header, not a sentence the
 /// header is part of.
 ///
-/// Not what makes it a header. A number followed by a word is still a branch
+/// Not what makes it a header. A number followed by a word is still a fork
 /// declaration (D20) — `変化：3手目` names ply 3 — and reading it as prose lets
-/// the branch run on as the main line, which changes whose game it is
+/// the fork run on as the main line, which changes whose game it is
 /// (R-JKF-004).
 ///
 /// What this decides is whether an **empty** block under such a line is worth
-/// reporting: `変化：2手` with nothing beneath it is a branch that went missing
+/// reporting: `変化：2手` with nothing beneath it is a fork that went missing
 /// and D1 says so, while `変化：2手を参照` with nothing beneath it is a note
-/// about a branch and there was never anything to lose.
+/// about a fork and there was never anything to lose.
 ///
 /// The padding, the line ending and [`NOTE_MARKERS`] are the same set D17 uses
 /// for the end of a line, but **D17 is not the reason** — that rule is about
 /// what is left after a line the reader finished with, and this is a question
 /// about the head of one. D20 is the decision.
 pub(super) fn is_reportable_empty_block(head: &str) -> bool {
-    matches!(branch_header_ply(head), Ok((rest, _)) if rest.starts_with(ends_word) || rest.is_empty())
+    matches!(fork_header_ply(head), Ok((rest, _)) if rest.starts_with(ends_word) || rest.is_empty())
 }
 
 /// Reads `変化：<N>手` and returns `N`.
@@ -336,7 +336,7 @@ pub(super) fn is_reportable_empty_block(head: &str) -> bool {
 ///
 /// The number saturates rather than failing (D19). A ply too large for a `usize`
 /// is not a spelling this reader cannot read — KIF does not look at the number at
-/// all, and KI2 hands it to `attach_branch`, which asks whether a node is there
+/// all, and KI2 hands it to `attach_fork`, which asks whether a node is there
 /// and finds none. Refusing a record over a digit nobody reads is exactly the
 /// difference this function exists to close. (Real records need three digits;
 /// the ceiling is here so that a damaged one is not fatal, not to support it.)
@@ -346,13 +346,13 @@ pub(super) fn is_reportable_empty_block(head: &str) -> bool {
 /// way, so consuming it here keeps the counted set and the consumed set equal.
 ///
 /// Ply 0 is read here and refused by the reader that uses it. Plies count from 1
-/// (R-JKF-001), so `変化：０手` names no move for a branch to be an alternative
+/// (R-JKF-001), so `変化：０手` names no move for a fork to be an alternative
 /// to — but only KI2 looks at the number (D3, D19), and refusing the line here
 /// would reject KIF records over a digit KIF never reads. See
-/// `ki2::branch_header`.
-pub(super) fn branch_header_ply(input: &str) -> IResult<&str, usize, VerboseError<&str>> {
+/// `ki2::fork_header`.
+pub(super) fn fork_header_ply(input: &str) -> IResult<&str, usize, VerboseError<&str>> {
     let unreadable = || nom::Err::Error(VerboseError::from_error_kind(input, ErrorKind::Digit));
-    let (rest, _) = preceded(pair(padding, tag(BRANCH_KEYWORD)), colon)(input)?;
+    let (rest, _) = preceded(pair(padding, tag(FORK_KEYWORD)), colon)(input)?;
     let rest = rest.trim_start_matches(is_padding);
     // Folded a digit at a time, so that the test for "is this a digit" and the
     // arithmetic that assumes it are the same expression. Split apart, widening
@@ -372,7 +372,7 @@ pub(super) fn branch_header_ply(input: &str) -> IResult<&str, usize, VerboseErro
         return Err(unreadable());
     }
     // `手` is what the writers put after the number, but nothing requires it of
-    // a reader — tsshogi's `branchRegExp` reads the number and stops.
+    // a reader — tsshogi's `forkRegExp` reads the number and stops.
     let (rest, _) = opt(tag("手"))(&rest[taken..])?;
     Ok((rest, ply))
 }
@@ -382,7 +382,7 @@ pub(super) fn branch_header_ply(input: &str) -> IResult<&str, usize, VerboseErro
 ///
 /// Asked where a line has already ended, not where one begins. `変化：2手` in
 /// the annotation column of a move line — `  83 投了    変化：2手  ( 0:00)` —
-/// is prose about a branch; reading it as the header of one says the record
+/// is prose about a fork; reading it as the header of one says the record
 /// runs into the line below it, which it does not, and refuses the whole file
 /// over a note (D17).
 ///
@@ -390,7 +390,7 @@ pub(super) fn branch_header_ply(input: &str) -> IResult<&str, usize, VerboseErro
 /// allows a note after the number: `変化：2手（本命）` fills no line but does
 /// declare a block. Check which one you mean before calling either.
 fn is_whole_line_fork_header(head: &str) -> bool {
-    match branch_header_ply(head) {
+    match fork_header_ply(head) {
         Ok((rest, _)) => end_of_line(rest.trim_start_matches(is_padding)).is_ok(),
         Err(_) => false,
     }
@@ -2098,7 +2098,7 @@ mod tests {
             ))
             .unwrap_or_else(|e| panic!("{pad:?} on a move line: {e}"));
             assert_eq!(2, indented.moves.len() - 1, "{pad:?}: the moves went");
-            // So is a branch header, and the diagnostic under it survives.
+            // So is a fork header, and the diagnostic under it survives.
             assert!(
                 parse_kif_str(&format!("{KIF}\n{pad}変化：2手\n")).is_err(),
                 "{pad:?}: `a 変化 block with no moves under it` went quiet"
@@ -2249,9 +2249,9 @@ mod tests {
             (kif::SHAPES, "まで82手で先手の勝ち"),
             (ki2::SHAPES, " ▲７六歩 △３四歩"),
             (ki2::SHAPES, "△８四歩"),
-            // A branch header this reader cannot parse is still one. Reading
+            // A fork header this reader cannot parse is still one. Reading
             // only the half-width spelling here let `変化：２手` through as an
-            // annotation, and the branch under it carried on as the main line.
+            // annotation, and the fork under it carried on as the main line.
             (kif::SHAPES, "変化：２手"),
             (ki2::SHAPES, "変化：２手"),
             (kif::SHAPES, "変化： 2手"),
@@ -2297,8 +2297,8 @@ mod tests {
             (ki2::SHAPES, " △８四歩が最善だった"),
             (ki2::SHAPES, "　△３三桂が敗着"),
             (ki2::SHAPES, " △８四歩から"),
-            // A branch header that does not own the line it would begin is
-            // prose about a branch. `  83 投了    変化：2手  ( 0:00)` is how
+            // A fork header that does not own the line it would begin is
+            // prose about a fork. `  83 投了    変化：2手  ( 0:00)` is how
             // the annotation column of a move line reads.
             (kif::SHAPES, "    変化：2手     ( 0:00/00:00:00)"),
             (kif::SHAPES, "    変化：２手     ( 0:00/00:00:00)"),
@@ -2312,11 +2312,11 @@ mod tests {
         }
     }
 
-    // What a reader counts as a branch header and what it can consume are the
+    // What a reader counts as a fork header and what it can consume are the
     // same set, so that no line falls between them: counted, and so not skipped
     // as prose; unreadable, and so reported by the leftover-input check (D1).
     #[test]
-    fn every_branch_header_that_counts_as_one_can_be_read_as_one() {
+    fn every_fork_header_that_counts_as_one_can_be_read_as_one() {
         for (head, ply) in [
             ("変化：2手", 2),
             ("変化：２手", 2),
@@ -2331,20 +2331,19 @@ mod tests {
             ("変化：18446744073709551615手", usize::MAX),
             ("変化：18446744073709551616手", usize::MAX),
             ("変化：99999999999999999999手", usize::MAX),
-            // Ply 0 is read here. Refusing it belongs to `ki2::branch_header`,
+            // Ply 0 is read here. Refusing it belongs to `ki2::fork_header`,
             // the only reader that uses the number (D3).
             ("変化：0手", 0),
             ("変化：０手", 0),
         ] {
             assert!(opens_fork_header(head), "{head:?}");
-            let (rest, read) =
-                branch_header_ply(head).unwrap_or_else(|e| panic!("{head:?}: {e:?}"));
+            let (rest, read) = fork_header_ply(head).unwrap_or_else(|e| panic!("{head:?}: {e:?}"));
             assert_eq!(ply, read, "{head:?}");
             assert!(rest.is_empty(), "{head:?} left {rest:?}");
         }
         for head in ["変化：ここから", "変化：", "変化：手", "変わり：2手"] {
             assert!(!opens_fork_header(head), "{head:?}");
-            assert!(branch_header_ply(head).is_err(), "{head:?}");
+            assert!(fork_header_ply(head).is_err(), "{head:?}");
         }
     }
 
@@ -2448,7 +2447,7 @@ mod tests {
             assert_eq!(
                 1,
                 jkf.moves.iter().filter(|m| m.forks.is_some()).count(),
-                "{first:?}: the branch went"
+                "{first:?}: the fork went"
             );
         }
         // A number followed by something that is neither padding nor a move is
@@ -2847,20 +2846,16 @@ mod tests {
                 "{line:?}"
             );
         }
-        // D18: a `変化：` block whose only line is an outcome is a branch, not
+        // D18: a `変化：` block whose only line is an outcome is a fork, not
         // an empty block.
-        let branched = parse_kif_str(concat!(
+        let forked = parse_kif_str(concat!(
             "手合割：平手\n手数----指手---------消費時間--\n",
             "   1 ７六歩(77)\n   2 ８四歩(83)\n\n変化：2手\n2投了 ( 0:03/00:00:03)\n"
         ))
         .expect("reads");
         assert_eq!(
             1,
-            branched
-                .moves
-                .iter()
-                .filter(|mf| mf.forks.is_some())
-                .count()
+            forked.moves.iter().filter(|mf| mf.forks.is_some()).count()
         );
         // And a KIF move line that ends up in a `.ki2` is reported, never
         // skipped — the outcome would go with it.
@@ -3020,16 +3015,16 @@ mod tests {
         }
     }
 
-    // A `変化：<数字>` line is a branch declaration whatever follows the number
+    // A `変化：<数字>` line is a fork declaration whatever follows the number
     // (D20). What the suffix decides is whether an empty block under it is a
-    // branch that went missing (D1) or a note that never had one.
+    // fork that went missing (D1) or a note that never had one.
     #[test]
-    fn a_branch_header_is_the_whole_of_what_its_number_says() {
+    fn a_fork_header_is_the_whole_of_what_its_number_says() {
         use crate::parser::{parse_ki2_str, parse_kif_str};
         const KIF: &str =
             "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)\n   2 ８四歩(83)\n";
         const KI2: &str = "手合割：平手\n▲７六歩 △８四歩\n";
-        // A note about a branch, with nothing under it: skipped, in both
+        // A note about a fork, with nothing under it: skipped, in both
         // formats.
         for note in [
             "変化：2手を参照",
@@ -3045,9 +3040,9 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{note:?} in a KI2: {e}"));
             assert_eq!(2, ki2.moves.len() - 1, "{note:?}");
         }
-        // And with a block under it, every one of those is the branch it says
+        // And with a block under it, every one of those is the fork it says
         // it is — the suffix is a note on the header, not a different kind of
-        // line. Reading it as prose lets the branch run on as the main line,
+        // line. Reading it as prose lets the fork run on as the main line,
         // which changes whose game it is (R-JKF-004).
         for header in [
             "変化：2手",
@@ -3075,7 +3070,7 @@ mod tests {
             );
         }
         // A header that says nothing but its number, with nothing under it, is
-        // a branch that went missing and still says so (D1).
+        // a fork that went missing and still says so (D1).
         assert!(parse_kif_str(&format!("{KIF}\n変化：2手\n")).is_err());
         assert!(parse_ki2_str(&format!("{KI2}変化：2手\n")).is_err());
     }
@@ -3209,7 +3204,7 @@ mod tests {
             .unwrap_or_else(|e| panic!("変化{colon}: {e}"));
             assert!(
                 ki2.moves[3].forks.is_some(),
-                "変化{colon}: the branch read as the main line carrying on: {:?}",
+                "変化{colon}: the fork read as the main line carrying on: {:?}",
                 ki2.moves
             );
         }

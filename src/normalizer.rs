@@ -804,22 +804,22 @@ fn normalize_moves(
     let mut board = Board::new();
     for (offset, mf) in moves.iter_mut().enumerate() {
         let ply = first_ply + offset;
-        // A branch that cannot be normalized is still a branch. A kifu recording
-        // an illegal move is valid input (R-RULE-002), and dropping the branch
+        // A fork that cannot be normalized is still a fork. A kifu recording
+        // an illegal move is valid input (R-RULE-002), and dropping the fork
         // here returns `Ok` with the record one line shorter — the caller saves
         // it back and the variation is gone from the file for good.
         //
         // `populate_relative_moves` keeps them for the same reason.
         //
-        // A branch is the alternative *to* this node's move (R-JKF-004), so it
+        // A fork is the alternative *to* this node's move (R-JKF-004), so it
         // starts from the position before it. Once that position is lost there
-        // is nothing to normalize a branch against, and going ahead rewrites its
+        // is nothing to normalize a fork against, and going ahead rewrites its
         // moves against a board they never came from — `correct_color` would
         // give them the wrong side.
         if board.is_known() {
             if let Some(forks) = &mut mf.forks {
                 for fork in forks.iter_mut() {
-                    // A branch replaces this node, so its first element sits at
+                    // A fork replaces this node, so its first element sits at
                     // the same ply (R-JKF-004).
                     let _ = normalize_moves(
                         fork,
@@ -846,7 +846,7 @@ fn normalize_moves(
         // record: `中断` appears mid-list in a game that was interrupted and
         // resumed, and a comment can sit between two moves. Stopping here would
         // leave every later move with its parsed colour, its `from` unresolved
-        // and its branches unnormalized.
+        // and its forks unnormalized.
         let Some(mmf) = &mut mf.move_ else {
             board.saw(mf);
             continue;
@@ -885,7 +885,7 @@ fn populate_relative_moves(
         if board.is_known() {
             if let Some(forks) = &mut mf.forks {
                 for v in forks.iter_mut() {
-                    // A branch that cannot be replayed is still a branch
+                    // A fork that cannot be replayed is still a fork
                     // (R-RULE-002), the same as in `normalize_moves`. Dropping
                     // it here would lose a variation to fill in a derived field.
                     let _ = populate_relative_moves(v, ply, pos.clone());
@@ -1114,7 +1114,7 @@ mod tests {
     // `直` is the only way to read `▲５八金直` when more than one gold reaches
     // the square, and it is the one arm of `calculate_from`'s match that the
     // 左/右 rewrite did not touch. Left unfiltered, the move comes back ambiguous
-    // and the branch holding it is dropped.
+    // and the fork holding it is dropped.
     #[test]
     fn a_gold_moving_straight_up_is_read_from_直() {
         let kif = "手合割：その他
@@ -1305,7 +1305,7 @@ mod tests {
         );
     }
 
-    // A branch whose moves cannot be replayed is still a branch. Dropping it
+    // A fork whose moves cannot be replayed is still a fork. Dropping it
     // returns `Ok` with the record one variation shorter, and the next save
     // writes the shortened record over the original — the loss is permanent and
     // nothing ever said so. Kifu holding illegal moves are valid input
@@ -1314,7 +1314,7 @@ mod tests {
     // The moves after `中断` here do not continue the position before it, which
     // is what a resumed game looks like.
     #[test]
-    fn a_branch_that_cannot_be_replayed_is_kept() {
+    fn a_fork_that_cannot_be_replayed_is_kept() {
         let kif = "手合割：平手
 手数----指手---------消費時間--
    1 ７六歩(77)
@@ -1328,8 +1328,8 @@ mod tests {
    4 ９九角(88)
 ";
         let jkf = crate::parser::parse_kif_str(kif).expect("parses");
-        let forks = jkf.moves[2].forks.as_ref().expect("a branch at ply 2");
-        assert_eq!(1, forks.len(), "the branch survives normalization");
+        let forks = jkf.moves[2].forks.as_ref().expect("a fork at ply 2");
+        assert_eq!(1, forks.len(), "the fork survives normalization");
         assert_eq!(3, forks[0].len(), "and keeps all three of its nodes");
     }
 
@@ -1478,16 +1478,16 @@ mod tests {
         );
     }
 
-    // A branch hanging off a node past the point the board was lost has no
+    // A fork hanging off a node past the point the board was lost has no
     // position to be normalized against either. Normalizing it anyway rewrites
     // its moves — `correct_color` alone flips the side — against a board they
     // never came from.
     //
-    // The branch has to leave an *odd* ply. The board was lost with White to
+    // The fork has to leave an *odd* ply. The board was lost with White to
     // move, so at an even ply the stale board and the ply number name the same
-    // side and normalizing the branch anyway makes no visible difference.
+    // side and normalizing the fork anyway makes no visible difference.
     #[test]
-    fn a_branch_past_the_lost_board_is_left_alone() {
+    fn a_fork_past_the_lost_board_is_left_alone() {
         let kif = "手合割：平手
 手数----指手---------消費時間--
    1 ７六歩(77)
@@ -1500,7 +1500,7 @@ mod tests {
    5 ４四歩(43)
 ";
         let jkf = crate::parser::parse_kif_str(kif).expect("parses");
-        let fork = &jkf.moves[5].forks.as_ref().expect("a branch")[0];
+        let fork = &jkf.moves[5].forks.as_ref().expect("a fork")[0];
         let mv = fork[0].move_.expect("a move");
         assert_eq!(Color::Black, mv.color, "the side the ply number gave it");
         assert_eq!(Some(PlaceFormat { x: 4, y: 3 }), mv.from);
