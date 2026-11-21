@@ -404,16 +404,16 @@ mod tests {
             // KIF's 反則勝ち is relative to whose turn it is, so it cannot say that
             // Black fouled while Black is to move. The KI2 phrase names the
             // winner outright and keeps the direction.
-            // GAP-032: Black fouled with Black to move. 反則勝ち says the move
-            // *before* was the foul (R-KIF-007), so it reads back as White's
-            // foul and the winner swaps. D25 decides to write 反則負け here
-            // instead; until then this row pins what the writer does.
+            // D25: Black fouled with Black to move. 反則勝ち would say the
+            // move *before* was the foul and swap the winner (GAP-032), so the
+            // writer says 反則負け — Black, to move, loses — and it reads back
+            // as ILLEGAL_MOVE with the same winner.
             Row {
                 special: SpecialIllegalActionBlack,
-                kif_word: "反則勝ち",
+                kif_word: "反則負け",
                 csa_word: "%+ILLEGAL_ACTION",
                 ki2_phrase: "後手の反則勝ち",
-                after_kif: SpecialIllegalActionWhite,
+                after_kif: SpecialIllegalMove,
                 after_ki2: SpecialIllegalActionBlack,
                 after_csa: None,
             },
