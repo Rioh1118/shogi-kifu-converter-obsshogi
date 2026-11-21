@@ -1068,6 +1068,18 @@ fn information_value_preset(input: &str) -> IResult<&str, Information<'_>, Verbo
     // opens and the upper hand does not (R-HC-001 / R-RULE-006), so every side
     // in the game is the wrong one.
     let (rest, _) = take_while(is_padding)(rest)?;
+    // A note after the name (`香落ち（30分）`, `平手 ※持ち時間各30分`) is not
+    // part of it. Taken for a name this table does not know, the line went to
+    // the key-value rule and the board fell back to 平手 — every side in a
+    // handicap game reversed (GAP-021). The note is dropped: the handicap is
+    // what the line is for (D33). Anything else after the name is a different
+    // word (`香落ち戦`), and the line is not this one.
+    let rest = if rest.starts_with(NOTE_MARKERS) {
+        rest.find(crate::notation::LINE_ENDS)
+            .map_or("", |end| &rest[end..])
+    } else {
+        rest
+    };
     Ok((rest, Information::Preset(preset)))
 }
 
@@ -1079,10 +1091,9 @@ fn information_value_preset(input: &str) -> IResult<&str, Information<'_>, Verbo
 ///
 /// The text is kept, but the position it named is not: `initial` falls back to
 /// the even game, and for a handicap that also flips every move's side, since
-/// the upper hand moves first only in a handicap (R-HC-001). `手合割：香落ち（30分）`
-/// reads as a hirate game with Black to open (`research/90-gaps.md` GAP-021).
-/// Being strict here instead would refuse the file outright, which is worse and
-/// still not the fix — the fix is a table with an entry for what the file says.
+/// the upper hand moves first only in a handicap (R-HC-001). A name followed by
+/// a note is the name (GAP-021, [`information_value_preset`]); a name the table
+/// has no entry for is still kept as text only.
 fn information_line_preset(input: &str) -> IResult<&str, Information<'_>, VerboseError<&str>> {
     terminated(
         preceded(
