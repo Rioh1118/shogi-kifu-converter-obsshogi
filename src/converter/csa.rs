@@ -367,7 +367,8 @@ mod tests {
             .insert("先手".to_owned(), "山田\r太郎".to_owned());
         jkf.header.insert("場所".to_owned(), "\n".to_owned());
         let csa = jkf.try_to_csa_owned().expect("writes CSA");
-        assert!(csa.contains("N+山田太郎\n"), "{csa}");
+        // GAP-049: the two lines stay two words.
+        assert!(csa.contains("N+山田 太郎\n"), "{csa}");
         assert!(!csa.contains("$SITE"), "{csa}");
         assert!(crate::parser::parse_csa_str(&csa).is_ok(), "{csa}");
 

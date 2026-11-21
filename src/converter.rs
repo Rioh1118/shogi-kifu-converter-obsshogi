@@ -31,8 +31,15 @@ type WriteResult = std::result::Result<(), ConvertError>;
 /// and KI2 (R-KIF-004) and in CSA (R-CSA-004). What is left of the line after a
 /// newline inside the value is read as a line of its own, and the reader makes
 /// of it whatever its shapes say — none of which is "the rest of that header".
+///
+/// The lines are joined with a space rather than run together: `一行目\n二行目`
+/// would otherwise come back as one word, `一行目二行目` (GAP-049).
 fn on_one_line(value: &str) -> String {
-    value.split(crate::notation::LINE_ENDS).collect()
+    value
+        .split(crate::notation::LINE_ENDS)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Spells `pos` as USI: the initial position, then the moves played from it.
