@@ -20,6 +20,7 @@
 //! it can match a name, and the handicap table is a leaf.
 
 pub(crate) mod relative;
+pub(crate) mod special;
 
 /// The characters a line ending is made of, whichever of them a file or a value
 /// carries.
