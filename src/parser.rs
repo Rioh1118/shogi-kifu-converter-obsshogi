@@ -17,7 +17,7 @@ use nom::Finish;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
-use text::{decode_kifu, read_kifu, without_a_byte_order_mark};
+use text::{decode_kifu, read_kifu, with_plain_line_ends, without_a_byte_order_mark};
 
 /// Parses a CSA file to [`jkf::JsonKifuFormat`](crate::jkf::JsonKifuFormat)
 ///
@@ -143,7 +143,8 @@ fn is_unrecognised(jkf: &JsonKifuFormat, read_header: bool) -> bool {
 /// Returns [`ParseError::Normalize`] when a move cannot be played from the
 /// position before it.
 pub fn parse_kif_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
-    let s = without_a_byte_order_mark(s);
+    let plain = with_plain_line_ends(without_a_byte_order_mark(s));
+    let s = plain.as_ref();
     match kif::parse(s).finish() {
         Ok((rest, (mut jkf, read_header))) => {
             if !rest.trim().is_empty() {
@@ -188,7 +189,8 @@ pub fn parse_ki2_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseEr
 /// [`ParseError::Normalize`] when a move cannot be played from the position
 /// before it.
 pub fn parse_ki2_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
-    let s = without_a_byte_order_mark(s);
+    let plain = with_plain_line_ends(without_a_byte_order_mark(s));
+    let s = plain.as_ref();
     match ki2::parse(s).finish() {
         Ok((rest, (mut jkf, read_header))) => {
             if !rest.trim().is_empty() {
@@ -281,6 +283,31 @@ pub fn parse_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseError>
 
 #[cfg(test)]
 mod tests {
+
+    /// GAP-036: `\r\r\n` is one line ending, and so is a lone `\r`. The
+    /// line numbers in an error count lines the way an editor does.
+    #[test]
+    fn every_spelling_of_a_line_ending_ends_one_line() {
+        let lines = [
+            "手合割：平手",
+            "   1 ７六歩(77)",
+            "   2 ３四歩(33)",
+            "   3 投了",
+        ];
+        for ending in ["\n", "\r\n", "\r\r\n", "\r"] {
+            let kif = lines.join(ending) + ending;
+            let jkf = parse_kif_str(&kif).unwrap_or_else(|e| panic!("{ending:?}: {e}"));
+            assert_eq!(4, jkf.moves.len(), "{ending:?}");
+            let ki2 = ["手合割：平手", "▲７六歩 △３四歩", "まで2手で中断"].join(ending) + ending;
+            let jkf = parse_ki2_str(&ki2).unwrap_or_else(|e| panic!("{ending:?}: {e}"));
+            assert_eq!(4, jkf.moves.len(), "{ending:?}");
+        }
+        let broken = ["手合割：平手", "   1 ７六歩(77)", "   2 ほげ"].join("\r\r\n");
+        let message = parse_kif_str(&broken)
+            .expect_err("line 3 is broken")
+            .to_string();
+        assert!(message.contains("line 3"), "{message}");
+    }
     use std::io::BufReader;
     // R-KIF-001 / GAP-006: a BOM is not part of the record. Left on, it joins
     // the first line — the handicap goes missing and the record reads as 平手

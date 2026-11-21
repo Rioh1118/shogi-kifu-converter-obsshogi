@@ -74,3 +74,31 @@ pub(super) fn decode_kifu(buf: &[u8], first: &'static Encoding) -> Result<String
 pub(super) fn without_a_byte_order_mark(s: &str) -> &str {
     s.strip_prefix('\u{feff}').unwrap_or(s)
 }
+
+/// `s` with every line ending spelled `\n`.
+///
+/// The readers know `\n` and `\r\n`. A file that went through two
+/// conversions arrives with `\r\r\n` (Kifu-for-JS's `20081220kyoochi.kif`), and
+/// one from an old Mac with a lone `\r`; read literally, the first line never
+/// ends and the record is refused at line 1 (GAP-036). A run of `\r` before a
+/// `\n` is one line ending, not blank lines, so the line numbers in an error
+/// still count the lines a reader sees.
+///
+/// Borrows when there is no `\r`, which is every file a Unix tool wrote.
+pub(super) fn with_plain_line_ends(s: &str) -> std::borrow::Cow<'_, str> {
+    if !s.contains('\r') {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\r' {
+            while chars.next_if_eq(&'\r').is_some() {}
+            chars.next_if_eq(&'\n');
+            out.push('\n');
+        } else {
+            out.push(c);
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
