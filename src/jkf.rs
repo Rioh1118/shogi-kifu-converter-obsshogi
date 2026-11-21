@@ -137,7 +137,12 @@ pub enum Relative {
 }
 
 /// A representation of a special move
+///
+/// `#[non_exhaustive]`: besides JKF's fourteen, this crate adds the words KIF
+/// and CSA V3.0 have and JKF does not (D1, D28, D29), and another such word
+/// is a new variant, not a breaking change. Match with a `_` arm.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MoveSpecial {
     /// 投了
     #[serde(rename = "TORYO")]
