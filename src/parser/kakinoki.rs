@@ -146,7 +146,7 @@ pub(super) const SIDE_MARKS: [(char, Color); 2] = [('▲', Color::Black), ('△'
 /// Read and dropped. Whose move it is comes from the run: the first line of one
 /// takes its side from the ply (`handicap::side_to_move_at_ply`, which is the
 /// parity, corrected for a handicap by R-HC-001), and every line after it from
-/// the move before (`kif::move_line`'s `known_side`). An outcome line takes a
+/// the move before (`kif::move_line`'s `known_side`). A special move line takes a
 /// ply without taking a turn, so past one the parity is wrong and only the chain
 /// is right — which matters because 反則勝ち names its loser through whose turn
 /// it is (R-KIF-007).
@@ -241,9 +241,9 @@ pub(super) struct LineShapes {
 /// Where a word on a line ends: padding, the line ending, or the mark a note
 /// opens with.
 ///
-/// The outcome word on a `まで…` line and the number on a `変化：` line both stop
+/// The special move word on a `まで…` line and the number on a `変化：` line both stop
 /// here. One function, because the two would drift: the same character added to
-/// one and not the other changes what an outcome word is in one place and
+/// one and not the other changes what a special move word is in one place and
 /// whether an empty fork block is reported in the other.
 pub(super) fn ends_word(c: char) -> bool {
     is_padding(c) || crate::notation::LINE_ENDS.contains(&c) || NOTE_MARKERS.contains(&c)
@@ -266,7 +266,7 @@ const NOTE_MARKERS: [char; 8] = ['※', '（', '(', '【', '[', '「', '〈', '�
 const FORK_KEYWORD: &str = "変化";
 
 /// The shapes both formats share: a comment, a bookmark, a `#` note, a `変化：`
-/// header, a `まで…` outcome.
+/// header, a `まで…` special move.
 pub(super) fn opens_shared_line(head: &str) -> bool {
     // Past the indentation, for every shape and not just the one whose parser
     // happens to look past it. A predicate that answers `true` for `　変化：2手`
@@ -396,12 +396,12 @@ fn is_whole_line_fork_header(head: &str) -> bool {
     }
 }
 
-/// The KIF outcome words, longest first so that a word is never cut short by a
+/// The KIF special move words, longest first so that a word is never cut short by a
 /// prefix of itself. [`MoveSpecial::from_kif_word`] holds the mapping.
 ///
 /// Here rather than with the KIF reader because both readers ask: KI2 has to
 /// know that `   5 投了` is a line something wrote as a move, so that skipping
-/// it as prose does not take the outcome with it (D1, `opens_numbered_line`).
+/// it as prose does not take the special move with it (D1, `opens_numbered_line`).
 const KIF_SPECIAL_WORDS: [&str; 12] = [
     "切れ負け",
     "入玉勝ち",
@@ -417,13 +417,13 @@ const KIF_SPECIAL_WORDS: [&str; 12] = [
     "不詰",
 ];
 
-/// Reads an outcome word, returning the word itself.
+/// Reads a special move word, returning the word itself.
 ///
 /// The word, not a [`MoveSpecial`], because 反則勝ち does not name its loser:
 /// the line says only that the move before it was the foul (R-KIF-007), and
 /// whose move that was is the caller's to know. A reader that had to supply a
 /// colour here would be choosing one it does not have.
-fn outcome_word(input: &str) -> IResult<&str, &'static str, VerboseError<&str>> {
+fn special_word(input: &str) -> IResult<&str, &'static str, VerboseError<&str>> {
     for word in KIF_SPECIAL_WORDS {
         if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>(word)(input) {
             return Ok((rest, word));
@@ -456,12 +456,12 @@ fn move_time_format(input: &str) -> IResult<&str, TimeFormat, VerboseError<&str>
 }
 
 /// The `( 0:03/00:00:03)` a KIF move line may carry after the move or the
-/// outcome word (R-KIF-007 / R-KIF-008).
+/// special move word (R-KIF-007 / R-KIF-008).
 ///
 /// Here rather than beside the reader that consumes it, because the shared
 /// question "does this line hold a move" has to be answered with the same shape
 /// the reader will take: a `1投了 ( 0:03/00:00:03)` counted as prose is skipped,
-/// and the outcome of the game goes with it (D1).
+/// and the special move of the game goes with it (D1).
 pub(super) fn move_time(input: &str) -> IResult<&str, Time, VerboseError<&str>> {
     delimited(
         tag("("),
@@ -514,8 +514,8 @@ fn move_origin(input: &str) -> IResult<&str, Option<PlaceFormat>, VerboseError<&
 /// move (`known_side`) and falls back to the ply only at the head of a run
 /// (`side_mark`).
 pub(super) enum NumberedBody {
-    /// One of the outcome words.
-    Outcome(&'static str),
+    /// One of the special move words.
+    Special(&'static str),
     /// A move.
     Move {
         /// `None` for 同 — the square is the one the move before went to.
@@ -538,7 +538,7 @@ pub(super) enum NumberedBody {
 /// than reading the text a second time. A predicate written separately from the
 /// reader drifts from it, and the drift is silent in one direction: a line the
 /// reader would have taken but the predicate does not count is skipped as prose,
-/// and the move — or the outcome of the game — is gone from a record that still
+/// and the move — or the special move of the game — is gone from a record that still
 /// comes back `Ok` (D1).
 ///
 /// The three answers are the contract:
@@ -592,7 +592,7 @@ pub(super) fn numbered_line(
             )))
         }
     };
-    let (rest, body) = alt((map(outcome_word, NumberedBody::Outcome), move_body))(rest).map_err(
+    let (rest, body) = alt((map(special_word, NumberedBody::Special), move_body))(rest).map_err(
         |err| match err {
             nom::Err::Error(_) if committed => broken_line(line, "this move cannot be read"),
             err => err,
@@ -816,7 +816,7 @@ impl WhereABoardCouldBe {
     /// or `+123` below cannot be a board — the board is above the moves — and
     /// the format has always allowed such a line. A run of comments or a `まで…`
     /// line does not, so the diagram of a record that carries the last game's
-    /// outcome at its head is still a diagram.
+    /// special move at its head is still a diagram.
     ///
     /// Takes the run rather than a `bool` so that "what counts as a move" is
     /// answered here and not once per caller — four callers with four answers is
@@ -1740,11 +1740,11 @@ mod tests {
                 "{special:?} writes {word:?}, which the reader does not look for"
             );
         }
-        // And nothing in the list is a word no outcome names.
+        // And nothing in the list is a word no special move names.
         for word in KIF_SPECIAL_WORDS {
             assert!(
                 MoveSpecial::from_kif_word(word, Color::Black).is_some(),
-                "{word:?} reads as no outcome"
+                "{word:?} reads as no special move"
             );
         }
     }
@@ -2714,15 +2714,15 @@ mod tests {
                 parse_ki2_str(&record(&rows)).is_err(),
                 "{name}, as a KI2 with no moves"
             );
-            // And with the last game's outcome line left above it. An outcome
+            // And with the last game's special move line left above it. A special move
             // is not a move: the diagram below it is still a diagram.
-            let with_an_outcome = format!("まで122手で先手の勝ち\n{}", record(&rows));
+            let with_an_special = format!("まで122手で先手の勝ち\n{}", record(&rows));
             assert!(
-                parse_ki2_str(&with_an_outcome).is_err(),
+                parse_ki2_str(&with_an_special).is_err(),
                 "{name}, as a KI2 under a まで line"
             );
             assert!(
-                parse_kif_str(&with_an_outcome).is_err(),
+                parse_kif_str(&with_an_special).is_err(),
                 "{name}, as a KIF under a まで line"
             );
         }
@@ -2810,11 +2810,11 @@ mod tests {
 
     // The first line of a run is the one the skip sees before any reader does,
     // so what counts as a move line there has to be what `kif::move_line` will
-    // consume — including the `( 0:03/00:00:03)` a KIF writes after an outcome
+    // consume — including the `( 0:03/00:00:03)` a KIF writes after a special move
     // (R-KIF-007). Counting it as prose skips the line, and the game comes back
-    // `Ok` with no outcome at all (D1).
+    // `Ok` with no special move at all (D1).
     #[test]
-    fn an_outcome_at_the_head_of_a_run_keeps_its_clock() {
+    fn a_special_at_the_head_of_a_run_keeps_its_clock() {
         use crate::parser::{parse_ki2_str, parse_kif_str};
         const HEAD: &str = "手合割：平手\n手数----指手---------消費時間--\n";
         for (line, special) in [
@@ -2846,7 +2846,7 @@ mod tests {
                 "{line:?}"
             );
         }
-        // D18: a `変化：` block whose only line is an outcome is a fork, not
+        // D18: a `変化：` block whose only line is a special move is a fork, not
         // an empty block.
         let forked = parse_kif_str(concat!(
             "手合割：平手\n手数----指手---------消費時間--\n",
@@ -2858,7 +2858,7 @@ mod tests {
             forked.moves.iter().filter(|mf| mf.forks.is_some()).count()
         );
         // And a KIF move line that ends up in a `.ki2` is reported, never
-        // skipped — the outcome would go with it.
+        // skipped — the special move would go with it.
         assert!(parse_ki2_str("手合割：平手\n▲７六歩 △８四歩\n3投了 ( 0:03/00:00:03)\n").is_err());
     }
 

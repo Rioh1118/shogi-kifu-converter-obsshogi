@@ -274,13 +274,13 @@ impl MoveSpecial {
     ///
     /// The enum is unit-only, so the discriminant is the position in the
     /// declaration and [`Self::ALL`] is checked against it
-    /// (`every_outcome_is_in_the_list_of_every_outcome`).
+    /// (`every_special_is_in_the_list_of_every_special`).
     #[cfg(test)]
     pub(crate) const fn ordinal(self) -> usize {
         self as usize
     }
 
-    /// Every outcome, so that a table over them can be checked for gaps.
+    /// Every special move, so that a table over them can be checked for gaps.
     ///
     /// A `match` on this enum is exhaustive by construction; a hand-written list
     /// of the words is not, and the reader's `KIF_SPECIAL_WORDS` is one
@@ -289,8 +289,8 @@ impl MoveSpecial {
     /// This list is hand-written too, and nothing in the language makes it
     /// follow the enum: a variant appended at the end leaves it short and the
     /// build passes. What holds it is that this vocabulary is not ours to
-    /// extend — 14 outcomes are JKF's and the other two are what KIF spells
-    /// (R-KIF-007, D7) — plus `every_outcome_is_in_the_list_of_every_outcome`,
+    /// extend — 14 special moves are JKF's and the other two are what KIF spells
+    /// (R-KIF-007, D7) — plus `every_special_is_in_the_list_of_every_special`,
     /// which catches a variant inserted anywhere but the end.
     #[cfg(test)]
     pub(crate) const ALL: [Self; 16] = [
@@ -312,7 +312,7 @@ impl MoveSpecial {
         Self::SpecialFusenpai,
     ];
 
-    /// The KIF word for this outcome, or `None` when KIF has no word for it.
+    /// The KIF word for this special move, or `None` when KIF has no word for it.
     ///
     /// This and [`Self::from_kif_word`] are the only mapping between
     /// [`MoveSpecial`] and the KIF vocabulary. Every reader and writer goes
@@ -348,7 +348,7 @@ impl MoveSpecial {
         })
     }
 
-    /// Parses a KIF outcome word.
+    /// Parses a KIF special move word.
     ///
     /// `side_to_move` is whose turn it is at that ply. 反則勝ち means the move
     /// *before* it was the foul (R-KIF-007), so the offender is the other
@@ -389,7 +389,7 @@ impl MoveSpecial {
     /// D5 is where following tsshogi was chosen, because that is the library
     /// reading these same files on the TypeScript side of the only consumer.
     ///
-    /// `side_to_move` is whose turn it is at the ply the outcome occupies.
+    /// `side_to_move` is whose turn it is at the ply the special move occupies.
     pub(crate) fn ki2_phrase(self, side_to_move: Color) -> String {
         // `mover` is the side to move; `opponent` is the one who just moved.
         let (mover, opponent) = match side_to_move {
@@ -440,7 +440,7 @@ impl MoveSpecial {
         MoveSpecial::from_kif_word(phrase, side_to_move)
     }
 
-    /// The CSA `%` keyword for this outcome, without the leading `%`.
+    /// The CSA `%` keyword for this special move, without the leading `%`.
     pub(crate) fn csa_word(self) -> &'static str {
         match self {
             // CSA's keyword list is the 14 this enum started from (R-CSA-007),
@@ -564,13 +564,13 @@ pub struct MoveFormat {
 impl MoveFormat {
     /// Whether this node gets a ply number of its own.
     ///
-    /// A move does, and so does an outcome — KIF numbers `投了` as a line like
+    /// A move does, and so does a special move — KIF numbers `投了` as a line like
     /// any other, and KI2 counts it when it says `まで<N>手で`. A node carrying
     /// only comments or only a time does not: there is nothing in the file for a
     /// reader to number.
     ///
     /// Both writers and the KI2 reader have to agree on this, or a `変化：N手`
-    /// block attaches to the wrong move and the outcome names the wrong winner.
+    /// block attaches to the wrong move and the special move names the wrong winner.
     pub(crate) fn occupies_ply(&self) -> bool {
         self.move_.is_some() || self.special.is_some()
     }
@@ -639,11 +639,11 @@ pub struct TimeFormat {
 #[cfg(test)]
 mod tests {
 
-    // `ALL` is the list every table over outcomes is checked against, and it is
+    // `ALL` is the list every table over special moves is checked against, and it is
     // hand-written. `ordinal` is exhaustive, so a variant added to the enum
     // stops the build there; this pairs the two so the list cannot be short.
     #[test]
-    fn every_outcome_is_in_the_list_of_every_outcome() {
+    fn every_special_is_in_the_list_of_every_special() {
         for (i, special) in MoveSpecial::ALL.into_iter().enumerate() {
             assert_eq!(i, special.ordinal(), "{special:?} is out of place");
         }

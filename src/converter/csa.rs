@@ -266,7 +266,7 @@ fn write_header_value<W: Write>(prefix: &str, value: &str, sink: &mut W) -> Resu
 
 fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
     for mf in moves {
-        // A node with neither a move nor an outcome carries only comments,
+        // A node with neither a move nor a special move carries only comments,
         // which JKF allows. It gets no move line, and therefore no `T` line
         // either: a reader takes `T` as the time spent on the move above it
         // (R-CSA-007), so writing one here overwrites the previous move's time.

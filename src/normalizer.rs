@@ -154,10 +154,10 @@ impl JsonKifuFormat {
     ///
     /// # Errors
     ///
-    /// Returns [`NormalizeError`] if a move before the record's first outcome
+    /// Returns [`NormalizeError`] if a move before the record's first special move
     /// cannot be resolved against the position it is played from.
     ///
-    /// Past an outcome it does not: a record need not continue the position
+    /// Past a special move it does not: a record need not continue the position
     /// before it (R-RULE-002), so the first move the board cannot explain ends
     /// the tracking, and every field from there on is left as the input had it.
     /// **Whatever the parser accepted, this accepts.**
@@ -261,7 +261,7 @@ impl JsonKifuFormat {
     /// # Errors
     ///
     /// Returns [`NormalizeError`] for a move the position before it does not
-    /// explain — but only up to the first outcome. Past one, a record need not
+    /// explain — but only up to the first special move. Past one, a record need not
     /// continue the position before it (R-RULE-002), so the walk stops tracking
     /// the board and leaves the rest of the record alone. **Whatever the parser
     /// accepted, this accepts.**
@@ -738,26 +738,26 @@ pub(crate) fn infer_relative_from_position(pos: &PartialPosition, mv: shogi_core
 
 /// Whether a walk over a run of moves still knows the board.
 ///
-/// A record carries on past an outcome — a game that was interrupted and
+/// A record carries on past a special move — a game that was interrupted and
 /// resumed picks up from wherever it left off — so a move that will not apply
 /// to the position before it is not a broken record (R-RULE-002). It is the
 /// point where the walk stops knowing the board, and everything after it has to
 /// be left alone rather than rewritten against a position it never came from.
-/// Before any outcome, the same failure *is* a broken record.
+/// Before any special move, the same failure *is* a broken record.
 ///
 /// The rule is here rather than inside a walk because every walk over the tree
 /// needs it, and one that grows its own copy grows the same hole:
 /// `populate_relative` had no notion of it and returned `Err` for records the
 /// parser and `normalize` both accept (GAP-016).
 struct Board {
-    after_outcome: bool,
+    after_special: bool,
     known: bool,
 }
 
 impl Board {
     const fn new() -> Self {
         Self {
-            after_outcome: false,
+            after_special: false,
             known: true,
         }
     }
@@ -767,18 +767,18 @@ impl Board {
         self.known
     }
 
-    /// Notes a node that holds no move. An outcome among them is what makes a
+    /// Notes a node that holds no move. A special move among them is what makes a
     /// later unplayable move something other than a broken record.
     fn saw(&mut self, mf: &MoveFormat) {
-        self.after_outcome |= mf.special.is_some();
+        self.after_special |= mf.special.is_some();
     }
 
     /// Reports a move the position before it does not explain.
     ///
-    /// Past an outcome this drops the board and returns `Ok`; before one it is
+    /// Past a special move this drops the board and returns `Ok`; before one it is
     /// the error `err` builds.
     fn unplayable(&mut self, err: impl FnOnce() -> NormalizeError) -> Result<(), NormalizeError> {
-        if self.after_outcome {
+        if self.after_special {
             self.known = false;
             Ok(())
         } else {
@@ -842,7 +842,7 @@ fn normalize_moves(
                 time.total = totals[pos.side_to_move().array_index()];
             }
         }
-        // A node without a move holds a comment or an outcome. Neither ends the
+        // A node without a move holds a comment or a special move. Neither ends the
         // record: `中断` appears mid-list in a game that was interrupted and
         // resumed, and a comment can sit between two moves. Stopping here would
         // leave every later move with its parsed colour, its `from` unresolved
@@ -1088,7 +1088,7 @@ mod tests {
 
     // `同` carries no destination of its own — it means the square the previous
     // move went to (R-NOT-002) — and only normalization can fill it in. Stopping
-    // at the outcome node leaves `to` at (0,0), which no writer can spell, so
+    // at the special move node leaves `to` at (0,0), which no writer can spell, so
     // saving a game that was interrupted and resumed fails outright.
     #[test]
     fn a_move_after_an_interruption_is_still_normalized() {
@@ -1458,11 +1458,11 @@ mod tests {
         }
     }
 
-    // The board is dropped at the *first* move an outcome's position cannot
+    // The board is dropped at the *first* move a special move's position cannot
     // explain, and stays dropped. Without that, every later move is normalized
     // against a board the game left behind.
     #[test]
-    fn the_board_stays_dropped_after_an_outcome() {
+    fn the_board_stays_dropped_after_an_special() {
         let kif = "手合割：平手
 手数----指手---------消費時間--
    1 ７六歩(77)
@@ -1770,7 +1770,7 @@ mod tests {
     }
 
     // GAP-016: `normalize_moves` treats a move that will not apply after an
-    // outcome as the end of what it knows about the board (R-RULE-002), and
+    // special move as the end of what it knows about the board (R-RULE-002), and
     // `populate_relative_moves` had no such notion — so a record the parser
     // accepted and `to_ki2` could write came back as `Err` from the one call in
     // between. The rule belongs to the walk, not to one of the two functions

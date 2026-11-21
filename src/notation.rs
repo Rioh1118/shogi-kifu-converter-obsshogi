@@ -44,7 +44,7 @@ pub(crate) const LINE_ENDS: [char; 2] = ['\n', '\r'];
 /// editor pads with a tab. A reader whose idea of padding is narrower than the
 /// writer's reads the padding as content, and then says the record is wrong
 /// about something it is right about — `まで2手で投了\u{a0}` came back as
-/// "this outcome is not one of the words KI2 has", naming `投了`, which is one
+/// "this special move is not one of the words KI2 has", naming `投了`, which is one
 /// of them.
 ///
 /// Line endings are not padding. Whatever else this takes, it must not take

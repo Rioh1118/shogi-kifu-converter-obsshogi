@@ -61,7 +61,7 @@ fn write_move_kind<W: Write>(kind: Kind, sink: &mut W) -> Result {
 /// [`is_promotion_spellable`](crate::notation::is_promotion_spellable)).
 ///
 /// The rule is asked here, and not left to the normalizer, because a record
-/// reaches a writer without having been through it: past an outcome the first
+/// reaches a writer without having been through it: past a special move the first
 /// move the board cannot explain ends the tracking (R-RULE-002), a fork that
 /// could not be normalized is kept as it was, and a JKF the consumer built never
 /// went through it at all (R-REQ-002). What the record says a move did is
@@ -82,7 +82,7 @@ fn could_promote(mv: &MoveMoveFormat) -> bool {
     ) {
         (Ok(from), Ok(to)) => crate::notation::is_promotion_spellable(piece, from, to, color),
         // The record stated an origin and the destination is the one that went
-        // missing: a `同` nothing resolved, because past an outcome the position
+        // missing: a `同` nothing resolved, because past a special move the position
         // stops being tracked and `to` stays at (0, 0)
         // (`research/90-gaps.md` GAP-025). R-NOT-005 asks which end of the move
         // the enemy camp is at, and this move has no end to name. Nothing is
@@ -163,7 +163,7 @@ fn write_line<'a, W: Write>(
     // written *before* what they separate, because what a move needs in front
     // of it depends on what came before: a space after another move, nothing
     // after a line that is already terminated. Writing them afterwards instead
-    // means an outcome line has no way to close itself, and the moves that
+    // means a special move line has no way to close itself, and the moves that
     // follow get swallowed as part of the `まで…` text.
     let mut at_line_start = true;
     // The ply a KI2 line names, not the position in the array. A node carrying
@@ -242,7 +242,7 @@ fn write_line<'a, W: Write>(
             });
             at_line_start = false;
         } else if let Some(special) = &mf.special {
-            // KI2 records the outcome as a `まで<N>手で…` line rather than as
+            // KI2 records the special move as a `まで<N>手で…` line rather than as
             // another move. Dropping it makes a finished game look abandoned,
             // and KI2 has no ply numbers, so nothing downstream can tell.
             if !at_line_start {
@@ -292,7 +292,7 @@ impl ToKi2 for JsonKifuFormat {
         write_initial(&self.header, &self.initial, sink)?;
         // R-HC-001: only the even game starts with Black. The board says so too
         // when there is one, but a record this crate cannot turn into a position
-        // still has to name the right side at its outcome.
+        // still has to name the right side at its special move.
         let start = crate::handicap::starting_side(self.initial.as_ref());
         write_moves(&self.moves, self.starting_position(), start, sink)?;
         Ok(())
@@ -435,12 +435,12 @@ mod tests {
             .contains("▲５三角左成"));
     }
 
-    // KI2 records the outcome as a `まで<N>手で…` line. Writing the moves and
+    // KI2 records the special move as a `まで<N>手で…` line. Writing the moves and
     // dropping that line makes a finished game look abandoned, and KI2 carries
     // no ply numbers, so nothing downstream can tell that something went
     // missing. The spellings and the `まで<N>手で` wrapper are D5's.
     #[test]
-    fn outcome_survives_a_ki2_round_trip() {
+    fn special_survives_a_ki2_round_trip() {
         for (word, want, phrase) in [
             ("投了", MoveSpecial::SpecialToryo, "まで2手で後手の勝ち"),
             ("千日手", MoveSpecial::SpecialSennichite, "まで2手で千日手"),
@@ -527,14 +527,14 @@ mod tests {
     }
 
     // A game can be interrupted and resumed, so `中断` shows up in the middle of
-    // a move list. KI2 records an outcome as a `まで…` line and nothing else
+    // a move list. KI2 records a special move as a `まで…` line and nothing else
     // (R-KI2-006 / D5), and the moves after it have to go on their own line: the
     // reader treats a run of moves that fills the rest of a `まで…` line as the
     // line below, whose newline is gone, and refuses the record (D17). So the
     // writer's newline there is not cosmetic — without it the file it produces
     // does not read back.
     #[test]
-    fn an_outcome_in_the_middle_does_not_swallow_the_moves_after_it() {
+    fn a_special_in_the_middle_does_not_swallow_the_moves_after_it() {
         let kif = "手合割：平手
 手数----指手---------消費時間--
    1 ７六歩(77)
@@ -558,7 +558,7 @@ mod tests {
     // and the side that resigned is the opposite one — reading the side off the
     // parity names the loser as the winner for every handicap record.
     #[test]
-    fn a_handicap_names_the_right_side_at_the_outcome() {
+    fn a_handicap_names_the_right_side_at_the_special() {
         for (handicap, first_move, want) in [
             ("平手", "７六歩(77)", "まで1手で先手の勝ち"),
             ("香落ち", "３四歩(33)", "まで1手で後手の勝ち"),
@@ -689,11 +689,11 @@ mod tests {
     }
 
     // The companion to the case above, for the other half of `occupies_ply`:
-    // an outcome does take a ply number. `中断` sits mid-list in a game that was
+    // a special move does take a ply number. `中断` sits mid-list in a game that was
     // interrupted and resumed, so this is not a tail the writer can stop at —
     // every `変化：N手` after it is off by one if the node is skipped.
     #[test]
-    fn a_mid_list_outcome_consumes_a_ply() {
+    fn a_mid_list_special_consumes_a_ply() {
         let jkf = crate::parser::parse_kif_str(
             "手合割：平手
 手数----指手---------消費時間--
@@ -856,7 +856,7 @@ mod tests {
     // R-NOT-005: `不成` exists only for a promotable piece with the enemy camp at
     // one end of the move. `△６八玉不成` is not something the notation can say.
     //
-    // The moves after an outcome are where this shows. `中断` takes a ply without
+    // The moves after a special move are where this shows. `中断` takes a ply without
     // taking a turn, so ply 3 is read as White's while its gold is Black's: the
     // board cannot explain that move, tracking ends there (R-RULE-002), and
     // nothing rewrites what the record said from then on. What the record said is
@@ -878,7 +878,7 @@ mod tests {
             "a gold has no 成 and no 不成: {ki2:?}"
         );
         // What the pawn on the line after it gets is not fixed here. The side it
-        // is written on comes out wrong past an outcome (`research/90-gaps.md`
+        // is written on comes out wrong past a special move (`research/90-gaps.md`
         // GAP-025), and which end of the move the enemy camp is at follows from
         // the side — so pinning it would pin the wrong turn as correct.
     }
@@ -922,7 +922,7 @@ mod tests {
     }
 
     // A `同` read from KI2 has neither end: KI2 states no origin (R-KI2-003) and
-    // past an outcome nothing resolves the destination either (GAP-025). The
+    // past a special move nothing resolves the destination either (GAP-025). The
     // record's own `不成` is then the only thing that says what the move did
     // (D4), so a writer that asks only about the destination writes a file
     // shorter than the one it read — and the consumer saves over the original

@@ -70,7 +70,7 @@ fn write_move_kind<W: Write>(kind: Kind, sink: &mut W, offset: &mut usize) -> Re
 fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) -> Result {
     let mut forks_stack = Vec::new();
     // The ply is the number of the line being written, not the position in the
-    // array. A node with neither a move nor an outcome carries only comments,
+    // array. A node with neither a move nor a special move carries only comments,
     // which JKF allows and KIF has no line for; counting it anyway leaves a gap
     // in the move numbers and shifts every `変化：N手` after it, so the fork
     // lands on the wrong move — or on nothing, and is dropped.

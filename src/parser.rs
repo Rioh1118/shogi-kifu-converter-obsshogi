@@ -141,7 +141,7 @@ fn decode_kifu(buf: &[u8], first: &'static Encoding) -> Result<String, ParseErro
 /// The error for input the reader stopped on, with `rest` located in `whole`.
 ///
 /// D1: a reader that stops early has to say so. Returning `Ok` with the record
-/// truncated is the worst of the three outcomes — the caller cannot tell it
+/// truncated is the worst of the three special moves — the caller cannot tell it
 /// from a short game, so obs-shogi indexes a fraction of the moves and nobody
 /// finds out (GAP-005: 79% of `bug_big.kif` went missing this way).
 ///
@@ -413,7 +413,7 @@ mod tests {
     }
 
     // D1: a reader that stops early has to say so. Returning `Ok` with the
-    // record truncated is the worst of the three outcomes — the caller cannot
+    // record truncated is the worst of the three special moves — the caller cannot
     // tell it from a short game. `bug_big.kif` lost 79% of its moves this way
     // and reported success (GAP-005).
     //
@@ -504,7 +504,7 @@ mod tests {
         refusal(err, 1);
 
         // KI2 again, at the fork header. What follows it need not be a move:
-        // an outcome line joined to the header takes the block with it.
+        // a special move line joined to the header takes the block with it.
         for tail in ["△８四歩", "まで1手で中断"] {
             let joined = format!("手合割：平手\n▲７六歩 △３四歩\n\n変化：2手 {tail}\n");
             let err = parse_ki2_str(&joined).expect_err("the joined header is an error");

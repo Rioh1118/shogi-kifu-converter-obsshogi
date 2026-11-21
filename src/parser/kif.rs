@@ -124,7 +124,7 @@ fn skip_interruptions(mut input: &str) -> &str {
 /// Reads one `<ply> <move>` line.
 ///
 /// `known_side` is whose turn this line is when the run has already been read
-/// far enough to know. KIF numbers an outcome line as a ply of its own, so a
+/// far enough to know. KIF numbers a special move line as a ply of its own, so a
 /// record that was interrupted and resumed has more plies than moves and the
 /// parity of the number stops matching the turn — which matters because
 /// 反則勝ち names its winner only through whose turn it is (R-KIF-007).
@@ -143,7 +143,7 @@ fn move_line(
     // committed the foul, so the colour is put on afterwards.
     let side_to_move = known_side.unwrap_or_else(|| crate::handicap::side_to_move_at_ply(start, i));
     let mut mf = match body {
-        NumberedBody::Outcome(word) => MoveFormat {
+        NumberedBody::Special(word) => MoveFormat {
             special: MoveSpecial::from_kif_word(word, side_to_move),
             ..Default::default()
         },
@@ -231,7 +231,7 @@ fn moves_with_index(
     // as an unreadable line and gone without a word (R-KIF-011).
     let (input, leading) = opt(many1(move_comment_line))(input)?;
     let (mut input, (first_ply, first)) = move_with_comments(start, None, input)?;
-    // Whose turn the next line is. Only a move passes the turn; an outcome takes
+    // Whose turn the next line is. Only a move passes the turn; a special move takes
     // a ply number without taking a turn, which is why the parity of the number
     // cannot be trusted past one.
     let mut side = next_side(
@@ -505,13 +505,13 @@ mod tests {
         }
     }
 
-    // KIF numbers an outcome line as a ply of its own, so a record that was
+    // KIF numbers a special move line as a ply of its own, so a record that was
     // interrupted and resumed has more plies than moves and the number stops
     // matching the turn. 反則勝ち names its winner only through whose turn it is
     // (R-KIF-007), so reading the turn off the parity records the wrong player
     // as the one who fouled — and `to_csa` then writes the opposite `%±`.
     #[test]
-    fn an_outcome_in_the_middle_does_not_shift_the_turn() {
+    fn a_special_in_the_middle_does_not_shift_the_turn() {
         // ７六歩 is Black's, so 3三→3四 at ply 3 is White's despite the odd ply.
         let kif = "手合割：平手
 手数----指手---------消費時間--
@@ -534,7 +534,7 @@ mod tests {
         );
     }
 
-    // R-KIF-007. Every word KIF defines for an outcome, and what it means here.
+    // R-KIF-007. Every word KIF defines for a special move, and what it means here.
     //
     // 不戦勝 / 不戦敗 have no counterpart among JKF's fourteen, so this crate
     // extends the enum for them (D1). Reading them as nothing was the worse
@@ -545,7 +545,7 @@ mod tests {
     // whoever is to move — unlike 反則勝ち in the same table — so the ply does
     // not change what they mean.
     #[test]
-    fn kif_outcome_words() {
+    fn kif_special_words() {
         // Ply 2, so it is White to move and 反則勝ち accuses Black.
         for (word, want) in [
             ("投了", Some(MoveSpecial::SpecialToryo)),
@@ -572,7 +572,7 @@ mod tests {
     // The other direction of the same table. 反則勝ち loses which side fouled;
     // the reader recovers it from the ply number.
     #[test]
-    fn kif_outcome_words_are_written_back() {
+    fn kif_special_words_are_written_back() {
         for special in MoveSpecial::ALL {
             let Some(word) = special.kif_word() else {
                 // 待った and エラー have no KIF word at all.
@@ -1150,7 +1150,7 @@ mod tests {
         assert_eq!(
             Some(MoveSpecial::SpecialToryo),
             forks[0][1].special,
-            "and it is the outcome it was"
+            "and it is the special move it was"
         );
     }
 
@@ -1205,7 +1205,7 @@ mod tests {
                 .forks
                 .as_ref()
                 .unwrap_or_else(|| panic!("{opening}: no fork"))[0];
-            assert_eq!(3, fork.len(), "{opening}: comment, move, outcome");
+            assert_eq!(3, fork.len(), "{opening}: comment, move, special move");
 
             let kif = jkf
                 .try_to_kif_owned()
@@ -1323,11 +1323,11 @@ mod tests {
             "the comment is on the last line"
         );
 
-        let outcome = parse_kif_str(&format!("{HEAD}   2 投了")).expect("parses");
+        let special = parse_kif_str(&format!("{HEAD}   2 投了")).expect("parses");
         assert_eq!(
             Some(MoveSpecial::SpecialToryo),
-            outcome.moves[2].special,
-            "the outcome is on the last line"
+            special.moves[2].special,
+            "the special move is on the last line"
         );
     }
 }

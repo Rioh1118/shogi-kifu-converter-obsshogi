@@ -198,9 +198,9 @@ fn is_header_value_with_moves(value: &str) -> bool {
         })
 }
 
-/// Reads the `まで<N>手で…` line that KI2 uses instead of an outcome move.
+/// Reads the `まで<N>手で…` line that KI2 uses instead of a special move line.
 ///
-/// `ply` is the ply the outcome occupies, which decides whose turn it is and
+/// `ply` is the ply the special move occupies, which decides whose turn it is and
 /// therefore which side 反則勝ち accuses.
 fn end_of_game_line(
     start: Color,
@@ -220,8 +220,8 @@ fn end_of_game_line(
             _ => input,
         };
         let phrase = phrase.trim_start_matches(is_padding);
-        // The outcome word owns the line up to the first space, note marker or
-        // line ending. This line is the only place KI2 has to put an outcome
+        // The special move word owns the line up to the first space, note marker or
+        // line ending. This line is the only place KI2 has to put a special move
         // (R-KI2-006, D5), and it is also where a note about the game goes
         // (`まで2手で中断 （▲有利）`, D18) — so the word ends where the note
         // begins. What opens a note is D17's table, the same one the line-end
@@ -243,14 +243,14 @@ fn end_of_game_line(
                     },
                 ))
             }
-            // `まで` matched, so this line *is* the outcome line whatever it
+            // `まで` matched, so this line *is* the special move line whatever it
             // says. Reporting a recoverable error would leave the line
             // unconsumed, which ends the move list and drops the `変化：`
             // blocks after it without a word (D1: a record we cannot read has
             // to say so). `Failure` is what `opt` does not swallow.
             None => Err(broken_line(
                 line,
-                "this outcome is not one of the words KI2 has",
+                "this special move is not one of the words KI2 has",
             )),
         }
     }
@@ -287,9 +287,9 @@ fn fork_header(input: &str) -> IResult<&str, (usize, &str), VerboseError<&str>> 
 }
 
 /// Reads one run of moves — the main line, or one `変化：` block — with the
-/// outcome lines among them.
+/// special move lines among them.
 ///
-/// An outcome does not end the run. A game that was interrupted and resumed
+/// A special move does not end the run. A game that was interrupted and resumed
 /// records `中断` in the middle and keeps going, and stopping at the first
 /// `まで…` line drops every move after it without saying so.
 ///
@@ -307,7 +307,7 @@ fn move_run(
     move |mut input| {
         let mut out = Vec::new();
         // Only a move puts the opening block behind us. A comment or a `まで…`
-        // line can sit above a board — the last game's outcome left at the head
+        // line can sit above a board — the last game's special move left at the head
         // of the file does not mean the diagram below it is not one (GAP-007).
         let mut where_a_board_could_be = where_a_board_could_be;
         loop {
@@ -343,19 +343,19 @@ fn move_run(
             let read_moves = !v.is_empty();
             where_a_board_could_be = where_a_board_could_be.after(&v);
             out.extend(v);
-            // The ply an outcome line names counts moves and outcomes, not
+            // The ply a special move line names counts moves and special moves, not
             // nodes: a comment-only node writes no line for anyone to number.
             // The writers count the same way (`MoveFormat::occupies_ply`).
             let numbered = out.iter().filter(|mf| mf.occupies_ply()).count();
             // Saturating because `first_ply` comes from a `変化：N手` line and a
             // record can say any `N` (`fork_header_ply`, D19). The ply is only
-            // used to decide whose turn an outcome is, and a fork that far out
+            // used to decide whose turn a special move is, and a fork that far out
             // has no node to attach to anyway — an overflow here would be a
             // panic in a Tauri command (R-REQ-002).
             let ply = first_ply.saturating_add(numbered);
             let (rest, end) = opt(end_of_game_line(start, ply))(rest)?;
             let read_end = end.is_some();
-            // The comments under the outcome are the outcome's, the same as the
+            // The comments under the special move are the special move's, the same as the
             // ones under a move are that move's (R-KIF-010) — `single_move`
             // reads its own the same way. Left for the next turn of this loop
             // they become a node of their own, and the record that comes back
@@ -381,10 +381,10 @@ fn move_run(
 /// A line the reader has no shape for — prose, and nothing else.
 ///
 /// **The only skip in this reader.** Every shape the reader does have belongs to
-/// whoever reads it, not to this skip. A `まで…` is the outcome and [`move_run`]
+/// whoever reads it, not to this skip. A `まで…` is the special move and [`move_run`]
 /// reads it; a `変化：` says a fork starts and [`moves`] reads it; `*` and `&`
 /// are comments. Skipping one takes what it said with it, and the record comes
-/// back `Ok` without it — an outcome that never happened, or a fork whose
+/// back `Ok` without it — a special move that never happened, or a fork whose
 /// moves are read as the main line carrying on (R-JKF-004). Two skips is how
 /// that happens: one of them learns a shape and the other goes on swallowing it.
 ///
@@ -460,7 +460,7 @@ fn attach_fork(
 }
 
 /// Reads the main line and every `変化：N手` block. `start` is whose turn ply 1
-/// is, which the outcome line needs and the ply parity cannot supply.
+/// is, which the special move line needs and the ply parity cannot supply.
 fn moves(
     start: Color,
     where_a_board_could_be: WhereABoardCouldBe,
@@ -607,11 +607,11 @@ mod tests {
 
     // The same record read as `.kif` and as `.ki2` is the same record (D18).
     // What the two readers disagreed about was where a comment under the
-    // outcome belongs: KIF put it on the outcome (R-KIF-010) and KI2 made a node
+    // special move belongs: KIF put it on the special move (R-KIF-010) and KI2 made a node
     // of its own for it, so a game saved as `.ki2` and opened again had a node
     // the KIF did not — and the consumer's pointer into the tree moved with it.
     #[test]
-    fn a_comment_under_an_outcome_belongs_to_the_outcome() {
+    fn a_comment_under_an_special_belongs_to_the_special() {
         use crate::converter::ToKi2;
         use crate::parser::{parse_ki2_str, parse_kif_str};
         let kif = parse_kif_str(concat!(
@@ -767,11 +767,11 @@ mod tests {
     }
 
     // Leaving a `まで…` line unconsumed ends the move list and throws away
-    // every `変化：` block after it while still returning `Ok`. The outcome word
+    // every `変化：` block after it while still returning `Ok`. The special move word
     // is the one thing a reader cannot recover from the rest of the file, so a
     // record that says something we do not understand has to be reported (D1).
     #[test]
-    fn an_unreadable_outcome_line_is_an_error_not_a_silent_truncation() {
+    fn an_unreadable_special_line_is_an_error_not_a_silent_truncation() {
         for phrase in ["持将棋成立", "先手の不戦敗", "中座", "引き分け"] {
             let ki2 = format!(
                 "▲７六歩 △３四歩\nまで2手で{phrase}\n\n変化：2手\n△８四歩\n\n変化：1手\n▲２六歩\n"
@@ -794,9 +794,9 @@ mod tests {
         }
     }
 
-    // GAP-017: the ply an outcome line names counts moves and outcomes, not
+    // GAP-017: the ply a special move line names counts moves and special moves, not
     // nodes — a comment-only node writes no line for anyone to number. Counting
-    // nodes instead shifts the outcome one ply on, and the side to move with
+    // nodes instead shifts the special move one ply on, and the side to move with
     // it: a bare `反則勝ち` names its winner only through whose turn it is
     // (D5), so the record comes back accusing the other player.
     //
@@ -805,7 +805,7 @@ mod tests {
     // where the reader meets it, since a comment after a move attaches to that
     // move instead. So the round trip is what exercises the count.
     #[test]
-    fn a_comment_only_node_does_not_shift_the_outcome_ply() {
+    fn a_comment_only_node_does_not_shift_the_special_ply() {
         use crate::converter::ToKi2;
         use crate::parser::parse_ki2_str;
         const KI2: &str = "手合割：平手
@@ -819,13 +819,13 @@ mod tests {
 ";
         let jkf = parse_ki2_str(KI2).expect("parses");
         let fork = &jkf.moves[2].forks.as_ref().expect("a fork at ply 2")[0];
-        assert_eq!(3, fork.len(), "comment node, move, outcome: {fork:?}");
+        assert_eq!(3, fork.len(), "comment node, move, special move: {fork:?}");
         assert_eq!(
             Some(vec![String::from("このあとは")]),
             fork[0].comments,
             "the fork opens with a node that is only a comment"
         );
-        // Ply 2 is the fork's move, so the outcome takes ply 3 — Black's.
+        // Ply 2 is the fork's move, so the special move takes ply 3 — Black's.
         // R-CSA-007: `+ILLEGAL_ACTION` is Black fouling, so White wins.
         assert_eq!(
             Some(MoveSpecial::SpecialIllegalActionWhite),
@@ -839,7 +839,7 @@ mod tests {
     }
 
     // Only prose is skipped. A line this reader has a shape for belongs to
-    // whoever reads it: a `まで…` is the outcome (KI2 has no other way to record
+    // whoever reads it: a `まで…` is the special move (KI2 has no other way to record
     // one, R-KI2-006 / D5), and a `変化：` says a fork starts — including a
     // spelling this reader cannot read, which the leftover-input check then
     // reports (D1) rather than hiding a fork inside the main line (R-JKF-004).
@@ -852,7 +852,7 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{before:?}: {e}"));
             assert!(
                 jkf.moves.last().expect("a node").special.is_some(),
-                "{before:?}: the outcome is gone"
+                "{before:?}: the special move is gone"
             );
         }
         // A fork header is one however its number is spelled, and every
@@ -878,12 +878,12 @@ mod tests {
 
     // R-KI2-001: KI2 is a record people read, and what people paste is padded
     // with whatever the place they read it padded with. A separator narrower
-    // than `is_padding` leaves the padding inside the outcome word, and the
+    // than `is_padding` leaves the padding inside the special move word, and the
     // record comes back as an error naming a word that is in the vocabulary.
     // The list is a sample of what `is_padding` answers for, not its definition
     // — a keyboard's three, and what a web page and a typesetter put in.
     #[test]
-    fn padding_after_the_outcome_word_is_padding_whichever_space_it_is() {
+    fn padding_after_the_special_word_is_padding_whichever_space_it_is() {
         use crate::parser::parse_ki2_str;
         for pad in [' ', '\t', '　', '\u{a0}', '\u{2009}', '\u{b}', '\u{c}'] {
             assert!(super::is_padding(pad), "{pad:?}");
@@ -894,7 +894,7 @@ mod tests {
                 let jkf = parse_ki2_str(&src).unwrap_or_else(|e| panic!("{src:?}: {e}"));
                 assert!(
                     jkf.moves.last().expect("a node").special.is_some(),
-                    "{src:?}: the outcome is gone"
+                    "{src:?}: the special move is gone"
                 );
             }
         }
@@ -903,7 +903,7 @@ mod tests {
     // Plies count from 1 (R-JKF-001), so `変化：０手` names no move for a fork
     // to be an alternative to. Read as a number it reaches `attach_fork`,
     // which cannot find a departure point and returns — taking the fork and
-    // the outcome under it without a word (GAP-018). Refused, the line is what
+    // the special move under it without a word (GAP-018). Refused, the line is what
     // the leftover-input check reports (D1).
     //
     // KIF has to keep reading it: the tree there comes from the ply numbers on
@@ -921,7 +921,7 @@ mod tests {
                     "{KI2}変化：{zero}手\n△８四歩 ▲２五歩\nまで6手で中断\n"
                 ))
                 .is_err(),
-                "変化：{zero}手: the fork and the outcome went without a word"
+                "変化：{zero}手: the fork and the special move went without a word"
             );
             let kif = parse_kif_str(&format!("{KIF}変化：{zero}手\n   2 ３四歩(33)\n"))
                 .unwrap_or_else(|e| panic!("変化：{zero}手 in KIF: {e}"));
@@ -1030,7 +1030,7 @@ mod tests {
                     "手合割：平手\n▲７六歩 △３四歩\nまで2手で中断 ▲７六歩{pad}△３四歩\n"
                 ))
                 .is_err(),
-                "{pad:?}: the moves after the outcome went without a word"
+                "{pad:?}: the moves after the special move went without a word"
             );
             let run = parse_ki2_str(&format!("手合割：平手\n▲７六歩{pad}△３四歩\n"))
                 .unwrap_or_else(|e| panic!("{pad:?}: {e}"));
@@ -1042,7 +1042,7 @@ mod tests {
     // and paste. The padding in front of a line has to be padding to every
     // reader of that line, not just to the ones that ask `is_padding`: a line
     // whose shape is only recognised from column 0 falls to the prose skip, and
-    // what it said goes with it — the outcome KI2 has no other place for
+    // what it said goes with it — the special move KI2 has no other place for
     // (R-KI2-006 / D5), or a fork whose moves then read as the main line
     // carrying on (R-JKF-004).
     #[test]
@@ -1050,11 +1050,11 @@ mod tests {
         use crate::parser::parse_ki2_str;
         const MOVES: &str = "手合割：平手\n▲７六歩 △３四歩\n";
         for pad in ["", " ", "　", "\t", "\u{a0}"] {
-            let outcome = parse_ki2_str(&format!("{MOVES}{pad}まで2手で投了\n"))
+            let special = parse_ki2_str(&format!("{MOVES}{pad}まで2手で投了\n"))
                 .unwrap_or_else(|e| panic!("{pad:?}: {e}"));
             assert!(
-                outcome.moves.last().expect("a node").special.is_some(),
-                "{pad:?}: the outcome is gone"
+                special.moves.last().expect("a node").special.is_some(),
+                "{pad:?}: the special move is gone"
             );
             let fork = parse_ki2_str(&format!("{MOVES}{pad}変化：2手\n▲２六歩\n"))
                 .unwrap_or_else(|e| panic!("{pad:?}: {e}"));
@@ -1075,7 +1075,7 @@ mod tests {
     // the line as a note lets a lost newline through in silence. Both directions
     // in one table.
     #[test]
-    fn a_note_after_an_outcome_or_a_fork_header_is_a_note() {
+    fn a_note_after_an_special_or_a_fork_header_is_a_note() {
         use crate::parser::parse_ki2_str;
         const MOVES: &str = "手合割：平手\n▲７六歩 △３四歩\n";
         for line in [
@@ -1087,7 +1087,7 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{line:?}: {e}"));
             assert!(
                 jkf.moves.last().expect("a node").special.is_some(),
-                "{line:?}: refused, or the outcome is gone"
+                "{line:?}: refused, or the special move is gone"
             );
         }
         let jkf = parse_ki2_str("手合割：平手\n▲７六歩 △３四歩\n変化：2手 △８四歩から\n△８四歩\n")
