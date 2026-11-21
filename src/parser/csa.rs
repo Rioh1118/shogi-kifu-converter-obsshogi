@@ -23,11 +23,17 @@ use std::collections::HashMap;
 pub(super) fn parse(text: &str) -> Result<JsonKifuFormat, ParseError> {
     let mut reader = Reader::default();
     for (index, line) in text.split('\n').enumerate() {
+        // A line of nothing but blanks is no statement (GAP-040).
+        if line.trim_matches([' ', '\t']).is_empty() {
+            continue;
+        }
         let mut rest = line;
         while !rest.trim_end_matches([' ', '\t']).is_empty() {
             let (statement, after) = next_statement(rest);
-            // Trailing blanks are no part of a statement — except a comment's,
-            // which is the text as written.
+            // Blanks behind a statement pad it to a column (`+7776FU  ,T0` in
+            // programs of the 2000s), except in a comment, which is its text
+            // as written. A rank whose last square is empty loses that
+            // square's blank too, and `board_rank` reads it without one.
             let statement = if statement.starts_with('\'') {
                 statement
             } else {
@@ -193,7 +199,22 @@ impl Reader {
     }
 
     /// Moves, special moves and times.
+    ///
+    /// Past a special move, a statement that is none of them ends the record
+    /// rather than the reading (D36): what follows the end of a game is a
+    /// second game run on without its `/`, or a note on the game, and neither
+    /// is this record. Before one, it is a record cut short or broken, and
+    /// that is an error naming its line (D1).
     fn in_the_moves(&mut self, statement: &str) -> Result<(), String> {
+        let read = self.move_special_or_time(statement);
+        if read.is_err() && self.moves.iter().any(|node| node.special.is_some()) {
+            self.ended = true;
+            return Ok(());
+        }
+        read
+    }
+
+    fn move_special_or_time(&mut self, statement: &str) -> Result<(), String> {
         if let Some(word) = statement.strip_prefix('%') {
             let special = special_move(word).ok_or("this special move is not a CSA keyword")?;
             self.moves.push(MoveFormat {
@@ -291,36 +312,40 @@ fn header_key(keyword: &str) -> String {
 /// A rank of the board in the bulk form: nine three-character cells, `+FU`,
 /// `-KY` or ` * ` for an empty square (R-CSA-006).
 fn board_rank(position: &mut Position, rank: usize, cells: &str) -> Result<(), String> {
-    let cells: Vec<char> = cells.chars().collect();
-    // Nine squares of three characters (R-CSA-006). The reader has taken the
-    // blanks off the end of the line, so the last square, if empty, has lost
-    // one: 26 is the shortest a whole rank can be. Shorter, and squares are
-    // missing — reading them as empty takes pieces off the board without a
-    // word (D1).
-    if cells.len() > 27 {
-        return Err("a rank of the board has more than nine squares".to_owned());
-    }
-    if cells.len() < 26 {
-        return Err("a rank of the board has fewer than nine squares".to_owned());
-    }
+    // Nine squares of three characters (R-CSA-006): `+FU`, `-KY`, or ` * ` for
+    // an empty one. Mail and web pages collapse the blanks of a run of empty
+    // squares (` *  * ` arrives as ` * * `), and tsshogi reads that shape, so
+    // an empty square is a `*` with at most one blank on either side. Fewer
+    // than nine squares is pieces missing, not empty squares (D1).
+    let mut rest = cells;
     for file_from_left in 0..9 {
-        let cell: String = cells.iter().skip(file_from_left * 3).take(3).collect();
-        let piece = match cell.chars().next() {
-            Some('+') => Some(Color::Black),
-            Some('-') => Some(Color::White),
-            _ => None,
-        }
-        .map(|color| {
-            piece_kind(&cell[1..])
-                .map(|kind| Piece {
-                    color: Some(color),
+        let piece = match rest.chars().next() {
+            Some(sign @ ('+' | '-')) => {
+                let code = rest.get(1..3).ok_or("this square holds no CSA piece")?;
+                let kind = piece_kind(code).ok_or("this square holds no CSA piece")?;
+                rest = &rest[3..];
+                Piece {
+                    color: Some(if sign == '+' {
+                        Color::Black
+                    } else {
+                        Color::White
+                    }),
                     kind: Some(kind),
-                })
-                .ok_or("this square holds no CSA piece")
-        })
-        .transpose()?
-        .unwrap_or_else(Piece::empty);
+                }
+            }
+            _ => {
+                let after = rest.strip_prefix(' ').unwrap_or(rest);
+                let after = after
+                    .strip_prefix('*')
+                    .ok_or("a rank of the board has fewer than nine squares")?;
+                rest = after.strip_prefix(' ').unwrap_or(after);
+                Piece::empty()
+            }
+        };
         position.board[8 - file_from_left][rank] = piece;
+    }
+    if !rest.trim_matches([' ', '\t']).is_empty() {
+        return Err("a rank of the board has more than nine squares".to_owned());
     }
     Ok(())
 }
