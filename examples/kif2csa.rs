@@ -10,8 +10,6 @@ fn main() -> Result<(), ParseError> {
         std::process::exit(1);
     }
     let jkf = parse_kif_file(&argv[1])?;
-    // Not `to_csa_owned`: that one hands back whatever was written before
-    // the failure, which looks like a complete record and is not one.
     match jkf.try_to_csa_owned() {
         Ok(text) => print!("{text}"),
         Err(_) => {

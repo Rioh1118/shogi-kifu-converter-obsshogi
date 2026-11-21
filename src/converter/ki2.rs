@@ -36,20 +36,6 @@ pub trait ToKi2 {
         self.to_ki2(&mut s)?;
         Ok(s)
     }
-
-    /// Returns `self`'s string representation.
-    ///
-    /// A record that cannot be spelled in KI2 yields whatever was written
-    /// before the failure. Use [`Self::try_to_ki2_owned`] to see the error
-    /// instead of a truncated file.
-    #[deprecated(
-        note = "returns a truncated string on failure, which the caller writes to disk as if it were the whole record. Use try_to_ki2_owned."
-    )]
-    fn to_ki2_owned(&self) -> String {
-        let mut s = String::new();
-        let _ = self.to_ki2(&mut s);
-        s
-    }
 }
 
 fn write_move_kind<W: Write>(kind: Kind, sink: &mut W) -> WriteResult {
