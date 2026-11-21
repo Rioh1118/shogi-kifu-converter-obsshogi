@@ -1,7 +1,7 @@
 use super::kakinoki::{
     write_comment, write_header, write_initial, write_kansuji, write_sanyou_suji,
 };
-use super::WriteResult as Result;
+use super::WriteResult;
 use crate::error::ConvertError;
 use crate::jkf::*;
 use std::fmt::Write;
@@ -27,7 +27,7 @@ pub trait ToKi2 {
     /// produces a file this crate cannot read back (R-KI2-003).
     ///
     /// [`UnspellableMove`]: ConvertError::UnspellableMove
-    fn to_ki2<W: Write>(&self, sink: &mut W) -> Result;
+    fn to_ki2<W: Write>(&self, sink: &mut W) -> WriteResult;
 
     /// Returns `self`'s string representation, or the error [`Self::to_ki2`]
     /// gave.
@@ -52,7 +52,7 @@ pub trait ToKi2 {
     }
 }
 
-fn write_move_kind<W: Write>(kind: Kind, sink: &mut W) -> Result {
+fn write_move_kind<W: Write>(kind: Kind, sink: &mut W) -> WriteResult {
     sink.write_str(crate::notation::move_word(kind))?;
     Ok(())
 }
@@ -118,7 +118,7 @@ fn write_moves<W: Write>(
     position: Option<shogi_core::PartialPosition>,
     start: Color,
     sink: &mut W,
-) -> Result {
+) -> WriteResult {
     let Some((head, rest)) = moves.split_first() else {
         return Ok(());
     };
@@ -158,7 +158,7 @@ fn write_line<'a, W: Write>(
     start: Color,
     stack: &mut Vec<(usize, &'a [MoveFormat], Option<shogi_core::PartialPosition>)>,
     sink: &mut W,
-) -> Result {
+) -> WriteResult {
     // Whether the cursor sits at the beginning of a line. Separators are
     // written *before* what they separate, because what a move needs in front
     // of it depends on what came before: a space after another move, nothing
@@ -287,7 +287,7 @@ fn write_line<'a, W: Write>(
 }
 
 impl ToKi2 for JsonKifuFormat {
-    fn to_ki2<W: Write>(&self, sink: &mut W) -> Result {
+    fn to_ki2<W: Write>(&self, sink: &mut W) -> WriteResult {
         write_header(&self.header, sink)?;
         write_initial(&self.header, &self.initial, sink)?;
         // R-HC-001: only the even game starts with Black. The board says so too

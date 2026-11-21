@@ -1,7 +1,7 @@
 use super::kakinoki::{
     write_comment, write_header, write_initial, write_kansuji, write_sanyou_suji,
 };
-use super::WriteResult as Result;
+use super::WriteResult;
 use crate::error::ConvertError;
 use crate::jkf::*;
 use std::fmt::Write;
@@ -22,7 +22,7 @@ pub trait ToKif {
     /// [`InvalidSquare`]: ConvertError::InvalidSquare
     /// [`UnspellableNumber`]: ConvertError::UnspellableNumber
     /// [`UnknownPreset`]: ConvertError::UnknownPreset
-    fn to_kif<W: Write>(&self, sink: &mut W) -> Result;
+    fn to_kif<W: Write>(&self, sink: &mut W) -> WriteResult;
 
     /// Returns `self`'s string representation, or the error [`Self::to_kif`]
     /// gave.
@@ -48,7 +48,7 @@ pub trait ToKif {
 }
 
 impl ToKif for JsonKifuFormat {
-    fn to_kif<W: Write>(&self, sink: &mut W) -> Result {
+    fn to_kif<W: Write>(&self, sink: &mut W) -> WriteResult {
         write_header(&self.header, sink)?;
         write_initial(&self.header, &self.initial, sink)?;
         write_moves(&self.moves, sink)?;
@@ -56,7 +56,7 @@ impl ToKif for JsonKifuFormat {
     }
 }
 
-fn write_move_kind<W: Write>(kind: Kind, sink: &mut W, offset: &mut usize) -> Result {
+fn write_move_kind<W: Write>(kind: Kind, sink: &mut W, offset: &mut usize) -> WriteResult {
     // The offset is the width the move text takes in the column KIF pads the
     // consumed time into, counted from the word rather than kept beside it: a
     // table with the widths in it is a second place to remember that `成香` is
@@ -67,7 +67,7 @@ fn write_move_kind<W: Write>(kind: Kind, sink: &mut W, offset: &mut usize) -> Re
     Ok(())
 }
 
-fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) -> Result {
+fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) -> WriteResult {
     let mut forks_stack = Vec::new();
     // The ply is the number of the line being written, not the position in the
     // array. A node with neither a move nor a special move carries only comments,
@@ -160,7 +160,7 @@ fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) 
     Ok(())
 }
 
-fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> Result {
+fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> WriteResult {
     sink.write_str("手数----指手---------消費時間--\n")?;
     let Some((head, rest)) = moves.split_first() else {
         return Ok(());
