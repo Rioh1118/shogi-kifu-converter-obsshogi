@@ -30,7 +30,11 @@ impl MoveSpecial {
             MoveSpecial::SpecialIllegalActionBlack | MoveSpecial::SpecialIllegalActionWhite => {
                 "反則勝ち"
             }
-            MoveSpecial::SpecialJishogi | MoveSpecial::SpecialHikiwake => "持将棋",
+            // D29: the game reached the move limit, which ends it drawn as
+            // 持将棋 does (the 日本将棋連盟 rule makes 500 moves a 持将棋).
+            MoveSpecial::SpecialJishogi
+            | MoveSpecial::SpecialHikiwake
+            | MoveSpecial::SpecialMaxMoves => "持将棋",
             MoveSpecial::SpecialKachi => "入玉勝ち",
             MoveSpecial::SpecialTsumi => "詰み",
             MoveSpecial::SpecialFuzumi => "不詰",
@@ -41,6 +45,7 @@ impl MoveSpecial {
             // see `research/30-kif.md`.)
             MoveSpecial::SpecialFusensho => "不戦勝",
             MoveSpecial::SpecialFusenpai => "不戦敗",
+            MoveSpecial::SpecialFuujite => "封じ手",
             MoveSpecial::SpecialMatta | MoveSpecial::SpecialError => return None,
         })
     }
@@ -75,6 +80,7 @@ impl MoveSpecial {
             "不詰" => MoveSpecial::SpecialFuzumi,
             "不戦勝" => MoveSpecial::SpecialFusensho,
             "不戦敗" => MoveSpecial::SpecialFusenpai,
+            "封じ手" => MoveSpecial::SpecialFuujite,
             _ => return None,
         })
     }
@@ -126,13 +132,30 @@ impl MoveSpecial {
             };
         }
         if phrase.ends_with("反則負け") {
-            return Some(MoveSpecial::SpecialIllegalMove);
+            // The phrase names the loser (GAP-043). The side to move losing
+            // is ILLEGAL_MOVE; the side that just moved losing is a foul by
+            // that side, which only ±ILLEGAL_ACTION can say.
+            let loser = match phrase.strip_suffix("の反則負け") {
+                Some("先手") => Color::Black,
+                Some("後手") => Color::White,
+                _ => side_to_move,
+            };
+            return Some(match (loser == side_to_move, loser) {
+                (true, _) => MoveSpecial::SpecialIllegalMove,
+                (false, Color::Black) => MoveSpecial::SpecialIllegalActionBlack,
+                (false, Color::White) => MoveSpecial::SpecialIllegalActionWhite,
+            });
         }
         if phrase.ends_with("入玉勝ち") {
             return Some(MoveSpecial::SpecialKachi);
         }
         if phrase.ends_with("勝ち") {
             return Some(MoveSpecial::SpecialToryo);
+        }
+        // A tsume record ends `まで61手詰` or `まで61手で詰` (GAP-034): the
+        // bare 詰 is the KI2 spelling of KIF's 詰み.
+        if phrase == "詰" {
+            return Some(MoveSpecial::SpecialTsumi);
         }
         MoveSpecial::from_kif_word(phrase, side_to_move)
     }
@@ -145,7 +168,9 @@ impl MoveSpecial {
             // — is the most that can be said without asserting something CSA
             // does not mean; calling a no-show a foul would be worse than
             // losing the distinction (D11, the same trade as D7).
-            MoveSpecial::SpecialFusensho | MoveSpecial::SpecialFusenpai => "CHUDAN",
+            MoveSpecial::SpecialFusensho
+            | MoveSpecial::SpecialFusenpai
+            | MoveSpecial::SpecialFuujite => "CHUDAN",
             MoveSpecial::SpecialToryo => "TORYO",
             MoveSpecial::SpecialChudan => "CHUDAN",
             MoveSpecial::SpecialSennichite => "SENNICHITE",
@@ -160,6 +185,9 @@ impl MoveSpecial {
             MoveSpecial::SpecialTsumi => "TSUMI",
             MoveSpecial::SpecialFuzumi => "FUZUMI",
             MoveSpecial::SpecialError => "ERROR",
+            // V3.0's keyword (D29). A V2.2 reader does not know it; this
+            // crate's and tsshogi's do.
+            MoveSpecial::SpecialMaxMoves => "MAX_MOVES",
         }
     }
 }

@@ -63,6 +63,24 @@ pub(super) fn decode_kifu(buf: &[u8], first: &'static Encoding) -> Result<String
     Err(ParseError::Decode)
 }
 
+/// Decodes the bytes of a CSA file: UTF-8, then Shift_JIS, then EUC-JP.
+///
+/// CSA leaves the encoding to whatever wrote the file (R-CSA-001), and the
+/// programs of the 2000s on Unix wrote EUC-JP (Kifu-for-JS's
+/// `2005_YAMADA_GPS.csa`; GAP-042). A CSA record is mostly ASCII, so the bytes
+/// that tell the three apart are the names and comments, and a wrong decode
+/// there reports errors rather than passing.
+pub(super) fn decode_csa(buf: &[u8]) -> Result<String, ParseError> {
+    decode_kifu(buf, UTF_8).or_else(|_| {
+        let (text, _, had_errors) = encoding_rs::EUC_JP.decode(buf);
+        if had_errors {
+            Err(ParseError::Decode)
+        } else {
+            Ok(text.into_owned())
+        }
+    })
+}
+
 /// Drops a byte-order mark from the head of a record.
 ///
 /// A BOM is not part of the text, and every reader below takes what it is given
@@ -73,4 +91,32 @@ pub(super) fn decode_kifu(buf: &[u8], first: &'static Encoding) -> Result<String
 /// (`research/90-gaps.md` GAP-006). Shogidokoro writes one.
 pub(super) fn without_a_byte_order_mark(s: &str) -> &str {
     s.strip_prefix('\u{feff}').unwrap_or(s)
+}
+
+/// `s` with every line ending spelled `\n`.
+///
+/// The readers know `\n` and `\r\n`. A file that went through two
+/// conversions arrives with `\r\r\n` (Kifu-for-JS's `20081220kyoochi.kif`), and
+/// one from an old Mac with a lone `\r`; read literally, the first line never
+/// ends and the record is refused at line 1 (GAP-036). A run of `\r` before a
+/// `\n` is one line ending, not blank lines, so the line numbers in an error
+/// still count the lines a reader sees.
+///
+/// Borrows when there is no `\r`, which is every file a Unix tool wrote.
+pub(super) fn with_plain_line_ends(s: &str) -> std::borrow::Cow<'_, str> {
+    if !s.contains('\r') {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\r' {
+            while chars.next_if_eq(&'\r').is_some() {}
+            chars.next_if_eq(&'\n');
+            out.push('\n');
+        } else {
+            out.push(c);
+        }
+    }
+    std::borrow::Cow::Owned(out)
 }

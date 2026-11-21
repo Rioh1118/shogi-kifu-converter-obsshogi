@@ -17,13 +17,17 @@ use nom::Finish;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
-use text::{decode_kifu, read_kifu, without_a_byte_order_mark};
+#[cfg(test)]
+use text::decode_kifu;
+use text::{decode_csa, read_kifu, with_plain_line_ends, without_a_byte_order_mark};
 
 /// Parses a CSA file to [`jkf::JsonKifuFormat`](crate::jkf::JsonKifuFormat)
 ///
-/// The bytes decide the encoding, as they do for KIF and KI2: UTF-8 first, then
-/// Shift-JIS. R-CSA-001 leaves the encoding to the environment that wrote the
-/// file, and the Windows GUIs that write most CSA in the wild write Shift-JIS.
+/// The bytes decide the encoding: UTF-8, then Shift-JIS, then EUC-JP.
+/// R-CSA-001 leaves the encoding to the environment that wrote the file; the
+/// Windows GUIs that write most CSA in the wild write Shift-JIS, and Unix
+/// programs of the 2000s wrote EUC-JP (GAP-042). A V3.0 file declares its
+/// encoding on the first line, and the bytes are trusted over the declaration.
 ///
 /// The extension is not consulted. R-CSA-001 names one (`csa`) but leaves the
 /// encoding to the environment, and the extension is only ever a hint at the
@@ -35,34 +39,29 @@ use text::{decode_kifu, read_kifu, without_a_byte_order_mark};
 /// Returns [`ParseError::Decode`] when neither encoding reads the bytes cleanly,
 /// [`ParseError::Io`] when the file cannot be read, and otherwise whatever
 /// [`parse_csa_str`] returns.
-///
-/// # Panics
-///
-/// Panics on the inputs [`parse_csa_str`] panics on. Every file this decodes
-/// reaches that parser, in either encoding.
 pub fn parse_csa_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseError> {
     let mut buf = Vec::new();
     File::open(&path)?.read_to_end(&mut buf)?;
-    parse_csa_str(&decode_kifu(&buf, UTF_8)?)
+    parse_csa_str(&decode_csa(&buf)?)
 }
 
 /// Parses a CSA formatted string to [`jkf::JsonKifuFormat`](crate::jkf::JsonKifuFormat)
 ///
+/// V2.2 and V3.0 (R-CSA-001 to R-CSA-009). Comments under the side-to-move line
+/// are kept — on the initial position before the first move, on the move above
+/// them after it — and the ones above it, which label the file's layout, are
+/// not (D30). Of several records separated by `/`, the first is read (D31).
+/// Header values are kept as written.
+///
 /// # Errors
 ///
-/// This function returns [`ParseError`] if it fails to parse the string.
-///
-/// # Panics
-///
-/// The body goes to the `csa` crate, which unwraps rather than reports on some
-/// values it cannot read: a `$START_TIME` naming a day no month has
-/// (`2004/02/30`), a `T` line with more digits than the number it holds. Both
-/// are things a file can say, so this is reachable from input alone — the
-/// consumer catches it (obs-shogi's `parse_csa_guarded`) because a Tauri command
-/// that panics takes the application with it. `research/90-gaps.md` GAP-012
-/// holds what it would take to fix rather than catch.
+/// Returns [`ParseError::Csa`] naming the line of a statement this reader does
+/// not know, [`ParseError::CsaConvert`] for a position no set of pieces makes,
+/// and [`ParseError::Normalize`] when a move cannot be played from the position
+/// before it.
 pub fn parse_csa_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
-    let mut jkf = JsonKifuFormat::try_from(::csa::parse_csa(without_a_byte_order_mark(s))?)?;
+    let plain = with_plain_line_ends(without_a_byte_order_mark(s));
+    let mut jkf = csa::parse(&plain)?;
     jkf.normalize()?;
     Ok(jkf)
 }
@@ -143,7 +142,8 @@ fn is_unrecognised(jkf: &JsonKifuFormat, read_header: bool) -> bool {
 /// Returns [`ParseError::Normalize`] when a move cannot be played from the
 /// position before it.
 pub fn parse_kif_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
-    let s = without_a_byte_order_mark(s);
+    let plain = with_plain_line_ends(without_a_byte_order_mark(s));
+    let s = plain.as_ref();
     match kif::parse(s).finish() {
         Ok((rest, (mut jkf, read_header))) => {
             if !rest.trim().is_empty() {
@@ -188,7 +188,8 @@ pub fn parse_ki2_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseEr
 /// [`ParseError::Normalize`] when a move cannot be played from the position
 /// before it.
 pub fn parse_ki2_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
-    let s = without_a_byte_order_mark(s);
+    let plain = with_plain_line_ends(without_a_byte_order_mark(s));
+    let s = plain.as_ref();
     match ki2::parse(s).finish() {
         Ok((rest, (mut jkf, read_header))) => {
             if !rest.trim().is_empty() {
@@ -239,11 +240,6 @@ pub fn parse_jkf_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
 /// # Errors
 ///
 /// Whatever that function returns.
-///
-/// # Panics
-///
-/// On the inputs [`parse_csa_str`] panics on, when `format` is
-/// [`Format::Csa`].
 pub fn parse_str(format: Format, s: &str) -> Result<JsonKifuFormat, ParseError> {
     match format {
         Format::Kif => parse_kif_str(s),
@@ -260,10 +256,6 @@ pub fn parse_str(format: Format, s: &str) -> Result<JsonKifuFormat, ParseError> 
 ///
 /// Returns [`ParseError::FileExtension`] when the extension names no format,
 /// and otherwise whatever the `parse_*_file` function for that format returns.
-///
-/// # Panics
-///
-/// On the inputs [`parse_csa_str`] panics on, for a `.csa` file.
 pub fn parse_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseError> {
     let format = path
         .as_ref()
@@ -281,6 +273,31 @@ pub fn parse_file<P: AsRef<Path>>(path: P) -> Result<JsonKifuFormat, ParseError>
 
 #[cfg(test)]
 mod tests {
+
+    /// GAP-036: `\r\r\n` is one line ending, and so is a lone `\r`. The
+    /// line numbers in an error count lines the way an editor does.
+    #[test]
+    fn every_spelling_of_a_line_ending_ends_one_line() {
+        let lines = [
+            "手合割：平手",
+            "   1 ７六歩(77)",
+            "   2 ３四歩(33)",
+            "   3 投了",
+        ];
+        for ending in ["\n", "\r\n", "\r\r\n", "\r"] {
+            let kif = lines.join(ending) + ending;
+            let jkf = parse_kif_str(&kif).unwrap_or_else(|e| panic!("{ending:?}: {e}"));
+            assert_eq!(4, jkf.moves.len(), "{ending:?}");
+            let ki2 = ["手合割：平手", "▲７六歩 △３四歩", "まで2手で中断"].join(ending) + ending;
+            let jkf = parse_ki2_str(&ki2).unwrap_or_else(|e| panic!("{ending:?}: {e}"));
+            assert_eq!(4, jkf.moves.len(), "{ending:?}");
+        }
+        let broken = ["手合割：平手", "   1 ７六歩(77)", "   2 ほげ"].join("\r\r\n");
+        let message = parse_kif_str(&broken)
+            .expect_err("line 3 is broken")
+            .to_string();
+        assert!(message.contains("line 3"), "{message}");
+    }
     use std::io::BufReader;
     // R-KIF-001 / GAP-006: a BOM is not part of the record. Left on, it joins
     // the first line — the handicap goes missing and the record reads as 平手
@@ -846,11 +863,10 @@ mod tests {
             // Load exptected JSON
             assert!(path.set_extension("json"));
             let file = File::open(&path)?;
-            let mut expected = serde_json::from_reader::<_, JsonKifuFormat>(BufReader::new(file))
+            let expected = serde_json::from_reader::<_, JsonKifuFormat>(BufReader::new(file))
                 .expect("failed to parse json");
-            // Remove all move comments (they cannot be restored from csa...)
-            expected.moves.iter_mut().for_each(|m| m.comments = None);
-
+            // Comments included (GAP-044): the ones under the side-to-move
+            // line are the record's, the ones above it label the file (D30).
             assert_eq!(expected, jkf, "different from expected: {}", path.display());
         }
         Ok(())

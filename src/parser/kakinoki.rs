@@ -136,10 +136,19 @@ fn end_of_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
 /// which is waiting on a decision; do not read this table as a promise that KIF
 /// keeps such a line.
 ///
-/// The variants R-NOT-001 also lists (`☗`/`☖`, `⛊`/`⛉`, `▼`/`▽`) are not read yet:
-/// `research/90-gaps.md` GAP-024, which names every place that has to learn a
-/// new one together — the KI2 writer among them.
-pub(super) const SIDE_MARKS: [(char, Color); 2] = [('▲', Color::Black), ('△', Color::White)];
+/// `▼`/`▽` and `☗`/`☖` are the same two marks as other programs print them —
+/// filled for Black, outlined for White — and tsshogi reads all six. Left out,
+/// a `▽３四歩` in the middle of a KI2 line was not refused but dropped, and the
+/// record came back one move short (GAP-024, GAP-050). The writers print `▲`/`△`
+/// only.
+pub(super) const SIDE_MARKS: [(char, Color); 6] = [
+    ('▲', Color::Black),
+    ('△', Color::White),
+    ('▼', Color::Black),
+    ('▽', Color::White),
+    ('☗', Color::Black),
+    ('☖', Color::White),
+];
 
 /// The mark a KIF move line may carry in front of the move (R-KIF-005).
 ///
@@ -153,9 +162,7 @@ pub(super) const SIDE_MARKS: [(char, Color); 2] = [('▲', Color::Black), ('△'
 ///
 /// What the mark needs from this reader is to be allowed. tsshogi's move pattern
 /// has `[▲△▼▽]?` in it, so a record that opens on the consumer's TS side has to
-/// open here too, and refusing it refuses the file whole (D1). `▼` and `▽` are
-/// not in [`SIDE_MARKS`] yet, so those two are still refused
-/// (`research/90-gaps.md` GAP-024).
+/// open here too, and refusing it refuses the file whole (D1).
 pub(super) fn side_mark(input: &str) -> IResult<&str, char, VerboseError<&str>> {
     satisfy(|c| SIDE_MARKS.iter().any(|(mark, _)| *mark == c))(input)
 }
@@ -402,13 +409,14 @@ fn is_whole_line_fork_header(head: &str) -> bool {
 /// Here rather than with the KIF reader because both readers ask: KI2 has to
 /// know that `   5 投了` is a line something wrote as a move, so that skipping
 /// it as prose does not take the special move with it (D1, `opens_numbered_line`).
-const KIF_SPECIAL_WORDS: [&str; 12] = [
+const KIF_SPECIAL_WORDS: [&str; 13] = [
     "切れ負け",
     "入玉勝ち",
     "反則負け",
     "反則勝ち",
     "不戦勝",
     "不戦敗",
+    "封じ手",
     "千日手",
     "持将棋",
     "投了",
@@ -613,6 +621,10 @@ fn move_body(input: &str) -> IResult<&str, NumberedBody, VerboseError<&str>> {
     let (input, _) = opt(side_mark)(input)?;
     let (input, to) = move_to(input)?;
     let (input, piece) = piece_kind(input)?;
+    // A writer that pads `同` to two columns puts the padding after the piece
+    // (`同銀　(79)`, tsshogi's tests) rather than after `同` (`同　銀(79)`).
+    // tsshogi's move pattern takes padding there (GAP-038).
+    let (input, _) = take_while(is_padding)(input)?;
     // R-KIF-006 asks a *writer* not to spell 不成. Other software spells it, and
     // a reader that counts only what a correct writer produces hands the line to
     // the skip, which drops the move (R-REQ-004).
@@ -1273,16 +1285,32 @@ fn board_row(input: &str) -> IResult<&str, Vec<Piece>, VerboseError<&str>> {
     )(input)
 }
 
-/// Whether a board diagram could open on this line: the file numbers, or the
-/// frame that sits under them (R-KIF-014 / D6).
+/// Whether a board diagram could open on this line: the file numbers, the
+/// frame that sits under them (R-KIF-014 / D6), or a rank of a diagram written
+/// without either (GAP-039).
 ///
 /// Either alone says a diagram starts here — that is what lets [`board`] name
 /// the one of the two that is misspelled instead of unwinding to prose.
 fn opens_board(head: &str) -> bool {
-    head.starts_with("９ ８ ７ ６ ５ ４ ３ ２ １") || head.starts_with("+---")
+    head.starts_with("９ ８ ７ ６ ５ ４ ３ ２ １")
+        || head.starts_with("+---")
+        || head.starts_with('|')
 }
 
 fn board(input: &str) -> IResult<&str, [[Piece; 9]; 9], VerboseError<&str>> {
+    // A diagram may come as its nine ranks alone, without the file numbers and
+    // the frame (tsshogi's tests write one; GAP-039). R-KIF-014 has no primary
+    // source for the frame either. A rank is a line no other shape starts with
+    // `|`, so its first one is enough to say a diagram starts here.
+    if board_row(input).is_ok() {
+        let (rest, ranks) = board_ranks(input)?;
+        let (rest, _) = opt(delimited(
+            padding,
+            tag("+---------------------------+"),
+            pair(padding, end_of_line),
+        ))(rest)?;
+        return Ok((rest, ranks));
+    }
     // The two columns in front of `９` line the file numbers up with the frame
     // below them, so they are padding and not part of the word.
     let numbers = delimited(
@@ -1302,7 +1330,7 @@ fn board(input: &str) -> IResult<&str, [[Piece; 9]; 9], VerboseError<&str>> {
     // recoverable, the whole diagram unwinds and the message points at its first
     // line — the one line known to be intact — while the reader looking for the
     // fault is nine lines further down (D1).
-    let mut rest = match numbers {
+    let rest = match numbers {
         Ok((rest, _)) => match frame(rest) {
             Ok((rest, _)) => rest,
             Err(_) => return Err(broken_line(rest, "the board has no frame under its files")),
@@ -1327,12 +1355,24 @@ fn board(input: &str) -> IResult<&str, [[Piece; 9]; 9], VerboseError<&str>> {
             }
         }
     };
-    // Past the file numbers and the frame under them this is a board diagram,
-    // whatever the rest of it says, so a rank that cannot be read names itself.
-    // A recoverable error here unwinds the whole diagram and the message comes
-    // out pointing at its first line — which is the one line known to be
-    // intact. D1 asks for the line that broke, and the reader is someone
-    // looking for it in their file.
+    let (rest, ret) = board_ranks(rest)?;
+    let (rest, _) = delimited(
+        padding,
+        tag("+---------------------------+"),
+        pair(padding, end_of_line),
+    )(rest)
+    .map_err(|_| broken_line(rest, "the board has no frame under its last rank"))?;
+    Ok((rest, ret))
+}
+
+/// The nine ranks of a board diagram, top to bottom.
+///
+/// Called where the input has already said it is a diagram, so a rank that
+/// cannot be read names itself. A recoverable error here would unwind the whole
+/// diagram and the message would come out pointing at its first line — the one
+/// line known to be intact. D1 asks for the line that broke, and the reader is
+/// someone looking for it in their file.
+fn board_ranks(mut rest: &str) -> IResult<&str, [[Piece; 9]; 9], VerboseError<&str>> {
     let mut rows = Vec::with_capacity(9);
     while rows.len() < 9 {
         let (tail, row) = board_row(rest).map_err(|_| {
@@ -1353,12 +1393,6 @@ fn board(input: &str) -> IResult<&str, [[Piece; 9]; 9], VerboseError<&str>> {
             ret[8 - file][rank] = piece;
         }
     }
-    let (rest, _) = delimited(
-        padding,
-        tag("+---------------------------+"),
-        pair(padding, end_of_line),
-    )(rest)
-    .map_err(|_| broken_line(rest, "the board has no frame under its last rank"))?;
     Ok((rest, ret))
 }
 
@@ -1399,7 +1433,29 @@ pub(super) fn move_to(input: &str) -> IResult<&str, Option<PlaceFormat>, Verbose
         // A file whose columns were re-aligned by a word processor has two.
         value(None, terminated(tag("同"), take_while(is_padding))),
         map(pair(place_x, place_y), |(x, y)| Some(PlaceFormat { x, y })),
+        // GAP-037: the square in Arabic digits — `76歩` as tsshogi's tests
+        // write it, `７６歩` as the 日本将棋連盟 records it (R-NOT-001 note).
+        map(
+            pair(arabic_digit, alt((place_y, arabic_digit))),
+            |(x, y)| Some(PlaceFormat { x, y }),
+        ),
     ))(input)
+}
+
+/// A digit 1-9, half-width or full-width.
+fn arabic_digit(input: &str) -> IResult<&str, u8, VerboseError<&str>> {
+    let mut chars = input.chars();
+    let digit = chars.next().and_then(|c| match c {
+        '1'..='9' => Some(c as u8 - b'0'),
+        '１'..='９' => Some((c as u32 - '０' as u32) as u8),
+        _ => None,
+    });
+    match digit {
+        Some(d) => Ok((chars.as_str(), d)),
+        None => Err(nom::Err::Error(VerboseError {
+            errors: vec![(input, nom::error::VerboseErrorKind::Context("a digit 1-9"))],
+        })),
+    }
 }
 
 /// The `後手番` line that says the position starts with White to move

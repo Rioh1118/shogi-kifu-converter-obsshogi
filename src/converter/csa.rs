@@ -18,6 +18,11 @@ pub trait ToCsa {
     /// there — obs-shogi's own new-file form writes `tags` and `note`
     /// (`research/90-gaps.md` GAP-026). Saving as `.csa` is where those stop.
     ///
+    /// CSA has no forks, so none is written and the main line alone is the
+    /// record (GAP-048, D32). A caller that saves a record with forks as
+    /// `.csa` loses them, and it is the caller's to say so to the user: the
+    /// write itself succeeds, because the record it wrote is a valid one.
+    ///
     /// # Errors
     ///
     /// Returns [`ConvertError::Write`] if `sink` fails, and otherwise the
@@ -59,7 +64,14 @@ impl ToCsa for JsonKifuFormat {
     fn to_csa<W: Write>(&self, sink: &mut W) -> WriteResult {
         write_header(&self.header, sink)?;
         write_initial(&self.initial, sink)?;
-        // Index 0 holds the initial position's comments, not a ply.
+        // Index 0 holds the initial position's comments, not a ply (R-JKF-001).
+        // They go under the side-to-move line, the one place the reader files
+        // a comment under the initial position (D30).
+        if let Some(comments) = self.moves.first().and_then(|mf| mf.comments.as_ref()) {
+            for comment in comments {
+                write_comment(comment, sink)?;
+            }
+        }
         write_moves(self.moves.get(1..).unwrap_or_default(), sink)?;
         Ok(())
     }
@@ -116,12 +128,51 @@ fn write_header<W: Write>(header: &HashMap<String, String>, sink: &mut W) -> Wri
         ("$EVENT:", header.get("棋戦")),
         ("$SITE:", header.get("場所")),
         ("$OPENING:", header.get("戦型")),
+        // GAP-047: these three have CSA keywords too, but a value in a shape
+        // other than V2.2's makes a file other programs refuse, so only those
+        // are written (R-CSA-004).
+        (
+            "$START_TIME:",
+            header.get("開始日時").filter(|v| is_csa_date_time(v)),
+        ),
+        (
+            "$END_TIME:",
+            header.get("終了日時").filter(|v| is_csa_date_time(v)),
+        ),
+        (
+            "$TIME_LIMIT:",
+            header.get("持ち時間").filter(|v| is_csa_time_limit(v)),
+        ),
     ] {
         if let Some(value) = value {
             write_header_value(prefix, value, sink)?;
         }
     }
     Ok(())
+}
+
+/// `YYYY/MM/DD` or `YYYY/MM/DD HH:MM:SS`, the shape V2.2 gives `$START_TIME`
+/// and `$END_TIME`.
+fn is_csa_date_time(value: &str) -> bool {
+    let digits = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_digit());
+    let (date, time) = value.split_once(' ').unwrap_or((value, ""));
+    let date: Vec<&str> = date.split('/').collect();
+    let date_ok = date.len() == 3 && digits(date[0], 4) && digits(date[1], 2) && digits(date[2], 2);
+    let time: Vec<&str> = time.split(':').collect();
+    let time_ok = time == [""] || (time.len() == 3 && time.iter().all(|t| digits(t, 2)));
+    date_ok && time_ok
+}
+
+/// `HH:MM+SS`, the shape V2.2 gives `$TIME_LIMIT`: the time each side has,
+/// and the seconds of byoyomi.
+fn is_csa_time_limit(value: &str) -> bool {
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    value
+        .split_once(':')
+        .and_then(|(hours, rest)| Some((hours, rest.split_once('+')?)))
+        .is_some_and(|(hours, (minutes, seconds))| {
+            digits(hours) && minutes.len() == 2 && digits(minutes) && digits(seconds)
+        })
 }
 
 fn write_initial_data<W: Write>(data: &StateFormat, sink: &mut W) -> WriteResult {
@@ -226,8 +277,10 @@ fn write_comment<W: Write>(comment: &str, sink: &mut W) -> WriteResult {
     //
     // KIF and KI2 write the bare marker instead, because there `*` on its own
     // reads back as the empty comment it was.
+    // A comment runs to the end of its line, commas included (R-CSA-008), so
+    // only a line ending splits one.
     for piece in comment
-        .split(|c| c == ',' || LINE_ENDS.contains(&c))
+        .split(|c| LINE_ENDS.contains(&c))
         .filter(|piece| !piece.is_empty())
     {
         sink.write_fmt(format_args!("'{piece}\n"))?;
@@ -306,13 +359,13 @@ fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> WriteResult {
 mod tests {
     use super::*;
 
-    // R-CSA-009: `,` ends a statement, and this crate's reader drops the rest of
-    // the file from there without a word (GAP-012). The notes shogi sites write
-    // carry one (`*▲囲い：居飛車穴熊, 一枚穴熊`), so a record saved as `.csa`
-    // came back short with `Ok` (GAP-023).
+    // R-CSA-009: `,` ends a statement, but a comment runs to the end of its line
+    // (R-CSA-008), commas included. The notes shogi sites write carry one
+    // (`*▲囲い：居飛車穴熊, 一枚穴熊`), and the record has to come back whole
+    // with the note as it was (GAP-023).
     //
-    // A header value cannot be split the way a comment can — `$EVENT` has
-    // nowhere to continue onto — so there the comma becomes the full-width form.
+    // A header value is a statement, so there the comma becomes the full-width
+    // form.
     #[test]
     fn a_comment_with_a_statement_separator_in_it_does_not_end_the_record() {
         let kif = "手合割：平手
@@ -326,11 +379,8 @@ mod tests {
         let csa = jkf.try_to_csa_owned().expect("writes CSA");
         let back = crate::parser::parse_csa_str(&csa).expect("reads back");
         assert_eq!(3, back.moves.len() - 1, "{csa}");
-        // The text is on the file; the comma is not, because CSA has nowhere to
-        // put it. (Reading it back into the record is another matter: the `csa`
-        // crate drops `'` lines, so the round trip loses comments whatever this
-        // writes.)
-        assert!(csa.contains("'囲い：居飛車穴熊\n' 一枚穴熊\n"), "{csa}");
+        assert!(csa.contains("'囲い：居飛車穴熊, 一枚穴熊\n"), "{csa}");
+        assert_eq!(jkf.moves[1].comments, back.moves[1].comments, "{csa}");
 
         // A newline ends a line as surely as a comma does, and a JKF comment can
         // hold one (nothing in JKF says otherwise, and the consumer builds its
@@ -367,7 +417,8 @@ mod tests {
             .insert("先手".to_owned(), "山田\r太郎".to_owned());
         jkf.header.insert("場所".to_owned(), "\n".to_owned());
         let csa = jkf.try_to_csa_owned().expect("writes CSA");
-        assert!(csa.contains("N+山田太郎\n"), "{csa}");
+        // GAP-049: the two lines stay two words.
+        assert!(csa.contains("N+山田 太郎\n"), "{csa}");
         assert!(!csa.contains("$SITE"), "{csa}");
         assert!(crate::parser::parse_csa_str(&csa).is_ok(), "{csa}");
 

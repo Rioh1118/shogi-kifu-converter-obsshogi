@@ -1,0 +1,9 @@
+[package]
+name = "corpus"
+version = "0.0.0"
+edition = "2021"
+[dependencies]
+shogi-kifu-converter = { path = "../../../.." }
+serde_json = "1"
+shogi_core = "0.1.5"
+[workspace]

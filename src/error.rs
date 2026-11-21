@@ -137,14 +137,15 @@ pub enum ParseError {
     /// From [`std::io::Error`]
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    /// From [`csa::CsaError`]
-    #[error(transparent)]
-    Csa(#[from] csa::CsaError),
+    /// A CSA record this crate cannot read, with the line it stopped on
+    #[error("CSA Error: {0}")]
+    Csa(String),
     /// From [`serde_json::Error`]
     #[error(transparent)]
     Serde(#[from] serde_json::Error),
-    /// An error that occurred while converting from [`csa::GameRecord`]
-    #[error("Failed to convert from `csa::GameRecord`: {0}")]
+    /// A CSA position that no set of pieces can make: more of a piece than a
+    /// set holds
+    #[error("Invalid CSA position: {0}")]
     CsaConvert(&'static str),
     /// An error that occurred while parsing a KIF string
     #[error("KIF Error: {0}")]

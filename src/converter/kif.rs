@@ -51,7 +51,11 @@ impl ToKif for JsonKifuFormat {
     fn to_kif<W: Write>(&self, sink: &mut W) -> WriteResult {
         write_header(&self.header, sink)?;
         write_initial(&self.header, &self.initial, sink)?;
-        write_moves(&self.moves, sink)?;
+        write_moves(
+            &self.moves,
+            crate::handicap::starting_side(self.initial.as_ref()),
+            sink,
+        )?;
         Ok(())
     }
 }
@@ -67,7 +71,14 @@ fn write_move_kind<W: Write>(kind: Kind, sink: &mut W, offset: &mut usize) -> Wr
     Ok(())
 }
 
-fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) -> WriteResult {
+/// Writes `moves` as numbered lines from ply `index`, `side` being whose turn
+/// it is at the first of them.
+fn write_move_lines<W: Write>(
+    moves: &[MoveFormat],
+    index: usize,
+    mut side: Color,
+    sink: &mut W,
+) -> WriteResult {
     let mut forks_stack = Vec::new();
     // The ply is the number of the line being written, not the position in the
     // array. A node with neither a move nor a special move carries only comments,
@@ -108,10 +119,7 @@ fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) 
                 offset += 2;
             }
         } else if let Some(special) = &mf.special {
-            // 待った and エラー have no KIF word (R-KIF-007). 中断 is the
-            // closest thing KIF can say — the game stopped here — so that is
-            // what a reader will make of them, and the distinction is lost.
-            let word = special.kif_word().unwrap_or("中断");
+            let word = special_word(*special, side);
             sink.write_str(word)?;
             // The time column is measured in half-widths and every one of these
             // words is full-width.
@@ -144,23 +152,53 @@ fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) 
             }
         }
         if let Some(ref forks) = mf.forks {
+            // A fork replaces this node, so it starts on this node's turn
+            // (R-JKF-004).
             for fork in forks {
-                forks_stack.push((i, fork));
+                forks_stack.push((i, side, fork));
             }
         }
         if has_line {
             i += 1;
         }
+        // A special move takes a ply but not a turn (R-KIF-007).
+        if let Some(mv) = &mf.move_ {
+            side = match mv.color {
+                Color::Black => Color::White,
+                Color::White => Color::Black,
+            };
+        }
     }
-    while let Some((i, fork)) = forks_stack.pop() {
+    while let Some((i, side, fork)) = forks_stack.pop() {
         sink.write_char('\n')?;
         sink.write_fmt(format_args!("変化：{}手\n", i))?;
-        write_move_lines(fork, i, sink)?;
+        write_move_lines(fork, i, side, sink)?;
     }
     Ok(())
 }
 
-fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> WriteResult {
+/// The KIF word for `special` at a ply where `side` is to move.
+///
+/// 反則勝ち says the move *before* was the foul (R-KIF-007), so it can name
+/// only the side that just moved as the offender. A foul by the side to move is
+/// 反則負け, the side to move losing; writing 反則勝ち there reads back with the
+/// winner swapped (GAP-032, D25).
+fn special_word(special: MoveSpecial, side: Color) -> &'static str {
+    let offender = match special {
+        MoveSpecial::SpecialIllegalActionBlack => Some(Color::Black),
+        MoveSpecial::SpecialIllegalActionWhite => Some(Color::White),
+        _ => None,
+    };
+    match offender {
+        Some(offender) if offender == side => "反則負け",
+        // 待った and エラー have no KIF word (R-KIF-007). 中断 is the closest
+        // thing KIF can say — the game stopped here — so that is what a reader
+        // will make of them, and the distinction is lost.
+        _ => special.kif_word().unwrap_or("中断"),
+    }
+}
+
+fn write_moves<W: Write>(moves: &[MoveFormat], side: Color, sink: &mut W) -> WriteResult {
     sink.write_str("手数----指手---------消費時間--\n")?;
     let Some((head, rest)) = moves.split_first() else {
         return Ok(());
@@ -170,7 +208,7 @@ fn write_moves<W: Write>(moves: &[MoveFormat], sink: &mut W) -> WriteResult {
             write_comment(comment, sink)?;
         }
     }
-    write_move_lines(rest, 1, sink)
+    write_move_lines(rest, 1, side, sink)
 }
 
 #[cfg(test)]

@@ -872,3 +872,50 @@ fn the_last_line_is_read_without_a_trailing_newline() {
         "the special move is on the last line"
     );
 }
+
+/// GAP-035: 封じ手 ends the first day of a two-day game. Not in R-KIF-007,
+/// but the 名人戦 record in Kifu-for-JS's test files has it as a numbered
+/// line with a time, the same shape as any other special move.
+#[test]
+fn a_sealed_move_is_read_and_written_back() {
+    let src = "手合割：平手\n手数----指手---------消費時間--\n   1 ７六歩(77)   ( 0:01/00:00:01)\n   2 封じ手       (25:00/04:07:00)\n";
+    let jkf = crate::parser::parse_kif_str(src).expect("a sealed move reads");
+    assert_eq!(Some(MoveSpecial::SpecialFuujite), jkf.moves[2].special);
+    let back =
+        crate::parser::parse_kif_str(&jkf.try_to_string(crate::Format::Kif).expect("writes"))
+            .expect("reads back");
+    assert_eq!(Some(MoveSpecial::SpecialFuujite), back.moves[2].special);
+    let ki2 = crate::parser::parse_ki2_str("▲７六歩\nまで1手で封じ手\n").expect("KI2 reads");
+    assert_eq!(Some(MoveSpecial::SpecialFuujite), ki2.moves[2].special);
+}
+
+/// GAP-038: the padding that lines `同` up with a two-character square can
+/// come after the piece instead of after `同`.
+#[test]
+fn padding_after_the_piece_is_padding() {
+    let head = "1 ７六歩(77)\n2 ３四歩(33)\n3 ２二角成(88)\n";
+    let want =
+        crate::parser::parse_kif_str(&format!("{head}4 同　銀(31)\n")).expect("the usual spelling");
+    for line in ["4 同銀　(31)", "4 同銀(31)", "4 同　銀　(31)"] {
+        let got = crate::parser::parse_kif_str(&format!("{head}{line}\n"))
+            .unwrap_or_else(|e| panic!("{line}: {e}"));
+        assert_eq!(want.moves, got.moves, "{line}");
+    }
+}
+
+/// GAP-039: a diagram written as its nine ranks alone, without the file
+/// numbers and the frame (tsshogi's `position.spec.ts`), is the same position
+/// as the framed one.
+#[test]
+fn a_board_without_its_frame_is_the_same_board() {
+    let ranks = "| ・ ・ ・ ・v玉 ・ ・ ・ ・|一\n| ・ ・ ・ ・ ・ ・ ・ ・ ・|二\n| ・ ・ ・v香 角 ・ ・ ・ ・|三\n| ・ ・ ・ ・v歩 ・ ・ ・ ・|四\n| ・ ・ ・ 銀 ・ ・ ・ ・ ・|五\n| ・ ・ ・ 玉 ・ ・ ・v龍 ・|六\n| ・ ・ 歩 ・ 金 歩 ・ 歩 ・|七\n| ・ ・ ・ ・ ・ ・ 桂 ・ ・|八\n| ・ ・ ・ ・ ・ ・ ・ ・ ・|九\n";
+    let white = "後手の持駒：歩八　香　桂二　銀二　金二　角　\n";
+    let black = "先手の持駒：歩六　香二　桂　銀　金　飛　\n先手番\n";
+    let frame = "+---------------------------+\n";
+    let framed = format!("{white}  ９ ８ ７ ６ ５ ４ ３ ２ １\n{frame}{ranks}{frame}{black}");
+    let want = crate::parser::parse_kif_str(&framed).expect("the framed diagram");
+    let bare = crate::parser::parse_kif_str(&format!("{white}{ranks}{black}"))
+        .expect("the same ranks without the frame");
+    assert_eq!(want.initial, bare.initial);
+    assert!(want.initial.is_some_and(|i| i.data.is_some()));
+}

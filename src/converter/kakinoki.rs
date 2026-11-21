@@ -377,6 +377,12 @@ mod tests {
             "the header after the multi-line one survives: {kif:?}"
         );
         assert_eq!(2, back.header.len(), "{kif:?}");
+        // GAP-049: the lines stay apart as words.
+        assert_eq!(
+            Some(&"一行目 二行目".to_owned()),
+            back.header.get("備考"),
+            "{kif:?}"
+        );
     }
 
     /// The other side of the same line: the counts that *are* spellable. The

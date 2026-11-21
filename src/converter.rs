@@ -31,8 +31,15 @@ type WriteResult = std::result::Result<(), ConvertError>;
 /// and KI2 (R-KIF-004) and in CSA (R-CSA-004). What is left of the line after a
 /// newline inside the value is read as a line of its own, and the reader makes
 /// of it whatever its shapes say — none of which is "the rest of that header".
+///
+/// The lines are joined with a space rather than run together: `一行目\n二行目`
+/// would otherwise come back as one word, `一行目二行目` (GAP-049).
 fn on_one_line(value: &str) -> String {
-    value.split(crate::notation::LINE_ENDS).collect()
+    value
+        .split(crate::notation::LINE_ENDS)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Spells `pos` as USI: the initial position, then the moves played from it.
@@ -345,7 +352,7 @@ mod tests {
         use crate::jkf::{Color, Initial, Kind, MoveMoveFormat, PlaceFormat, Preset};
 
         // Two moves, so the special move sits at ply 3 with Black to move.
-        const TABLE: [Row; 16] = [
+        const TABLE: [Row; 18] = [
             Row {
                 special: SpecialToryo,
                 kif_word: "投了",
@@ -373,9 +380,6 @@ mod tests {
                 after_ki2: SpecialSennichite,
                 after_csa: Some(SpecialSennichite),
             },
-            // GAP-012: the `csa` crate reads 10 of the 14 keywords. The four added
-            // in CSA V2.1/V2.2 are written correctly and dropped on the way back
-            // in, so the arms for them in `src/parser/csa.rs` never run.
             Row {
                 special: SpecialTimeUp,
                 kif_word: "切れ負け",
@@ -383,7 +387,7 @@ mod tests {
                 ki2_phrase: "時間切れにより後手の勝ち",
                 after_kif: SpecialTimeUp,
                 after_ki2: SpecialTimeUp,
-                after_csa: None,
+                after_csa: Some(SpecialTimeUp),
             },
             Row {
                 special: SpecialIllegalMove,
@@ -392,23 +396,20 @@ mod tests {
                 ki2_phrase: "先手の反則負け",
                 after_kif: SpecialIllegalMove,
                 after_ki2: SpecialIllegalMove,
-                after_csa: None,
+                after_csa: Some(SpecialIllegalMove),
             },
-            // KIF's 反則勝ち is relative to whose turn it is, so it cannot say that
-            // Black fouled while Black is to move. The KI2 phrase names the
-            // winner outright and keeps the direction.
-            // GAP-032: Black fouled with Black to move. 反則勝ち says the move
-            // *before* was the foul (R-KIF-007), so it reads back as White's
-            // foul and the winner swaps. D25 decides to write 反則負け here
-            // instead; until then this row pins what the writer does.
+            // D25: Black fouled with Black to move. 反則勝ち would say the
+            // move *before* was the foul and swap the winner (GAP-032), so the
+            // writer says 反則負け — Black, to move, loses — and it reads back
+            // as ILLEGAL_MOVE with the same winner.
             Row {
                 special: SpecialIllegalActionBlack,
-                kif_word: "反則勝ち",
+                kif_word: "反則負け",
                 csa_word: "%+ILLEGAL_ACTION",
                 ki2_phrase: "後手の反則勝ち",
-                after_kif: SpecialIllegalActionWhite,
+                after_kif: SpecialIllegalMove,
                 after_ki2: SpecialIllegalActionBlack,
-                after_csa: None,
+                after_csa: Some(SpecialIllegalActionBlack),
             },
             Row {
                 special: SpecialIllegalActionWhite,
@@ -417,7 +418,7 @@ mod tests {
                 ki2_phrase: "先手の反則勝ち",
                 after_kif: SpecialIllegalActionWhite,
                 after_ki2: SpecialIllegalActionWhite,
-                after_csa: None,
+                after_csa: Some(SpecialIllegalActionWhite),
             },
             Row {
                 special: SpecialJishogi,
@@ -498,6 +499,28 @@ mod tests {
                 ki2_phrase: "不戦敗",
                 after_kif: SpecialFusenpai,
                 after_ki2: SpecialFusenpai,
+                after_csa: Some(SpecialChudan),
+            },
+            // D29: KIF and KI2 have no word for the move limit, and 持将棋 is
+            // the draw it ends in.
+            Row {
+                special: SpecialMaxMoves,
+                kif_word: "持将棋",
+                csa_word: "%MAX_MOVES",
+                ki2_phrase: "持将棋",
+                after_kif: SpecialJishogi,
+                after_ki2: SpecialJishogi,
+                after_csa: Some(SpecialMaxMoves),
+            },
+            // D28: CSA has no word for an adjournment either, and 中断 is what
+            // happened to the game.
+            Row {
+                special: SpecialFuujite,
+                kif_word: "封じ手",
+                csa_word: "%CHUDAN",
+                ki2_phrase: "封じ手",
+                after_kif: SpecialFuujite,
+                after_ki2: SpecialFuujite,
                 after_csa: Some(SpecialChudan),
             },
             Row {
