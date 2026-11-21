@@ -109,13 +109,7 @@ consumer（obs-shogi、`~/src/github.com/Rioh1118/obs-shogi/src-tauri/src`）が
 - 盤が手合割の初期配置と一致したら、`initial` を手合割の名前に畳む
 - 最初の終局より前で盤が説明できない手があれば `Err(NormalizeError { ply, kind })`。終局より後、および分岐の中で説明できない手は、そのまま残す（R-RULE-002）
 
-駒落ちで `moves[1]` の手番が先手なら、本譜の手番を全て反転する前処理がある。`correct_color` の値に関係なく走る（`normalize_with_options` の文書に書いた）。
-
-### `normalize_with_color_correction(correct_color)` / `normalize_with_options(correct_color, infer_relative)`（非推奨）
-
-役割: `normalize` の変種。`bool` 引数2つで、手番を直すかと、`relative` を埋めるかを選ぶ。
-
-内部では、2つの選択を名前で持つ `Normalization`（`ColorSource::Recorded`／`Position`、`RelativeFill::Fill`／`Skip`）を渡す。読み手は `Normalization::KIF`／`KI2`／`RECORDED` で呼ぶ。公開の関数は真偽値のまま残し、中で変換する。
+駒落ちで `moves[1]` の手番が先手なら、本譜の手番を全て反転する前処理がある。`correct_color` の値に関係なく走る（`normalize` の文書に書いた）。
 
 ### `populate_relative(&mut self)`
 

@@ -81,7 +81,7 @@ fn a_stated_promote_false_is_not_overruled_by_the_piece_name() {
 
 // A drop has no origin (R-JKF-003), so there is no square to ask what piece
 // moved or what it took, and `piece` and `capture` are left as they came.
-// The contract in `normalize_with_options` is what the consumer reads before
+// The contract in `normalize` is what the consumer reads before
 // trusting those fields, so the exception is worth a test of its own.
 //
 // `same` is not among them for a reason that is not worth a case: a drop
