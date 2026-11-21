@@ -1,6 +1,6 @@
 use crate::error::{ConvertError, NormalizeError, NormalizeErrorKind};
 use crate::jkf::*;
-use crate::notation::pk2k;
+use crate::notation::kind_from_piece_kind;
 use shogi_core::PartialPosition;
 use shogi_legality_lite::prelegality::is_valid;
 
@@ -410,9 +410,11 @@ fn normalize_move(
                 None
             };
             mmf.promote = decide_promote(&*mmf, from_piece_kind, from, to, pos.side_to_move());
-            mmf.piece = pk2k(from_piece_kind);
+            mmf.piece = kind_from_piece_kind(from_piece_kind);
             // Set capture?
-            mmf.capture = pos.piece_at(to).map(|p| pk2k(p.piece_kind()));
+            mmf.capture = pos
+                .piece_at(to)
+                .map(|p| kind_from_piece_kind(p.piece_kind()));
         } else {
             // An origin off the board is a coordinate we could not read, not a
             // statement that the piece came from the hand. JKF says a drop by
@@ -480,7 +482,7 @@ fn decide_promote(
     });
     if promoted {
         Some(true)
-    } else if crate::notation::promotion_is_spellable(from_piece_kind, from, to, side) {
+    } else if crate::notation::is_promotion_spellable(from_piece_kind, from, to, side) {
         Some(false)
     } else {
         None

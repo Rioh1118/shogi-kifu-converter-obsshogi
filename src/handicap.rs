@@ -202,7 +202,7 @@ pub(crate) fn lookup(preset: Preset) -> Option<&'static Handicap> {
 ///
 /// Not a handicap, so it has no row in the table (R-HC-003 has 16) — but it is a
 /// `手合割` value the reader turns into a [`Preset`], which is what
-/// [`is_a_known_name`] is asked about.
+/// [`is_known_name`] is asked about.
 pub(crate) const OTHER_NAME: &str = "その他";
 
 /// Whether `name` is a `手合割` value the reader turns into a [`Preset`].
@@ -210,7 +210,7 @@ pub(crate) const OTHER_NAME: &str = "その他";
 /// A `手合割` that is *both* in `header` and one of these came from somewhere
 /// other than that reader, which leaves `header` alone for the names it folds —
 /// and then the record's own `initial` is the one to write (D16).
-pub(crate) fn is_a_known_name(name: &str) -> bool {
+pub(crate) fn is_known_name(name: &str) -> bool {
     // Trimmed, because the reader folds a padded value too: `手合割： 香落ち`
     // reaches `initial` as `PresetKY`, and a gate that answers `false` for the
     // string `header` happens to hold would drop the preset line from a record

@@ -174,7 +174,7 @@ fn stopped_at(whole: &str, rest: &str) -> String {
 /// *that* won. The error D1 exists to raise never reached anyone.
 ///
 /// A header-only kifu is not this: it fills in `header` or `initial`.
-fn recognised_nothing(jkf: &JsonKifuFormat, read_header: bool) -> bool {
+fn is_unrecognised(jkf: &JsonKifuFormat, read_header: bool) -> bool {
     !read_header
         && jkf
             .moves
@@ -210,7 +210,7 @@ pub fn parse_kif_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
             if !rest.trim().is_empty() {
                 return Err(ParseError::Kif(stopped_at(s, rest)));
             }
-            if !s.trim().is_empty() && recognised_nothing(&jkf, read_header) {
+            if !s.trim().is_empty() && is_unrecognised(&jkf, read_header) {
                 return Err(ParseError::Kif(stopped_at(s, s)));
             }
             // KIF moves carry an explicit `from`, so `relative` inference is dead work.
@@ -257,7 +257,7 @@ pub fn parse_ki2_str(s: &str) -> Result<JsonKifuFormat, ParseError> {
             if !rest.trim().is_empty() {
                 return Err(ParseError::Ki2(stopped_at(s, rest)));
             }
-            if !s.trim().is_empty() && recognised_nothing(&jkf, read_header) {
+            if !s.trim().is_empty() && is_unrecognised(&jkf, read_header) {
                 return Err(ParseError::Ki2(stopped_at(s, s)));
             }
             jkf.normalize_with_color_correction(true)?;

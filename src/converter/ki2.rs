@@ -58,7 +58,7 @@ fn write_move_kind<W: Write>(kind: Kind, sink: &mut W) -> Result {
 }
 
 /// Whether this move has a `不成` to write (R-NOT-005,
-/// [`promotion_is_spellable`](crate::notation::promotion_is_spellable)).
+/// [`is_promotion_spellable`](crate::notation::is_promotion_spellable)).
 ///
 /// The rule is asked here, and not left to the normalizer, because a record
 /// reaches a writer without having been through it: past an outcome the first
@@ -67,7 +67,7 @@ fn write_move_kind<W: Write>(kind: Kind, sink: &mut W) -> Result {
 /// went through it at all (R-REQ-002). What the record says a move did is
 /// `promote` (D12); whether the notation has a word for it is what the piece and
 /// the squares say.
-fn promotion_was_on_the_table(mv: &MoveMoveFormat) -> bool {
+fn could_promote(mv: &MoveMoveFormat) -> bool {
     // A drop enters the board unpromoted, and R-NOT-005 has no word for one
     // whichever end of it the camp is at (R-JKF-003: no origin is what says a
     // move is a drop).
@@ -80,7 +80,7 @@ fn promotion_was_on_the_table(mv: &MoveMoveFormat) -> bool {
         shogi_core::Square::try_from(from),
         shogi_core::Square::try_from(&mv.to),
     ) {
-        (Ok(from), Ok(to)) => crate::notation::promotion_is_spellable(piece, from, to, color),
+        (Ok(from), Ok(to)) => crate::notation::is_promotion_spellable(piece, from, to, color),
         // The record stated an origin and the destination is the one that went
         // missing: a `同` nothing resolved, because past an outcome the position
         // stops being tracked and `to` stays at (0, 0)
@@ -169,7 +169,7 @@ fn write_line<'a, W: Write>(
     // The ply a KI2 line names, not the position in the array. A node carrying
     // only comments writes nothing to number, so counting it would put
     // `変化：N手` one move past where it belongs and `まで<N>手` one too high.
-    // `MoveFormat::occupies_a_ply` is the shared rule; the KIF writer and the
+    // `MoveFormat::occupies_ply` is the shared rule; the KIF writer and the
     // KI2 reader use the same one.
     let mut ply = first_ply;
     for mf in moves {
@@ -232,7 +232,7 @@ fn write_line<'a, W: Write>(
                 // D12: a promotion is what the record says, and it is spelled
                 // whatever the board makes of it.
                 Some(true) => sink.write_str("成")?,
-                Some(false) if promotion_was_on_the_table(mv) => sink.write_str("不成")?,
+                Some(false) if could_promote(mv) => sink.write_str("不成")?,
                 _ => {}
             }
             position = position.and_then(|mut pos| {
@@ -276,7 +276,7 @@ fn write_line<'a, W: Write>(
                 stack.push((ply, fork.as_slice(), departs_from.clone()));
             }
         }
-        if mf.occupies_a_ply() {
+        if mf.occupies_ply() {
             ply += 1;
         }
     }
@@ -688,7 +688,7 @@ mod tests {
         );
     }
 
-    // The companion to the case above, for the other half of `occupies_a_ply`:
+    // The companion to the case above, for the other half of `occupies_ply`:
     // an outcome does take a ply number. `中断` sits mid-list in a game that was
     // interrupted and resumed, so this is not a tail the writer can stop at —
     // every `変化：N手` after it is off by one if the node is skipped.

@@ -228,7 +228,7 @@ pub(super) fn write_initial<W: Write>(
     if preset == Preset::PresetHirate
         && header
             .get(crate::handicap::KIF_KEYWORD)
-            .is_some_and(|name| !crate::handicap::is_a_known_name(name))
+            .is_some_and(|name| !crate::handicap::is_known_name(name))
     {
         return Ok(());
     }

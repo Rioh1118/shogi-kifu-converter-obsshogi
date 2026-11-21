@@ -1,8 +1,8 @@
 use super::kakinoki::{
-    an_empty_block_here_is_worth_reporting, blank_line, branch_header_ply, broken_line,
-    comments_on_the_starting_position, ends_here, move_comment_line, not_move_line, numbered_line,
-    opens_a_branch_header, opens_a_numbered_line, opens_a_shared_line, parse_without_moves,
-    LineShapes, NumberedBody, WhereABoardCouldBe,
+    blank_line, branch_header_ply, broken_line, comments_on_the_starting_position, ends_here,
+    is_reportable_empty_block, move_comment_line, not_move_line, numbered_line, opens_fork_header,
+    opens_numbered_line, opens_shared_line, parse_without_moves, LineShapes, NumberedBody,
+    WhereABoardCouldBe,
 };
 use crate::jkf::*;
 use crate::notation::is_padding;
@@ -26,11 +26,11 @@ use nom::IResult;
 /// reading it as a line refuses records that are whole.
 pub(super) const SHAPES: LineShapes = LineShapes {
     carries_a_line: |_| false,
-    opens_a_line: opens_a_kif_line,
+    opens_a_line: opens_kif_line,
 };
 
-fn opens_a_kif_line(head: &str) -> bool {
-    opens_a_shared_line(head) || opens_a_numbered_line(head)
+fn opens_kif_line(head: &str) -> bool {
+    opens_shared_line(head) || opens_numbered_line(head)
 }
 
 /// The `変化：<N>手` line that opens a branch.
@@ -45,7 +45,7 @@ fn opens_a_kif_line(head: &str) -> bool {
 fn branch_header_line(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
     // The number itself is not used: KIF builds the tree from the ply numbers on
     // the move lines (D3). It is read anyway so that this consumes exactly what
-    // `opens_a_branch_header` counts.
+    // `opens_fork_header` counts.
     let (rest, _) = branch_header_ply(input)?;
     let (rest, _) = ends_here(SHAPES, input, rest)?;
     Ok((rest, input))
@@ -77,7 +77,7 @@ fn skippable_line_between_runs(
     where_a_board_could_be: WhereABoardCouldBe,
     input: &str,
 ) -> IResult<&str, &str, VerboseError<&str>> {
-    if opens_a_branch_header(input) {
+    if opens_fork_header(input) {
         return Err(nom::Err::Error(VerboseError::from_error_kind(
             input,
             nom::error::ErrorKind::Not,
@@ -136,7 +136,7 @@ fn move_line(
 ) -> IResult<&str, (usize, MoveFormat), VerboseError<&str>> {
     let line = input;
     // What the line says is read once, by the shared reader — the same call the
-    // skip's predicate asks (`opens_a_numbered_line`), so a line this can take
+    // skip's predicate asks (`opens_numbered_line`), so a line this can take
     // is a line no skip is allowed to drop.
     let (input, (i, body, time)) = numbered_line(input)?;
     // The ply decides whose turn it is, and 反則勝ち means the *other* player
@@ -303,7 +303,7 @@ fn entire_moves(
     /// run's first numbered line.
     ///
     /// The ply is the number on the line, not the position in the array. A node
-    /// carrying only comments takes no number (`occupies_a_ply`), so counting
+    /// carrying only comments takes no number (`occupies_ply`), so counting
     /// array slots instead puts a `変化：N手` block one move off for every such
     /// node before it. The writer numbers the same way
     /// (`converter/kif.rs::write_move_lines`), and a reader that counts
@@ -311,7 +311,7 @@ fn entire_moves(
     fn index_of_ply(run: &[MoveFormat], base: usize, at: usize) -> Option<usize> {
         let mut ply = base;
         for (index, mf) in run.iter().enumerate() {
-            if !mf.occupies_a_ply() {
+            if !mf.occupies_ply() {
                 continue;
             }
             if ply == at {
@@ -415,10 +415,7 @@ fn entire_moves(
                     // ever under it to lose — while `変化：2手` alone is a branch
                     // that went missing. Both are declarations (D20); what tells
                     // them apart is whether the line says anything else (D1).
-                    Some(line)
-                        if rest.trim().is_empty()
-                            && an_empty_block_here_is_worth_reporting(line) =>
-                    {
+                    Some(line) if rest.trim().is_empty() && is_reportable_empty_block(line) => {
                         return Err(broken_line(line, "a 変化 block with no moves under it"));
                     }
                     // The lines just skipped are accounted for even though no run
@@ -650,7 +647,7 @@ mod tests {
                     for time in TIMES {
                         for tail in TAILS {
                             let line = format!("{ply}{separator}{body}{time}{tail}\n");
-                            let counted = opens_a_numbered_line(&line);
+                            let counted = opens_numbered_line(&line);
                             match move_line(Color::Black, None, &line) {
                                 Ok(_) => {
                                     read += 1;
@@ -674,7 +671,7 @@ mod tests {
                             // not a shorter game (D1).
                             let cut = line.trim_end_matches('\n');
                             assert!(
-                                opens_a_numbered_line(cut) || prose_opens(cut),
+                                opens_numbered_line(cut) || prose_opens(cut),
                                 "{cut:?} at the end of a file is neither counted nor prose"
                             );
                         }
@@ -692,7 +689,7 @@ mod tests {
     /// Whether the line was prose to begin with — digits and then something that
     /// is not a move, which stays prose however the file ends.
     fn prose_opens(line: &str) -> bool {
-        !opens_a_numbered_line(&format!("{line}\n"))
+        !opens_numbered_line(&format!("{line}\n"))
     }
 
     #[test]
@@ -1244,7 +1241,7 @@ mod tests {
         let outer = &jkf.moves[2].forks.as_ref().expect("a branch at ply 2")[0];
         assert_eq!(
             [false, true, true],
-            [0, 1, 2].map(|i| outer[i].occupies_a_ply()),
+            [0, 1, 2].map(|i| outer[i].occupies_ply()),
             "comment node first, then plies 2 and 3: {outer:?}"
         );
         // `変化：3` is an alternative to ply 3, which is `outer[2]` — not

@@ -1,8 +1,8 @@
 use super::kakinoki::{
-    an_empty_block_here_is_worth_reporting, branch_header_ply, broken_line,
-    comments_on_the_starting_position, ends_a_word, ends_here, move_comment_line, move_to,
-    not_move_line, opens_a_shared_line, parse_without_moves, piece_kind, program_comment_line,
-    LineShapes, WhereABoardCouldBe, SIDE_MARKS,
+    branch_header_ply, broken_line, comments_on_the_starting_position, ends_here, ends_word,
+    is_reportable_empty_block, move_comment_line, move_to, not_move_line, opens_shared_line,
+    parse_without_moves, piece_kind, program_comment_line, LineShapes, WhereABoardCouldBe,
+    SIDE_MARKS,
 };
 use crate::jkf::*;
 use crate::notation::is_padding;
@@ -108,13 +108,13 @@ fn single_move(input: &str) -> IResult<&str, MoveFormat, VerboseError<&str>> {
 /// What a KI2 line looks like. Both questions take a run of moves that reaches
 /// the end as proof of one, and each says in its own doc what else it wants.
 pub(super) const SHAPES: LineShapes = LineShapes {
-    carries_a_line: a_header_value_carrying_moves,
-    opens_a_line: opens_a_ki2_line,
+    carries_a_line: is_header_value_with_moves,
+    opens_a_line: opens_ki2_line,
 };
 
 /// What a KI2 line looks like: the shapes both formats have, or a run of moves.
-fn opens_a_ki2_line(head: &str) -> bool {
-    opens_a_shared_line(head) || a_move_run_fills_the_line(head)
+fn opens_ki2_line(head: &str) -> bool {
+    opens_shared_line(head) || is_whole_line_move_run(head)
 }
 
 /// Whether `head` is a run of moves and nothing else, to the end of its line.
@@ -128,10 +128,10 @@ fn opens_a_ki2_line(head: &str) -> bool {
 /// with a move at the head of it. Refusing those refuses records that read as
 /// `.kif`.
 ///
-/// So the same line [`a_header_value_carrying_moves`] draws: what a lost newline
+/// So the same line [`is_header_value_with_moves`] draws: what a lost newline
 /// leaves behind is the line below it, whole, and a line of KI2 is moves all the
 /// way to its end. A note stops being one.
-fn a_move_run_fills_the_line(head: &str) -> bool {
+fn is_whole_line_move_run(head: &str) -> bool {
     if !head.starts_with(|c| SIDE_MARKS.iter().any(|(mark, _)| *mark == c)) {
         return false;
     }
@@ -183,7 +183,7 @@ fn a_move_run_fills_the_line(head: &str) -> bool {
 /// marks from the end rather than two. It also means a value with a long enough
 /// note behind its moves is missed — `research/90-gaps.md` GAP-020 records what
 /// that costs.
-fn a_header_value_carrying_moves(value: &str) -> bool {
+fn is_header_value_with_moves(value: &str) -> bool {
     /// Enough for the shapes that turn up: a run of two, and a note behind it
     /// holding marks of its own.
     const ATTEMPTS: usize = 8;
@@ -226,7 +226,7 @@ fn end_of_game_line(
         // (`まで2手で中断 （▲有利）`, D18) — so the word ends where the note
         // begins. What opens a note is D17's table, the same one the line-end
         // rule uses, and what is left goes to that rule below.
-        let end = phrase.find(ends_a_word).unwrap_or(phrase.len());
+        let end = phrase.find(ends_word).unwrap_or(phrase.len());
         let side_to_move = crate::handicap::side_to_move_at_ply(start, ply);
         match MoveSpecial::from_ki2_phrase(&phrase[..end], side_to_move) {
             // What follows the word goes through the same check as any other
@@ -327,7 +327,7 @@ fn move_run(
                 // read as `.ki2` (D18). Everything the reader has a shape for
                 // is left where it is.
                 nom::combinator::recognize(|input| {
-                    a_line_only_prose_opens(where_a_board_could_be, input)
+                    is_prose_only_line(where_a_board_could_be, input)
                 }),
             )))(input)?;
             // A comment before any move of a run belongs to a node of its own:
@@ -345,8 +345,8 @@ fn move_run(
             out.extend(v);
             // The ply an outcome line names counts moves and outcomes, not
             // nodes: a comment-only node writes no line for anyone to number.
-            // The writers count the same way (`MoveFormat::occupies_a_ply`).
-            let numbered = out.iter().filter(|mf| mf.occupies_a_ply()).count();
+            // The writers count the same way (`MoveFormat::occupies_ply`).
+            let numbered = out.iter().filter(|mf| mf.occupies_ply()).count();
             // Saturating because `first_ply` comes from a `変化：N手` line and a
             // record can say any `N` (`branch_header_ply`, D19). The ply is only
             // used to decide whose turn an outcome is, and a branch that far out
@@ -394,15 +394,15 @@ fn move_run(
 /// line can throw moves away — the silent loss D1 exists to remove. A line
 /// carrying `▲` or `△` is therefore never skippable, and the leftover-input
 /// check reports it instead.
-fn a_line_only_prose_opens(
+fn is_prose_only_line(
     where_a_board_could_be: WhereABoardCouldBe,
     input: &str,
 ) -> IResult<&str, &str, VerboseError<&str>> {
-    // Past the padding, the same as `begins_the_line_below` looks past it. A
+    // Past the padding, the same as `begins_next_line` looks past it. A
     // `変化：` one tab in is still a `変化：`, and asking from the raw start
     // hands it to the skip below — the branch is gone and its moves carry on as
     // the main line (R-JKF-004).
-    if opens_a_shared_line(input.trim_start_matches(is_padding)) {
+    if opens_shared_line(input.trim_start_matches(is_padding)) {
         return Err(nom::Err::Error(VerboseError::from_error_kind(
             input,
             nom::error::ErrorKind::Not,
@@ -494,9 +494,7 @@ fn moves(
         match alt((
             nom::combinator::recognize(branch_header),
             nom::combinator::recognize(program_comment_line),
-            nom::combinator::recognize(|input| {
-                a_line_only_prose_opens(where_a_board_could_be, input)
-            }),
+            nom::combinator::recognize(|input| is_prose_only_line(where_a_board_could_be, input)),
             line_ending,
         ))(input)
         {
@@ -550,7 +548,7 @@ fn moves(
                     // lose — while `変化：2手` alone is a branch that went
                     // missing. Both are branch declarations (D20); what tells
                     // them apart is whether the line says anything else (D1).
-                    if an_empty_block_here_is_worth_reporting(header) {
+                    if is_reportable_empty_block(header) {
                         return Err(broken_line(header, "a 変化 block with no moves under it"));
                     }
                     input = rest;
@@ -576,7 +574,7 @@ fn moves(
         // `not_move_line` under the skip consumes a line at a time, so this
         // cannot spin.
         match alt((nom::combinator::recognize(program_comment_line), |input| {
-            a_line_only_prose_opens(where_a_board_could_be, input)
+            is_prose_only_line(where_a_board_could_be, input)
         }))(input)
         {
             Ok((rest, _)) => input = rest,
@@ -858,7 +856,7 @@ mod tests {
             );
         }
         // A branch header is one however its number is spelled, and every
-        // spelling `opens_a_branch_header` counts is one `branch_header_ply`
+        // spelling `opens_fork_header` counts is one `branch_header_ply`
         // consumes. A spelling only one of the two knows is a line nobody owns:
         // counted, so not skipped as prose; unreadable, so not consumed.
         for header in ["変化：2手", "変化：２手", "変化： 2手", "変化：２手"] {

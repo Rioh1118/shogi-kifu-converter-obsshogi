@@ -16,7 +16,7 @@
 //! So do the lexical answers every side shares — where a line ends
 //! ([`LINE_ENDS`]) and what counts as padding ([`is_padding`]). Kept inside one
 //! format's parser instead, they make the tables that have nothing to do with
-//! parsing reach into it: `handicap::is_a_known_name` has to trim a value before
+//! parsing reach into it: `handicap::is_known_name` has to trim a value before
 //! it can match a name, and the handicap table is a leaf.
 
 /// The characters a line ending is made of, whichever of them a file or a value
@@ -48,7 +48,7 @@ pub(crate) const LINE_ENDS: [char; 2] = ['\n', '\r'];
 /// of them.
 ///
 /// Line endings are not padding. Whatever else this takes, it must not take
-/// those: `parser::kakinoki::begins_the_line_below` steps over one character looking for the
+/// those: `parser::kakinoki::begins_next_line` steps over one character looking for the
 /// newline that was lost, and a newline that is still there was never lost.
 pub(crate) fn is_padding(c: char) -> bool {
     c.is_whitespace() && !LINE_ENDS.contains(&c)
@@ -65,7 +65,7 @@ pub(crate) fn is_padding(c: char) -> bool {
 /// to know whether a `false` in the record has a word to be written with. Two
 /// copies drift apart, and the writer then spells `△６八玉不成`, which the
 /// notation has no word for.
-pub(crate) fn promotion_is_spellable(
+pub(crate) fn is_promotion_spellable(
     piece: shogi_core::PieceKind,
     from: shogi_core::Square,
     to: shogi_core::Square,
@@ -237,7 +237,7 @@ impl fmt::Display for MoveText {
                     f,
                     "{}{}打",
                     Coordinate(to),
-                    move_word(pk2k(piece.piece_kind()))
+                    move_word(kind_from_piece_kind(piece.piece_kind()))
                 )
             }
         }
@@ -245,7 +245,7 @@ impl fmt::Display for MoveText {
 }
 
 /// The JKF name for a [`shogi_core::PieceKind`].
-pub(crate) const fn pk2k(pk: shogi_core::PieceKind) -> Kind {
+pub(crate) const fn kind_from_piece_kind(pk: shogi_core::PieceKind) -> Kind {
     match pk {
         shogi_core::PieceKind::Pawn => Kind::FU,
         shogi_core::PieceKind::Lance => Kind::KY,

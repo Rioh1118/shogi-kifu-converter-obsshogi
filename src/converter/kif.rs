@@ -76,7 +76,7 @@ fn write_move_lines<W: Write>(moves: &[MoveFormat], index: usize, sink: &mut W) 
     // lands on the wrong move — or on nothing, and is dropped.
     let mut i = index;
     for mf in moves {
-        let has_line = mf.occupies_a_ply();
+        let has_line = mf.occupies_ply();
         if has_line {
             sink.write_fmt(format_args!("{:4} ", i))?;
         }

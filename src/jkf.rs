@@ -571,7 +571,7 @@ impl MoveFormat {
     ///
     /// Both writers and the KI2 reader have to agree on this, or a `変化：N手`
     /// block attaches to the wrong move and the outcome names the wrong winner.
-    pub(crate) fn occupies_a_ply(&self) -> bool {
+    pub(crate) fn occupies_ply(&self) -> bool {
         self.move_.is_some() || self.special.is_some()
     }
 }
