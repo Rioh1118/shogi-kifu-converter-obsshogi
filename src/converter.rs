@@ -34,7 +34,7 @@ fn on_one_line(value: &str) -> String {
     value.split(crate::notation::LINE_ENDS).collect()
 }
 
-/// Spells `pos` as USI: the starting position, then the moves played from it.
+/// Spells `pos` as USI: the initial position, then the moves played from it.
 fn write_usi<W: std::fmt::Write>(pos: &Position, sink: &mut W) -> std::fmt::Result {
     if pos.initial_position() == &PartialPosition::startpos() {
         sink.write_str("startpos")?;
@@ -83,7 +83,7 @@ impl JsonKifuFormat {
     /// # Errors
     ///
     /// Returns [`ConvertError`] when the record cannot be turned into a
-    /// position, which happens three ways: the starting position is a
+    /// position, which happens three ways: the initial position is a
     /// [`Preset::PresetOther`](crate::jkf::Preset::PresetOther) with no board
     /// (`InitialBoardNoDataWithPresetOTHER`), a coordinate is off the board
     /// (`InvalidSquare`), or a move cannot be played from the position before it
@@ -626,7 +626,7 @@ mod tests {
     /// this, `to_usi` can stop writing the moves — or spell the even game as
     /// `sfen …` — and every test still passes.
     #[test]
-    fn usi_names_the_starting_position_and_the_moves() {
+    fn usi_names_the_initial_position_and_the_moves() {
         use crate::jkf::{Color, Initial, Kind, MoveMoveFormat, PlaceFormat, Preset};
         let pawn = |color, fx, fy, tx, ty| MoveFormat {
             move_: Some(MoveMoveFormat {

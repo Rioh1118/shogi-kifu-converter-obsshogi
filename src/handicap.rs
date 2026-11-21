@@ -74,7 +74,7 @@ pub(crate) const HIRATE_BOARD: [[Piece; 9]; 9] = {
 /// One spelling, because two sides of the crate depend on it being the same
 /// one: the reader files a `手合割` it cannot fold into a [`Preset`] under this
 /// key, and the writer looks for it there before deciding whether to name the
-/// starting position itself (D16).
+/// initial position itself (D16).
 pub(crate) const KIF_KEYWORD: &str = "手合割";
 
 /// A handicap: the name KIF gives it and what the upper hand takes off.
@@ -197,7 +197,7 @@ pub(crate) fn lookup(preset: Preset) -> Option<&'static Handicap> {
     HANDICAPS.iter().find(|h| h.preset == preset)
 }
 
-/// The name a record gives its starting position when it spells the board out
+/// The name a record gives its initial position when it spells the board out
 /// instead of naming a handicap.
 ///
 /// Not a handicap, so it has no row in the table (R-HC-003 has 16) — but it is a
@@ -514,8 +514,8 @@ mod tests {
     }
 
     /// The `PI` block is followed by the side to move, and getting it wrong
-    /// makes every handicap start as Black's — the lower hand's first move
-    /// becomes the upper hand's, and the whole record replays as the wrong
+    /// makes every handicap start as Black's — the upper hand's first move
+    /// is given to the lower hand, and the whole record replays as the wrong
     /// colour. Nothing else in the suite reads this line.
     #[test]
     fn the_csa_preset_block_states_the_side_to_move() {

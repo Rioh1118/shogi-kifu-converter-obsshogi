@@ -181,10 +181,10 @@ pub enum MoveSpecial {
     /// エラー
     #[serde(rename = "ERROR")]
     SpecialError,
-    /// 先手（上手）の不戦勝 — **JKF 標準にはないバリアント**（R-KIF-007 / D1）
+    /// 先手の不戦勝 — **JKF 標準にはないバリアント**（R-KIF-007 / D1）
     #[serde(rename = "FUSENSHO")]
     SpecialFusensho,
-    /// 先手（上手）の不戦敗 — **JKF 標準にはないバリアント**（R-KIF-007 / D1）
+    /// 先手の不戦敗 — **JKF 標準にはないバリアント**（R-KIF-007 / D1）
     #[serde(rename = "FUSENPAI")]
     SpecialFusenpai,
 }
@@ -338,10 +338,11 @@ impl MoveSpecial {
             MoveSpecial::SpecialKachi => "入玉勝ち",
             MoveSpecial::SpecialTsumi => "詰み",
             MoveSpecial::SpecialFuzumi => "不詰",
-            // R-KIF-007 names these against Black (the upper hand), not against
-            // whoever is to move, so there is nothing to derive and no pair to
-            // swap — unlike 反則勝ち, which the same table defines relative to
-            // the move before it.
+            // R-KIF-007 names these against 先手, not against whoever is to
+            // move, so there is nothing to derive and no pair to swap — unlike
+            // 反則勝ち, which the same table defines relative to the move before
+            // it. (The spec glosses 先手 here as 上手, against its own ▲＝下手;
+            // see `research/30-kif.md`.)
             MoveSpecial::SpecialFusensho => "不戦勝",
             MoveSpecial::SpecialFusenpai => "不戦敗",
             MoveSpecial::SpecialMatta | MoveSpecial::SpecialError => return None,

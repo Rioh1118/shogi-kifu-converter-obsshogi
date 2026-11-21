@@ -1,5 +1,5 @@
 use super::kakinoki::{
-    broken_line, comments_on_the_starting_position, ends_here, ends_word, fork_header_ply,
+    broken_line, comments_on_the_initial_position, ends_here, ends_word, fork_header_ply,
     is_reportable_empty_block, move_comment_line, move_to, not_move_line, opens_shared_line,
     parse_without_moves, piece_kind, program_comment_line, LineShapes, WhereABoardCouldBe,
     SIDE_MARKS,
@@ -151,7 +151,7 @@ fn is_whole_line_move_run(head: &str) -> bool {
 /// A header value is free text a user can put anything in (R-KIF-004), so unlike
 /// [`ends_here`] there is no point at which the line
 /// ought to have ended: the question is what the text carries, not where it
-/// stops. A KI2 record whose starting position lost its newline puts the whole
+/// stops. A KI2 record whose initial position lost its newline puts the whole
 /// game in one.
 ///
 /// Two moves in a row that run to the end of the value, because that is what a
@@ -468,7 +468,7 @@ fn moves(
 ) -> IResult<&str, Vec<MoveFormat>, VerboseError<&str>> {
     // Everything above the first move, in one loop.
     //
-    // Comments belong to the starting position (R-KIF-010) and are kept; the
+    // Comments belong to the initial position (R-KIF-010) and are kept; the
     // rest is read and dropped. A `変化：` among them names no move to be an
     // alternative to, so there is nothing to act on — KIF does the same
     // (`kif::skippable_line_above_the_main_line`), and tsshogi does it deliberately: its
@@ -593,12 +593,12 @@ fn moves(
 pub(crate) fn parse(input: &str) -> IResult<&str, (JsonKifuFormat, bool), VerboseError<&str>> {
     let (rest, (mut jkf, header_comments, where_a_board_could_be, read_header)) =
         parse_without_moves(SHAPES, input)?;
-    // The side has to come from the starting position, not the ply parity: a
+    // The side has to come from the initial position, not the ply parity: a
     // handicap record has White at every odd ply (R-HC-001).
     let start = crate::handicap::starting_side(jkf.initial.as_ref());
     let (input, moves) = moves(start, where_a_board_could_be, rest)?;
     jkf.moves.extend(moves);
-    comments_on_the_starting_position(header_comments, &mut jkf.moves);
+    comments_on_the_initial_position(header_comments, &mut jkf.moves);
     Ok((input, (jkf, read_header)))
 }
 
@@ -992,7 +992,7 @@ mod tests {
                 }
             }
         }
-        // And the comments among them are still the starting position's, in the
+        // And the comments among them are still the initial position's, in the
         // order the file wrote them (R-KIF-010).
         let kept =
             parse_ki2_str("先手：A\n*a\n解説\n*b\n変化：2手\n▲７六歩 △３四歩\n").expect("reads");

@@ -14,7 +14,7 @@ pub enum ConvertError {
     /// Invalid [`shogi_core::PieceKind`] for [`shogi_core::Hand`]
     #[error("Invalid piece kind for `Hand`: {0:?}")]
     InvalidHandPiece(shogi_core::PieceKind),
-    /// The starting position names a handicap with no board (R-HC-004)
+    /// The initial position names a handicap with no board (R-HC-004)
     #[error("No board for preset: {0:?}")]
     UnknownPreset(crate::jkf::Preset),
     /// A number the notation has no characters for

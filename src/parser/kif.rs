@@ -1,5 +1,5 @@
 use super::kakinoki::{
-    blank_line, broken_line, comments_on_the_starting_position, ends_here, fork_header_ply,
+    blank_line, broken_line, comments_on_the_initial_position, ends_here, fork_header_ply,
     is_reportable_empty_block, move_comment_line, not_move_line, numbered_line, opens_fork_header,
     opens_numbered_line, opens_shared_line, parse_without_moves, LineShapes, NumberedBody,
     WhereABoardCouldBe,
@@ -444,12 +444,12 @@ fn entire_moves(
 pub(crate) fn parse(input: &str) -> IResult<&str, (JsonKifuFormat, bool), VerboseError<&str>> {
     let (rest, (mut jkf, header_comments, where_a_board_could_be, read_header)) =
         parse_without_moves(SHAPES, input)?;
-    // The side has to come from the starting position, not the ply parity: a
+    // The side has to come from the initial position, not the ply parity: a
     // handicap record has White at every odd ply (R-HC-001).
     let start = crate::handicap::starting_side(jkf.initial.as_ref());
     let (input, moves) = entire_moves(start, where_a_board_could_be, rest)?;
     jkf.moves.extend(moves);
-    comments_on_the_starting_position(header_comments, &mut jkf.moves);
+    comments_on_the_initial_position(header_comments, &mut jkf.moves);
     Ok((input, (jkf, read_header)))
 }
 
@@ -541,7 +541,7 @@ mod tests {
     // answer once the reader stopped truncating in silence: they are spec
     // vocabulary, so a valid KIF using one made the whole file an error.
     //
-    // Both are defined against Black (the upper hand) outright, not against
+    // Both are defined against Black (先手) outright, not against
     // whoever is to move — unlike 反則勝ち in the same table — so the ply does
     // not change what they mean.
     #[test]

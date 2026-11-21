@@ -496,7 +496,7 @@ mod tests {
             .expect_err("the joined header is an error");
         refusal(err, 7);
 
-        // KI2: the starting position joined to the moves. Every move is read as
+        // KI2: the initial position joined to the moves. Every move is read as
         // part of the header value, and the record comes back with none.
         const KI2: &str = "手合割：平手\n▲７六歩 △３四歩 ▲２二角成\n";
         assert_eq!(3, parse_ki2_str(KI2).expect("parses").moves.len() - 1);
@@ -534,7 +534,7 @@ mod tests {
                 "{header}"
             );
         }
-        // The run is what a KI2 record whose starting position lost its newline
+        // The run is what a KI2 record whose initial position lost its newline
         // leaves in the value.
         let err = parse_ki2_str("手合割：平手 ▲７六歩 △３四歩\n").expect_err("an error");
         refusal(err, 1);

@@ -1441,7 +1441,7 @@ pub(super) type HeaderBlock<'a> = (JsonKifuFormat, Vec<String>, WhereABoardCould
 /// are the only thing that differs inside it.
 ///
 /// Returns the comments that stood among those lines as well — see
-/// [`comments_on_the_starting_position`].
+/// [`comments_on_the_initial_position`].
 ///
 /// The third of what it hands back is [`WhereABoardCouldBe`] — this is the one
 /// place that knows whether the record's diagram was read, and the skips below
@@ -1578,9 +1578,9 @@ pub(super) fn parse_without_moves(
 
 /// Puts the comments that stood among the header lines in front of the ones the
 /// move reader found above the first move — they are all comments on the
-/// starting position (R-KIF-010), and the file's order is the order they were
+/// initial position (R-KIF-010), and the file's order is the order they were
 /// written in.
-pub(super) fn comments_on_the_starting_position(
+pub(super) fn comments_on_the_initial_position(
     from_the_header: Vec<String>,
     moves: &mut [MoveFormat],
 ) {
@@ -3279,7 +3279,7 @@ mod tests {
         assert!(information_line_keyvalue(NOTHING)("&しおり：ここ\n").is_err());
     }
 
-    // R-KIF-010: comments before the first move belong to the starting position.
+    // R-KIF-010: comments before the first move belong to the initial position.
     // KIF ends its header block with `手数----指手---------消費時間--`, which
     // R-KIF-012 says a record need not have and KI2 has no equivalent of — so a
     // header rule that eats `*` lines eats them out of every KI2 and out of any
@@ -3322,7 +3322,7 @@ mod tests {
                 "{opener}: the header under the comment is gone: {:?}",
                 kif.header
             );
-            let initial = kif.initial.as_ref().expect("a starting position");
+            let initial = kif.initial.as_ref().expect("a initial position");
             assert_eq!(Preset::PresetKY, initial.preset, "{opener}");
             assert_eq!(
                 Color::White,

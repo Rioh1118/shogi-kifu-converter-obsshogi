@@ -294,7 +294,7 @@ impl ToKi2 for JsonKifuFormat {
         // when there is one, but a record this crate cannot turn into a position
         // still has to name the right side at its special move.
         let start = crate::handicap::starting_side(self.initial.as_ref());
-        write_moves(&self.moves, self.starting_position(), start, sink)?;
+        write_moves(&self.moves, self.initial_position(), start, sink)?;
         Ok(())
     }
 }
@@ -964,13 +964,13 @@ mod tests {
         assert_eq!(jkf.header, back.header, "{ki2}");
     }
 
-    // A record with no header, no starting position and no moves has the
-    // starting position as the only thing left to write. Without it the file is
+    // A record with no header, no initial position and no moves has the
+    // initial position as the only thing left to write. Without it the file is
     // zero bytes and the `Ok` says nothing is wrong, which no caller can tell
     // from a save that was cut short. Naming where the game starts is the least
     // a kifu can say, and it is what KIF and CSA write for the same record.
     #[test]
-    fn to_ki2_names_the_starting_position_of_an_empty_record() {
+    fn to_ki2_names_the_initial_position_of_an_empty_record() {
         let ki2 = JsonKifuFormat::default()
             .try_to_ki2_owned()
             .expect("writes KI2");

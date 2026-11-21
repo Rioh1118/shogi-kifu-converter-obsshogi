@@ -243,7 +243,7 @@ impl JsonKifuFormat {
 
     /// The position the moves start from, or `None` if `initial` cannot be
     /// turned into one.
-    pub(crate) fn starting_position(&self) -> Option<PartialPosition> {
+    pub(crate) fn initial_position(&self) -> Option<PartialPosition> {
         match &self.initial {
             Some(initial) => PartialPosition::try_from(initial).ok(),
             None => Some(PartialPosition::startpos()),
@@ -1628,7 +1628,7 @@ mod tests {
             "the drop was rewritten as a board move"
         );
         // And the board gold is still on 4九, not on 3八.
-        let pos = jkf.starting_position().expect("a position");
+        let pos = jkf.initial_position().expect("a position");
         let mut pos = pos;
         pos.make_move(shogi_core::Move::try_from(&jkf.moves[1].move_.unwrap()).expect("a move"))
             .expect("the drop applies");

@@ -181,7 +181,7 @@ pub(super) fn write_header<W: Write>(header: &HashMap<String, String>, sink: &mu
 /// Writes the line, or the board, that names the position the record starts
 /// from (D13).
 ///
-/// A record that leaves its starting position unsaid is read back as the even
+/// A record that leaves its initial position unsaid is read back as the even
 /// game, which is what it means (`initial` is optional in JKF), but a file that
 /// does not say so on its own is one nothing distinguishes from a save that was
 /// cut short — and for KI2, where a hirate opening leaves nothing else to write,
