@@ -13,7 +13,17 @@ consumer（obs-shogi、`~/src/github.com/Rioh1118/obs-shogi/src-tauri/src`）が
    parse_*_str        各書式の読み手            normalize_*            ToKif / ToKi2 / ToCsa / ToUsi
 ```
 
-公開の読む関数は、どれも**正規化まで済ませて返す**。例外は公開の trait 実装 `TryFrom<csa::GameRecord> for JsonKifuFormat`（`src/csa.rs:8`）で、正規化しない。
+公開の読む関数は、どれも**正規化まで済ませて返す**。例外は公開の trait 実装 `TryFrom<csa::GameRecord> for JsonKifuFormat`（`src/parser/csa.rs`）で、正規化しない。
+
+## 0. 書式を値で選ぶ（`Format`）
+
+役割: 書式を1つの値で表し、拡張子からの選択・読み・書きを1か所にする。
+
+- `Format::from_extension(ext)`: `kif`/`kifu` → KIF、`ki2`/`ki2u` → KI2、`csa` → CSA、`jkf`/`json` → JKF。大文字小文字を区別しない。それ以外は `None`
+- `parser::parse_str(format, s)`: 書式ごとの `parse_*_str` と同じ
+- `parser::parse_file(path)`: 拡張子で書式を選び、書式ごとの `parse_*_file` と同じ。拡張子が当たらなければ `Err(FileExtension)`
+- `JsonKifuFormat::try_to_string(format)`: `try_to_{kif,ki2,csa}_owned` と同じ。JKF は字下げした JSON
+- USI は書くだけなので `Format` に入れない
 
 ## 1. 読む（`parser`）
 
@@ -101,7 +111,7 @@ consumer（obs-shogi、`~/src/github.com/Rioh1118/obs-shogi/src-tauri/src`）が
 
 駒落ちで `moves[1]` の手番が先手なら、本譜の手番を全て反転する前処理がある。`correct_color` の値に関係なく走る（`normalize_with_options` の文書に書いた）。
 
-### `normalize_with_color_correction(correct_color)` / `normalize_with_options(correct_color, infer_relative)`
+### `normalize_with_color_correction(correct_color)` / `normalize_with_options(correct_color, infer_relative)`（非推奨）
 
 役割: `normalize` の変種。`bool` 引数2つで、手番を直すかと、`relative` を埋めるかを選ぶ。
 

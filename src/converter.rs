@@ -12,6 +12,7 @@ pub use self::ki2::ToKi2;
 pub use self::kif::ToKif;
 use crate::error::ConvertError;
 use crate::jkf::JsonKifuFormat;
+use crate::Format;
 use shogi_core::{PartialPosition, Position, ToUsi};
 
 /// What every writer under this module returns: it either wrote, or the record
@@ -78,6 +79,25 @@ impl ToUsi for JsonKifuFormat {
 }
 
 impl JsonKifuFormat {
+    /// Returns `self` written as `format`.
+    ///
+    /// The same as [`ToKif::try_to_kif_owned`], [`ToKi2::try_to_ki2_owned`] or
+    /// [`ToCsa::try_to_csa_owned`] for that format, and indented JSON for
+    /// [`Format::Jkf`].
+    ///
+    /// # Errors
+    ///
+    /// Whatever the writer for that format returns. JSON is written from
+    /// plain strings and numbers and does not fail.
+    pub fn try_to_string(&self, format: Format) -> std::result::Result<String, ConvertError> {
+        match format {
+            Format::Kif => self.try_to_kif_owned(),
+            Format::Ki2 => self.try_to_ki2_owned(),
+            Format::Csa => self.try_to_csa_owned(),
+            Format::Jkf => serde_json::to_string_pretty(self).map_err(|_| ConvertError::Write),
+        }
+    }
+
     /// Returns `self` in USI format.
     ///
     /// # Errors
@@ -355,7 +375,7 @@ mod tests {
             },
             // GAP-012: the `csa` crate reads 10 of the 14 keywords. The four added
             // in CSA V2.1/V2.2 are written correctly and dropped on the way back
-            // in, so the arms for them in `src/csa.rs` never run.
+            // in, so the arms for them in `src/parser/csa.rs` never run.
             Row {
                 special: SpecialTimeUp,
                 kif_word: "切れ負け",
