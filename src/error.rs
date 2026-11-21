@@ -5,16 +5,14 @@ use thiserror::Error;
 /// An error that can occur while converting from/into [`shogi_core::Position`]
 #[derive(Error, Debug, PartialEq)]
 pub enum ConvertError {
-    /// Board data is required if `preset` is [`PresetOther`](crate::jkf::Preset::PresetOther)
-    #[error("Invalid initial board: no data with preset `OTHER`")]
-    InitialBoardNoDataWithPresetOTHER,
     /// [`shogi_core::Square::new()`] was failed for the `(file, rank)`
     #[error("Invalid (file, rank) for `Square`: {0:?}")]
     InvalidSquare((u8, u8)),
     /// Invalid [`shogi_core::PieceKind`] for [`shogi_core::Hand`]
     #[error("Invalid piece kind for `Hand`: {0:?}")]
     InvalidHandPiece(shogi_core::PieceKind),
-    /// The initial position names a handicap with no board (R-HC-004)
+    /// The initial position names a handicap with no board (R-HC-004):
+    /// [`PresetOther`](crate::jkf::Preset::PresetOther) without `data`
     #[error("No board for preset: {0:?}")]
     UnknownPreset(crate::jkf::Preset),
     /// A number the notation has no characters for

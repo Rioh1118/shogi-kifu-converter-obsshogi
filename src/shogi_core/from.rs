@@ -69,7 +69,7 @@ impl TryFrom<&jkf::Initial> for PartialPosition {
             PresetOther => {
                 let data = initial
                     .data
-                    .ok_or(ConvertError::InitialBoardNoDataWithPresetOTHER)?;
+                    .ok_or(ConvertError::UnknownPreset(jkf::Preset::PresetOther))?;
                 let mut pos = PartialPosition::empty();
                 // Board
                 for (i, v) in data.board.iter().enumerate() {
@@ -109,7 +109,7 @@ impl TryFrom<&jkf::Initial> for PartialPosition {
                 let mut pos = PartialPosition::startpos();
                 pos.side_to_move_set(crate::handicap::side_to_move(initial.preset).into());
                 let handicap = crate::handicap::lookup(initial.preset)
-                    .ok_or(ConvertError::InitialBoardNoDataWithPresetOTHER)?;
+                    .ok_or(ConvertError::UnknownPreset(jkf::Preset::PresetOther))?;
                 for &(file, rank, _) in handicap.removed {
                     let square =
                         Square::new(file, rank).ok_or(ConvertError::InvalidSquare((file, rank)))?;
